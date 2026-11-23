@@ -181,6 +181,8 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 		case OpCall, OpRefFunc:
 			markFn(e.Func)
 		case OpGlobalGet, OpGlobalSet:
+			// ScrubDeadGlobalStores removes write-only package-init stores first;
+			// remaining sets (e.g. runtime.runqTail in sched) must keep the global.
 			markGl(e.Global)
 		}
 		for _, a := range e.Args {

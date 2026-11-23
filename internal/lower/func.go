@@ -42,16 +42,16 @@ type funcLower struct {
 	labels        map[string]*labelTargets
 
 	// M5: closures, defer, recover.
-	cells                 map[types.Object]*ir.Var
-	cellInits             []cellInit
-	hasDefer              bool
-	deferUsesList         bool
-	deferInLoop           bool
-	deferCount            int
-	defersVar             *ir.Var
-	mayPanic              bool
-	needsRecoverPrologue  bool
-	allowVar              *ir.Var
+	cells                map[types.Object]*ir.Var
+	cellInits            []cellInit
+	hasDefer             bool
+	deferUsesList        bool
+	deferInLoop          bool
+	deferCount           int
+	defersVar            *ir.Var
+	mayPanic             bool
+	needsRecoverPrologue bool
+	allowVar             *ir.Var
 }
 
 func (fl *funcLower) errorf(n ast.Node, format string, args ...any) error {
@@ -191,8 +191,16 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	// Non-defaultable refs (e.g. $go.string) must be initialized; Wasm GC
 	// rejects an uninitialized (ref T) local even if every use is dominated
 	// by an assignment (comma-ok type assert is the usual trigger).
+	// Local [N]T arrays map to nullable array refs with length erased; allocate
+	// array.new_default of Len so buf[:] / indexing is non-null (strconv.ftoa*).
 	var init []ir.Stmt
-	if needsZeroInit(ty) {
+	if a, ok := types.Unalias(objTy).Underlying().(*types.Array); ok && a.Len() > 0 {
+		init = []ir.Stmt{fl.assignVar(v, &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: ty,
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: a.Len()}},
+		})}
+	} else if needsZeroInit(ty) {
 		z, err := fl.zeroValue(ty)
 		if err == nil {
 			init = []ir.Stmt{fl.assignVar(v, z)}

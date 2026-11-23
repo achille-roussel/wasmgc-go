@@ -224,6 +224,20 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 	case token.ADD:
 		return fl.expr(e.X, want)
 	case token.SUB:
+		// Prefer the type-checker's constant value so `-0.0` matches host Go
+		// (positive zero) instead of emitting f64.neg of 0.0.
+		if tv, ok := fl.info.Types[e]; ok && tv.Value != nil {
+			ty := want
+			if ty == nil {
+				var err error
+				ty, err = fl.mapType(tv.Type)
+				if err != nil {
+					return nil, nil, fl.errorf(e, "%v", err)
+				}
+			}
+			ex, err := fl.constVal(tv.Value, ty)
+			return ex, nil, err
+		}
 		x, stmts, err := fl.expr(e.X, want)
 		if err != nil {
 			return nil, nil, err

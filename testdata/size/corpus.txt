@@ -1,0 +1,9 @@
+# Size corpus: one program per line. Built with -names off.
+# Paths are relative to cmd/wasmgc-go/testdata/ unless prefixed with stdlib:.
+# empty_main and println use -skip-stdlib; fmt programs need a GOROOT.
+empty_main
+println
+m8_fmt_hello
+m8_fmt_map
+m8_fmt_float
+m8_fmt_quote

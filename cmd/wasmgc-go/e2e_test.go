@@ -47,7 +47,6 @@ func TestGenericMaxE2E(t *testing.T) {
 	runM2(t, "generic_max", "7\n2\n9\n5\n", 16384)
 }
 
-
 // TestM3AppendE2E: slice lit + append → 4\n4\n.
 func TestM3AppendE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
@@ -680,7 +679,8 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	runM8(t, "m8_fmt_hello", "hello\n", 128*1024)
+	// Target: under 80 KiB names off (stretch 64 KiB; hard ceiling still 128 KiB).
+	runM8(t, "m8_fmt_hello", "hello\n", 80*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {
@@ -703,6 +703,63 @@ func TestM8FmtMapE2E(t *testing.T) {
 	}
 	// Single-key map so %v text is deterministic without sorting in the test.
 	runM8(t, "m8_fmt_map", "map[b:2]\n", 0)
+}
+
+func TestM8FmtFloatE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8Host(t, "m8_fmt_float")
+}
+
+func TestM8FmtQuoteE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8Host(t, "m8_fmt_quote")
+}
+
+// runM8Host builds/runs a fmt program and requires stdout byte-identical to host go run.
+func runM8Host(t *testing.T, name string) {
+	t.Helper()
+	if !jspiAvailable(t) {
+		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
+	}
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	host := exec.Command("go", "run", ".")
+	host.Dir = dir
+	hostOut, err := host.CombinedOutput()
+	if err != nil {
+		t.Fatalf("host go run: %v\n%s", err, hostOut)
+	}
+
+	exe := buildDriver(t)
+	goroot := materializeGOROOT(t, exe)
+	cmd := exec.Command(exe, "run", "-goroot", goroot, ".")
+	cmd.Dir = dir
+	env := os.Environ()
+	env = append(env, "PATH="+jspiNodePATH())
+	cmd.Env = env
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("wasm run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if stdout.String() != string(hostOut) {
+		t.Fatalf("stdout not byte-identical to host go run\ngot:\n%s\nwant:\n%s", stdout.String(), hostOut)
+	}
 }
 
 // runM8 builds/runs a fmt program against a materialized GOROOT.
