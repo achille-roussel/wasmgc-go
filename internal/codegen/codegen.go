@@ -13,10 +13,9 @@ type Options struct {
 	// Omitted for size builds and -names=false.
 	Names bool
 
-	// SynthPrintRuntime synthesizes temporary runtime.printstring,
-	// runtime.printint, and runtime.printnl implementations that use
-	// go.runtime.write and the linear bridge. Remove once stream F
-	// lands std/src/runtime (docs/design/09-bootstrap-plan.md M2).
+	// SynthPrintRuntime synthesizes runtime.print* when they are absent
+	// from the IR (tests that skip rtlink). Prefer linking std/src/runtime
+	// via internal/rtlink; body-less printstring is filled regardless.
 	SynthPrintRuntime bool
 }
 
@@ -102,10 +101,14 @@ type gen struct {
 	needsStringTypes bool
 	needsMemory      bool
 
-	// Temporary print stubs (SynthPrintRuntime).
+	// Temporary print stubs when funcs are entirely missing (SynthPrintRuntime).
 	stubNeedString bool
 	stubNeedInt    bool
 	stubNeedNL     bool
+	// Fill empty IR bodies linked from std/src/runtime (stream F).
+	fillPrintString bool
+	fillPrintInt    bool
+	fillPrintNL     bool
 }
 
 func (g *gen) build() error {
@@ -129,10 +132,9 @@ func (g *gen) build() error {
 	if err := g.declareFuncs(); err != nil {
 		return err
 	}
-	if g.opts.SynthPrintRuntime {
-		if err := g.ensurePrintStubs(); err != nil {
-			return err
-		}
+	// Always consider print intrinsics: rtlink body-less decls, or synth when missing.
+	if err := g.ensurePrintStubs(); err != nil {
+		return err
 	}
 	if err := g.emitFuncBodies(); err != nil {
 		return err
@@ -198,18 +200,11 @@ func (g *gen) scanNeeds() {
 			g.needsStringTypes = true
 		}
 	}
-	if g.opts.SynthPrintRuntime {
-		// Stubs need memory + string types when any print call exists or stubs forced.
-		for _, f := range g.m.Funcs {
-			walkExprs(f.Body, func(e ir.Expr) {
-				if in, ok := e.(*ir.Instr); ok && in.Op == ir.OpCall {
-					switch in.Func {
-					case "runtime.printstring", "runtime.printint", "runtime.printnl":
-						g.needsMemory = true
-						g.needsStringTypes = true
-					}
-				}
-			})
+	// Body-less print decls still need memory + string prelude.
+	for _, name := range []string{"runtime.printstring", "runtime.printint", "runtime.printnl"} {
+		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {
+			g.needsMemory = true
+			g.needsStringTypes = true
 		}
 	}
 }

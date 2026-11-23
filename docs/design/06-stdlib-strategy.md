@@ -56,6 +56,10 @@ Hand-written **Wasm** kernels (`*_wasmgc.wat`) are a later optimization lane for
 
 `runtime` is small on purpose. The entrypoint, print, panic, maps' shared path, channels' shared path, park, and the linear bridge. The study's list of seventy `*_wasm3.go` mirrors is the set of files we do not write.
 
+### Linking rewrite `runtime` print without a full GOROOT
+
+`println` / `print` lower to calls named `runtime.printstring` / `printint` / `printnl` without a Go `import "runtime"`. The pipeline's `internal/rtlink` therefore reads `std/src/runtime/print.go` from the compiler module root and appends those funcs to the IR before `RuntimeOps`, even when `-skip-stdlib` skipped materialize. `printnl` and `printint` are ordinary Go; `printstring` is body-less and codegen fills the linear-bridge body until `printstring_wasmgc.wat` (see [`12-wasm-assembly.md`](12-wasm-assembly.md)). A program that `import`s `runtime` still loads the full rewrite from the materialized GOROOT as usual.
+
 ## Overlays
 
 Seeded from a scan of `go1.27.4` `src`, excluding `cmd`, `runtime`, and `internal/runtime`, for `uintptr(unsafe.Pointer`, `unsafe.Pointer(uintptr`, and `unsafe.Add(`. These are the hits in packages a normal program imports. The scan is not exhaustive; `std check` is.

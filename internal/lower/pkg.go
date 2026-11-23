@@ -29,14 +29,20 @@ func (l *pkgLower) lower() error {
 	}
 	var funcs []fnDecl
 	var inits []fnDecl
+	var bodyless []fnDecl
 	for _, f := range l.files {
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
+			if !ok {
 				continue
 			}
 			if fd.Recv != nil {
 				return l.errorf(fd, "methods not supported in M1/M2")
+			}
+			if fd.Body == nil {
+				// Body-less: asm / intrinsic / wasmimport candidate (design 12).
+				bodyless = append(bodyless, fnDecl{f, fd})
+				continue
 			}
 			if fd.Name.Name == "init" && (fd.Type.Params == nil || len(fd.Type.Params.List) == 0) {
 				inits = append(inits, fnDecl{f, fd})
@@ -65,6 +71,14 @@ func (l *pkgLower) lower() error {
 		}
 		l.mod.Funcs = append(l.mod.Funcs, fn)
 	}
+	for _, fd := range bodyless {
+		name := l.funcName(fd.decl.Name.Name)
+		fn, err := l.lowerBodyless(fd.decl, name)
+		if err != nil {
+			return err
+		}
+		l.mod.Funcs = append(l.mod.Funcs, fn)
+	}
 	return nil
 }
 
@@ -84,6 +98,59 @@ func (l *pkgLower) funcName(name string) string {
 }
 
 func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) {
+	fl, err := l.newFuncLower(fd, irName)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := fl.stmtBlock(fd.Body)
+	if err != nil {
+		return nil, err
+	}
+	seq, ok := body.(*ir.Seq)
+	if !ok {
+		seq = &ir.Seq{Stmts: []ir.Stmt{body}}
+	}
+	// Ensure void functions end with return when falling off the end.
+	if len(fl.results) == 0 && !endsWithReturn(seq) {
+		seq.Stmts = append(seq.Stmts, &ir.Return{})
+	}
+	// Prepend named-result and local var defs.
+	var preamble []ir.Stmt
+	for _, v := range fl.namedResults {
+		preamble = append(preamble, &ir.VarDef{Var: v})
+	}
+	for _, v := range fl.extraLocals {
+		preamble = append(preamble, &ir.VarDef{Var: v})
+	}
+	if len(preamble) > 0 {
+		seq.Stmts = append(preamble, seq.Stmts...)
+	}
+
+	return &ir.Func{
+		Name:    irName,
+		Params:  fl.params,
+		Results: fl.results,
+		Body:    seq,
+		Locals:  append(fl.namedResults, fl.extraLocals...),
+	}, nil
+}
+
+// lowerBodyless emits an IR func with an empty body for asm/intrinsic binding.
+func (l *pkgLower) lowerBodyless(fd *ast.FuncDecl, irName string) (*ir.Func, error) {
+	fl, err := l.newFuncLower(fd, irName)
+	if err != nil {
+		return nil, err
+	}
+	return &ir.Func{
+		Name:    irName,
+		Params:  fl.params,
+		Results: fl.results,
+		Body:    &ir.Seq{},
+	}, nil
+}
+
+func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, error) {
 	obj, _ := l.info.Defs[fd.Name].(*types.Func)
 	if obj == nil {
 		return nil, l.errorf(fd, "no type for function %s", fd.Name.Name)
@@ -130,44 +197,12 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		}
 		fl.results = append(fl.results, ty)
 		if r.Name() != "" {
-			// Named results become vars.
 			v := &ir.Var{Name: r.Name(), Typ: ty}
 			fl.namedResults = append(fl.namedResults, v)
 			fl.vars[r] = v
 		}
 	}
-
-	body, err := fl.stmtBlock(fd.Body)
-	if err != nil {
-		return nil, err
-	}
-	seq, ok := body.(*ir.Seq)
-	if !ok {
-		seq = &ir.Seq{Stmts: []ir.Stmt{body}}
-	}
-	// Ensure void functions end with return when falling off the end.
-	if len(fl.results) == 0 && !endsWithReturn(seq) {
-		seq.Stmts = append(seq.Stmts, &ir.Return{})
-	}
-	// Prepend named-result and local var defs.
-	var preamble []ir.Stmt
-	for _, v := range fl.namedResults {
-		preamble = append(preamble, &ir.VarDef{Var: v})
-	}
-	for _, v := range fl.extraLocals {
-		preamble = append(preamble, &ir.VarDef{Var: v})
-	}
-	if len(preamble) > 0 {
-		seq.Stmts = append(preamble, seq.Stmts...)
-	}
-
-	return &ir.Func{
-		Name:    irName,
-		Params:  fl.params,
-		Results: fl.results,
-		Body:    seq,
-		Locals:  append(fl.namedResults, fl.extraLocals...),
-	}, nil
+	return fl, nil
 }
 
 func endsWithReturn(s *ir.Seq) bool {

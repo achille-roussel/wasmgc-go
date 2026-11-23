@@ -21,6 +21,9 @@ func TestM1EmptyMainE2E(t *testing.T) {
 }
 
 // TestM2PrintlnE2E is the M2 hello gate: println("hello, world") under node.
+// Size is linked against std/src/runtime print (rtlink); budget stays 8192.
+// Baseline with codegen SynthPrintRuntime alone was 378 bytes; with Go
+// printint/printnl + intrinsic printstring expect under ~2 KiB.
 func TestM2PrintlnE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer wired in pipeline.Default")

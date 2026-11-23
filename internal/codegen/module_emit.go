@@ -132,6 +132,17 @@ func paramTypes(f *ir.Func) []ir.Type {
 
 func (g *gen) emitFuncBodies() error {
 	for _, f := range g.m.Funcs {
+		switch {
+		case f.Name == "runtime.printstring" && g.fillPrintString:
+			g.wm.AddCode(g.bodyPrintString())
+			continue
+		case f.Name == "runtime.printint" && g.fillPrintInt:
+			g.wm.AddCode(g.bodyPrintInt())
+			continue
+		case f.Name == "runtime.printnl" && g.fillPrintNL:
+			g.wm.AddCode(g.bodyPrintNL())
+			continue
+		}
 		body, err := g.emitFunc(f)
 		if err != nil {
 			return err

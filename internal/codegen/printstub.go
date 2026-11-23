@@ -7,40 +7,88 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/wasm"
 )
 
-// Temporary print runtime until stream F lands std/src/runtime.
-// Implements runtime.printstring / printint / printnl via go.runtime.write
-// and the linear-memory bridge (docs/design/04, 07).
+// Print runtime bodies via go.runtime.write and the linear-memory bridge
+// (docs/design/04, 07). Stream F links body-less runtime.printstring from
+// std/src/runtime; codegen fills that empty IR body here until
+// printstring_wasmgc.wat lands (design 12). SynthPrintRuntime still
+// synthesizes entirely missing print* funcs for tests that skip rtlink.
+
+func emptyPrintBody(f *ir.Func) bool {
+	if f == nil || f.Body == nil {
+		return true
+	}
+	seq, ok := f.Body.(*ir.Seq)
+	return ok && len(seq.Stmts) == 0
+}
+
+// printIntrinsic reports whether f is a print builtin whose body codegen must
+// supply (missing from IR, or linked body-less from std/src/runtime).
+func (g *gen) printIntrinsic(name string) bool {
+	f := g.m.LookupFunc(name)
+	if f == nil {
+		return g.opts.SynthPrintRuntime
+	}
+	return emptyPrintBody(f)
+}
 
 func (g *gen) ensurePrintStubs() error {
 	needString, needInt, needNL := g.scanPrintCalls()
+	// Also fill body-less decls linked by rtlink even when this func is not
+	// directly called (e.g. printint → printstring).
+	for _, name := range []string{"runtime.printstring", "runtime.printint", "runtime.printnl"} {
+		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {
+			switch name {
+			case "runtime.printstring":
+				needString = true
+			case "runtime.printint":
+				needInt = true
+			case "runtime.printnl":
+				needNL = true
+			}
+		}
+	}
 	if !needString && !needInt && !needNL {
 		return nil
 	}
 	if !g.hasWrite || !g.hasMemory {
 		return fmt.Errorf("codegen: print stubs require memory and go.runtime.write")
 	}
-	g.hasPrintStubs = true
 	strRef := wasm.Ref(wasm.TypeIndexHeap(g.types.ByName["$go.string"]))
 
-	if needString && g.m.LookupFunc("runtime.printstring") == nil {
+	if needString && g.printIntrinsic("runtime.printstring") {
 		if _, ok := g.funcs["runtime.printstring"]; !ok {
 			g.printStringIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{strRef}, nil))
 			g.funcs["runtime.printstring"] = g.printStringIdx
+		}
+		if g.m.LookupFunc("runtime.printstring") == nil {
 			g.stubNeedString = true
+			g.hasPrintStubs = true
+		} else {
+			g.fillPrintString = true
 		}
 	}
-	if needInt && g.m.LookupFunc("runtime.printint") == nil {
+	if needInt && g.printIntrinsic("runtime.printint") {
 		if _, ok := g.funcs["runtime.printint"]; !ok {
 			g.printIntIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{wasm.I32()}, nil))
 			g.funcs["runtime.printint"] = g.printIntIdx
+		}
+		if g.m.LookupFunc("runtime.printint") == nil {
 			g.stubNeedInt = true
+			g.hasPrintStubs = true
+		} else {
+			g.fillPrintInt = true
 		}
 	}
-	if needNL && g.m.LookupFunc("runtime.printnl") == nil {
+	if needNL && g.printIntrinsic("runtime.printnl") {
 		if _, ok := g.funcs["runtime.printnl"]; !ok {
 			g.printNLIdx = g.wm.AddFunc(g.internFuncType(nil, nil))
 			g.funcs["runtime.printnl"] = g.printNLIdx
+		}
+		if g.m.LookupFunc("runtime.printnl") == nil {
 			g.stubNeedNL = true
+			g.hasPrintStubs = true
+		} else {
+			g.fillPrintNL = true
 		}
 	}
 	return nil

@@ -40,7 +40,7 @@ func cmdRun(args []string) int {
 		VetFail:           *vetFail,
 		GOROOT:            *goroot,
 		SkipStdlib:        *skipStd,
-		SynthPrintRuntime: true, // until stream F lands std/src/runtime
+		SynthPrintRuntime: false, // std/src/runtime linked via rtlink
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

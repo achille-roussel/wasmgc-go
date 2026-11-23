@@ -77,7 +77,7 @@ There is no `_start`. WASI is not a v1 target.
 
 ## Linear memory
 
-One memory, one page to start, grown by the bridge when a write does not fit. Global 0 is the bump `i32`. `runtime.write` copies a string's bytes into the memory with `array` loads and `i32.store8`, then calls the import, then resets the bump. The memory is not a heap and not a place a Go pointer can point. The study's rule holds: a pointer handed to the host is a `uint32` offset (`docs/wasm3-study/03-stdlib-and-unsafe.md`).
+One memory, one page to start, grown by the bridge when a write does not fit. Global 0 is the bump `i32`. The Go-side bridge (today: codegen intrinsic for body-less `runtime.printstring` in `std/src/runtime`) copies a string's bytes into the memory with `array` loads and `i32.store8`, then calls the host import `go.runtime.write`, then resets the bump. The memory is not a heap and not a place a Go pointer can point. The study's rule holds: a pointer handed to the host is a `uint32` offset (`docs/wasm3-study/03-stdlib-and-unsafe.md`). When `//go:wasmimport` is wired, the same import will be declared from Go as `runtime.write`.
 
 The copy is explicit because the host cannot read a Wasm GC array. The JS string builtins proposal is a possible later replacement for the UTF-8 transcode; v1 does the copy in Wasm and a `TextDecoder` on the other side only for `syscall/js` strings. `println` does not decode. It writes bytes.
 

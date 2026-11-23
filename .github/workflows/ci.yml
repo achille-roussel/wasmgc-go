@@ -83,6 +83,11 @@ jobs:
           node prototypes/eh-panic/run.mjs
           node prototypes/fat-pointer/run.mjs
 
+      - name: Stream F runtime WAT drivers (M5 defer/panic, M6 map scaffold)
+        run: |
+          node std/src/runtime/testdata/run_m5.mjs
+          node std/src/runtime/testdata/run_m6.mjs
+
       - name: Prototype JSPI (Node 26 only)
         if: matrix.node == '26.13.1'
         run: node prototypes/jspi-sched/run.mjs
