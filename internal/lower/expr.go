@@ -900,23 +900,83 @@ func (fl *funcLower) unsafeSizeofFamily(e *ast.CallExpr, name string, want ir.Ty
 		if seln == nil {
 			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: no selection")
 		}
-		st, ok := seln.Recv().Underlying().(*types.Struct)
-		if !ok {
-			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: not a struct field")
+		off, err := fl.unsafeOffsetof(seln)
+		if err != nil {
+			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: %v", err)
 		}
-		fields := make([]*types.Var, st.NumFields())
-		for i := 0; i < st.NumFields(); i++ {
-			fields[i] = st.Field(i)
-		}
-		offs := Sizes.Offsetsof(fields)
-		idx := seln.Index()
-		if len(idx) == 0 || idx[len(idx)-1] >= len(offs) {
-			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: bad index")
-		}
-		n = offs[idx[len(idx)-1]]
+		n = off
 	}
 	_ = want
 	return fl.i32const(n), nil, true, nil
+}
+
+// applySubst applies the current mono subst map (if any).
+func (fl *funcLower) applySubst(t types.Type) types.Type {
+	if t != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		return fl.pkg.subst.Apply(t)
+	}
+	return t
+}
+
+// unsafeOffsetof walks Selection.Index (including promoted/embedded fields)
+// summing StdSizes offsets along the path. Field types are substituted so
+// mono instances of generic structs do not panic inside StdSizes.
+func (fl *funcLower) unsafeOffsetof(sel *types.Selection) (int64, error) {
+	idx := sel.Index()
+	if len(idx) == 0 {
+		return 0, fmt.Errorf("empty selection index")
+	}
+	t := fl.applySubst(sel.Recv())
+	var total int64
+	for _, fi := range idx {
+		for {
+			p, ok := types.Unalias(t).Underlying().(*types.Pointer)
+			if !ok {
+				break
+			}
+			t = fl.applySubst(p.Elem())
+		}
+		st, ok := types.Unalias(t).Underlying().(*types.Struct)
+		if !ok {
+			return 0, fmt.Errorf("not a struct field")
+		}
+		if fi < 0 || fi >= st.NumFields() {
+			return 0, fmt.Errorf("bad index")
+		}
+		off, next, err := fl.structFieldOffset(st, fi)
+		if err != nil {
+			return 0, err
+		}
+		total += off
+		t = next
+	}
+	return total, nil
+}
+
+// structFieldOffset returns the byte offset of field fi and that field's
+// (substituted) type. Mirrors types.StdSizes.Offsetsof with subst applied.
+func (fl *funcLower) structFieldOffset(st *types.Struct, fi int) (int64, types.Type, error) {
+	var o int64
+	for i := 0; i < st.NumFields(); i++ {
+		ft := fl.applySubst(st.Field(i).Type())
+		if mono.ContainsTypeParam(ft) {
+			return 0, nil, fmt.Errorf("unsubstituted type param")
+		}
+		a := Sizes.Alignof(ft)
+		o = alignInt64(o, a)
+		if i == fi {
+			return o, ft, nil
+		}
+		o += Sizes.Sizeof(ft)
+	}
+	return 0, nil, fmt.Errorf("bad index")
+}
+
+func alignInt64(o, a int64) int64 {
+	if a <= 0 {
+		return o
+	}
+	return (o + a - 1) &^ (a - 1)
 }
 
 // unsafeSliceData lowers unsafe.SliceData(s) to a fat pointer at s's off.
@@ -1715,6 +1775,18 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 		}
 		return nil, st, nil
 	}
+	if ex, st, ok, err := fl.unsafeBuiltinCall(e, nil); ok || err != nil {
+		if err != nil {
+			return nil, nil, err
+		}
+		if !asValue {
+			stmts = append(st, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			return nil, stmts, nil
+		}
+		t := fl.newTemp(ir.TypeI32)
+		st = append(st, fl.assignTemp(t, ex))
+		return []ir.Type{ir.TypeI32}, st, nil
+	}
 	if sig := fl.funcValueSig(e.Fun); sig != nil {
 		ex, st, err := fl.callFuncValue(e, sig)
 		if err != nil {
@@ -1794,6 +1866,14 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 func (fl *funcLower) callMaterialize(e *ast.CallExpr, resultTypes []ir.Type) ([]*ir.Temp, []ir.Stmt, error) {
 	if fl.isBuiltinPrint(e) {
 		return nil, nil, fl.errorf(e, "print used as value")
+	}
+	if ex, stmts, ok, err := fl.unsafeBuiltinCall(e, nil); ok || err != nil {
+		if err != nil {
+			return nil, nil, err
+		}
+		t := fl.newTemp(ir.TypeI32)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		return []*ir.Temp{t}, stmts, nil
 	}
 	if sig := fl.funcValueSig(e.Fun); sig != nil {
 		ex, stmts, err := fl.callFuncValue(e, sig)

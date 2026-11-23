@@ -454,7 +454,15 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			}
 		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {
 			// x = f(...) → single assign from call (no extra temp).
-			if sig := fl.funcValueSig(call.Fun); sig != nil {
+			// unsafe.Sizeof/Alignof/Offsetof are builtins via SelectorExpr; they
+			// must not fall through to resolveCallee (which expects *types.Func).
+			if ex, astmts, ok, err := fl.unsafeBuiltinCall(call, want); ok || err != nil {
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, astmts...)
+				rhs = ex
+			} else if sig := fl.funcValueSig(call.Fun); sig != nil {
 				ex, astmts, err := fl.callFuncValue(call, sig)
 				if err != nil {
 					return nil, err

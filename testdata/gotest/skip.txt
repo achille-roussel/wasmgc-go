@@ -97,7 +97,6 @@ fixedbugs/bug269.go — compile error: codegen
 fixedbugs/bug271.go — compile error: lower: tuple type not a single value: (int, int)
 fixedbugs/bug272.go — wasm validate/compile error
 fixedbugs/bug273.go — wasm validate/compile error
-fixedbugs/bug279.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
 fixedbugs/bug286.go — wasm validate/compile error
 fixedbugs/bug291.go — compile error: codegen
 fixedbugs/bug293.go — output mismatch
@@ -108,7 +107,6 @@ fixedbugs/bug312.go — runtime error
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug329.go — output mismatch: complex print/value
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
-fixedbugs/bug339.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug352.go — runtime error
@@ -293,7 +291,6 @@ fixedbugs/issue52072.go — compile error: codegen
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788.go — compile error: build: load: typecheck
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
-fixedbugs/issue53137.go — compile error: lower: not a function: unsafe.Offsetof obj=*types.Builtin
 fixedbugs/issue53600.go — output mismatch
 fixedbugs/issue53619.go — compile error: lower: tuple type not a single value: (bool, bool)
 fixedbugs/issue53653.go — output mismatch
@@ -521,7 +518,6 @@ typeparam/issue46591.go — compile error: build: rtlink: typecheck map runtime:
 typeparam/issue47258.go — failed: build: pipeline: IR verify: cannot assign i32 to var want2 of type refnull $go.complex64 in main.mai…
 typeparam/issue47272.go — output mismatch
 typeparam/issue47713.go — compile error: codegen
-typeparam/issue47716.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
 typeparam/issue47775b.go — compile error: codegen
 typeparam/issue47925b.go — failed: panic: interface conversion: type assertion failed
 typeparam/issue47925c.go — failed: panic: interface conversion: type assertion failed
@@ -582,7 +578,6 @@ typeparam/min.go — wasm validate/compile error
 typeparam/nested.go — output mismatch
 typeparam/ordered.go — failed: build: desc: no concrete type for main.orderedSlice$float64 desc: no concrete type for main.orderedS…
 typeparam/orderedmap.go — could not import context
-typeparam/pair.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
 typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
 typeparam/shape1.go — compile error: codegen
 typeparam/shape_assert.go — wasm validate/compile error
