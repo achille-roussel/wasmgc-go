@@ -100,6 +100,20 @@ func main() {}
 	compareGolden(t, "fib.ir", got)
 }
 
+func TestTypeAssertCallee(t *testing.T) {
+	// f.(func(T))(x) must lower as a func-value call, not reject TypeAssertExpr.
+	m := mustCompile(t, `package main
+func main() {
+	var f any = func(x int) int { return x + 1 }
+	_ = f.(func(int) int)(41)
+}
+`)
+	got := formatFunc(m, "main.main")
+	if !strings.Contains(got, "call_ref") && !strings.Contains(got, "iface.assert") {
+		t.Fatalf("expected type-assert callee lowering (call_ref / iface.assert):\n%s", got)
+	}
+}
+
 func TestMultiValueArgSpread(t *testing.T) {
 	// Compile-only: variadic iface spread emits $go.iface types that Format
 	// omits supers for, so round-trip parse is not required here.
