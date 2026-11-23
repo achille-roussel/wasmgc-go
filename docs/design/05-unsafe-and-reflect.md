@@ -105,24 +105,100 @@ The descriptor in `03-type-mapping.md` carries kind, name, package path, size an
 
 `reflect.Value` of a value the compiler boxed into an interface carries the descriptor and the data word. Field access, indexing, map iteration, `Len`, `IsNil`, `Interface`, `Set` on an addressable value, and method calls go through funcrefs the compiler generated for that concrete type: `getField(data, i) any`, `setField(data, i, v any)`, `index`, `setIndex`, `mapRange`. The same funcref idea is what wasm3's design note called M6 and never connected (`docs/wasm3-study/02-runtime-and-abi.md`). Generating them per reachable type is the implementation.
 
-`MakeSlice`, `MakeMap`, `MakeChan`, `New`, `Zero`, `Append`, and `Copy` work for types in the universe below. `Select` uses the same `runtime.selectGo` as the language. `Call` calls a func value.
+`MakeSlice`, `MakeMap`, `MakeChan`, `New`, `Zero`, `Append`, and `Copy` work for types in the universe below. `Select` uses the same `runtime.selectGo` as the language. `Call` calls a func value. `MakeSlice` of a type that is not in the universe does not happen: the constructor call that would have produced that type was a compile error.
 
-### The closed universe
+### Dynamic type constructors
 
-Wasm types are fixed when the module is built. The compiler adds, for every type `T` that survives dead-code elimination:
+Wasm struct types are fixed when the module is built. `reflect.StructOf`, `FuncOf`, `ArrayOf`, `ChanOf`, `MapOf`, `SliceOf`, and `PointerTo` cannot mint a type the module does not already contain. Achille decided on 2026-11-22 that a reachable call whose result the compiler cannot prove is already in the module is a **compile error**, not a run-time panic.
 
-- `*T`
-- `[]T`
-- `map[T]struct{}` when `T` is comparable
+The check runs after dead-code elimination (`01-architecture.md`). A call in a function that the reachability pass deleted is not an error. A call in a block the IR proves dead (a constant `if` whose condition folded) is not an error. Every other call in a live function is reachable, including a call on a rare path such as json's non-string map-key branch.
 
-Those three closures are what `encoding/json` v2 actually asks `reflect` for. In `go1.27.4` `encoding/json/v2/arshal_default.go`, deterministic marshaling of a non-string map key does `reflect.SliceOf` on the key and the element, and duplicate-key detection does `reflect.MapOf(key, emptyStruct)`. Both results are in the closure. `fmt` does not call `SliceOf` or `StructOf` on the production path.
+#### The universe
 
-`reflect.SliceOf`, `MapOf`, `PointerTo`, and `ChanOf` look the result up in the descriptor table.
+Let `B` be the set of Go types that appear in reachable code: named types, literals, instantiations, and the types of those types' fields and elements. This set is finite and is exactly the types the program wrote down.
 
-- A hit returns the existing descriptor.
-- A miss panics: `reflect.SliceOf: []T was not part of this program`.
+The universe `U` is `B` plus one constructor application, not the transitive closure:
 
-`reflect.ArrayOf` hits only when that exact array type already appears in the program. `reflect.StructOf` and `reflect.FuncOf` have no closure and panic with the same shape of message unless the exact type was written in source and survived elimination, in which case the lookup hits. A reachable call is not a compile error by default: the argument is a dynamic `reflect.Type`, and the production json path is reachable and legal. A call that the compiler can see is `StructOf` on a composite literal of fields still panics at run time. Question 5 is the stricter alternative of rejecting the package at compile time.
+- `*T` for every `T` in `B`
+- `[]T` for every `T` in `B`
+- `map[T]struct{}` for every comparable `T` in `B`
+
+It is one step on purpose. Closing under both `*` and `[]` without a bound is infinite (`*[]*[]…`). A second constructor applied to a type that is in `U` but not in `B` is checked against `U` as it stands. `PointerTo(SliceOf(t))` is legal only when `*[]T` is already in `U`, which it is when `[]T` is in `B` (the program wrote a slice and we added one pointer step) and not merely because we added `[]T` ourselves.
+
+`chan T`, `[n]T` for an `n` the program did not write, `map[K]V` for an arbitrary `V`, function types, and struct types are not added by the closure. They are in `U` only when they are in `B`.
+
+#### What the compiler knows about an argument
+
+Each IR value of type `reflect.Type` carries an abstract set:
+
+| Origin | Set |
+|---|---|
+| `reflect.TypeOf(v)` of a concrete `v`, `reflect.TypeFor[T]()` | `{T}` |
+| `reflect.TypeOf(v)` of an interface, or `Value.Type()` of a value that came from an interface | the concrete types that flow to that interface, computed whole-program. If the set cannot be bounded, `B` itself (every type the program contains). |
+| `.Elem()`, `.Key()`, `.In(i)`, `.Out(i)`, `.Field(i).Type` of a type in `B` | the corresponding component, which is in `B` |
+| `SliceOf`, `PointerTo`, `MapOf`, or any other constructor | the result type, marked constructed. It is in `U` and not thereby in `B`. |
+
+`B` as the unknown set is sound because every `reflect.Type` that exists at run time came from a type in `B` or from a constructor we already accepted into `U`. A constructor argument marked constructed is not widened to `B`. The analysis does not pretend a synthesized type is one the user wrote.
+
+#### When the call is legal
+
+| Call | Legal when |
+|---|---|
+| `PointerTo(t)` | every possible `t` is in `B`. The result `*t` is the one pointer step. `PointerTo` of a constructed type is legal only when that specific `*U` is already in `U`. |
+| `SliceOf(t)` | every possible `t` is in `B`. The result `[]t` is the one slice step. Same rule for a constructed argument. |
+| `MapOf(k, v)` | every pair is in `U`. In particular, `v` exactly `struct{}` and `k` in `B` is legal, because `map[K]struct{}` was added for every comparable `K`. An incomparable `K` is upstream `MapOf`'s own panic, and we leave that panic in place. Any other unknown `v` is not legal. |
+| `ChanOf(dir, t)` | the exact chan type, direction included, is in `B`. `t` drawn from all of `B` is not enough. We do not close under `chan`. |
+| `ArrayOf(n, t)` | `n` is a constant on every reaching path and `[n]T` is in `B`. A non-constant `n` is not legal. |
+| `StructOf(fields)` | the field slice is a constant the compiler can read (names, types, tags, embedding) and an existing struct in `B` has that shape. A loop that appends fields, which is how the json tests build a struct, is not a constant. |
+| `FuncOf(in, out, variadic)` | the exact signature is in `B`. A non-constant slice of parameter types is not legal. |
+
+A call that passes is lowered to a load of the descriptor global. It cannot miss at run time. There is no run-time fallback and no panic for "type not in the module".
+
+#### The diagnostic
+
+```
+encoding/json/v2/fold_test.go:119:14: reflect.StructOf result is not a Wasm type in this program
+    reflect.StructOf(fields)
+    the field list is not a constant struct type this program already declares.
+    Wasm GC cannot mint a struct type at run time.
+    this program's universe is the types it writes, plus one step of *T, []T,
+    and map[T]struct{} for a comparable T.
+```
+
+The compiler prints one error per call site, with the call expression and which argument it could not pin down.
+
+#### Standard-library call sites in go1.27.4
+
+The materializer builds `encoding/json` with `goexperiment.jsonv2` on, which is the Go 1.27 default. `encode.go` and `decode.go` are tagged `!goexperiment.jsonv2` and are not compiled. The live production calls are:
+
+| Call | File | Verdict |
+|---|---|---|
+| `reflect.PointerTo(t)` inside `implements`, used to test whether `*T` has `Marshaler` / `Unmarshaler` | `encoding/json/v2/arshal_methods.go` | Legal. `t` is the type being marshaled, which is in `B`. `*t` is the one pointer step. |
+| `reflect.PointerTo(from)` | `encoding/json/v2/arshal_funcs.go` | Legal, same reason. |
+| `reflect.PointerTo(sf.Type)` when a struct field's `IsZero` method might be on the pointer | `encoding/json/v2/fields.go` | Legal. The field type is in `B`. |
+| `reflect.SliceOf(t.Key())` and `reflect.SliceOf(t.Elem())`, building scratch slices for deterministic marshaling of a non-string map key | `encoding/json/v2/arshal_default.go` lines 913–914 | Legal. `t` is the map type flowing into `Marshal`, so the key and element are in `B`, and `[]K` / `[]V` are the one slice step. No overlay. |
+| `reflect.MapOf(k.Type(), emptyStructType)` where `emptyStructType = reflect.TypeFor[struct{}]()` | `encoding/json/v2/arshal_default.go` line 1015 | Legal. The value type is exactly `struct{}` and the key is in `B`, so `map[K]struct{}` is in `U`. No overlay. |
+
+`fmt` has no call to any of these seven functions outside tests. It compiles with no overlay and no special case.
+
+These production calls are also legal under the same rule, in packages that are not on the v1 list. They do not need overlays if those packages are vendored later:
+
+| Call | File | Verdict |
+|---|---|---|
+| `reflect.PointerTo` | `encoding/gob/type.go`, `encode.go`, `decode.go` | Legal. |
+| `reflect.PointerTo(s.typ)` | `net/rpc/server.go` | Legal. |
+| `reflect.PointerTo(value.Type())` | `text/template/exec.go` | Legal. |
+
+These calls are reachable from tests and are compile errors. They are not patched. `wasmgc-go test` records them in `skip.txt` (`08-testing.md`):
+
+| Call | Where | Why it fails |
+|---|---|---|
+| `reflect.StructOf(fs)` in a loop that renames the field | `encoding/json/bench_test.go`, `BenchmarkTypeFieldsCache` | The field list is not a constant struct in `B`. |
+| `reflect.StructOf(fields)` with `X0`…`X99` | `encoding/json/v2/arshal_test.go`, the `Structs/OmitEmpty/PathologicalBreadth` case | Same. |
+| `reflect.StructOf(fields)` with `Name0`… | `encoding/json/v2/fold_test.go`, `TestBenchmarkUnmarshalUnknown` | Same. |
+| `reflect.StructOf` / `reflect.ArrayOf` building a nested type that is not in the program | `encoding/gob/gobencdec_test.go` | `ArrayOf(1, typ)` only works when `[1]T` is already in `B`. The test's `typ` is not. |
+
+No overlay deletes these calls from the library. The library sources do not contain them. The test files do, and the skip list is how a test binary that would otherwise be a compile error is set aside.
 
 `reflect.Value.Pointer` and `reflect.Value.UnsafePointer` do not return an integer address. `UnsafePointer` returns the `unsafe.Pointer` (`anyref`) of the value when the value is a pointer, and panics otherwise. `Pointer` panics for every value: there is no integer to return. Callers that want a map key or an identity use `UnsafePointer` and `ref.eq`. This is the break with upstream `reflect` that cgo-style code will feel first, and the panic string says so.
 

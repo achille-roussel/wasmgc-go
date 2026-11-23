@@ -94,7 +94,7 @@ The host-side structures, owned by `lib/wasmgc.js`: a `Map` from park id to reso
 
 `runtime.go` appends the closure to a FIFO on `$go.g`'s scheduler struct (a single global `$runq`, manipulated only while an activation is running, so it needs no lock) and calls the non-suspending import `go.runtime.spawn`. The host schedules a macrotask, `setTimeout(fn, 0)`, that calls `WebAssembly.promising(exports._sched)`. `_sched` dequeues one closure, installs it as `$g`, and calls it.
 
-The current goroutine does not yield at `go`. It keeps running until it parks or returns. That is legal Go: the `go` statement happens-before the new goroutine starts, and it does not happen-before any later statement in the parent in the sense of the child having run. Question 2 in `10-open-questions.md` is the alternative of yielding at every `go`.
+The current goroutine does not yield at `go`. It keeps running until it parks, returns, or calls `runtime.Gosched`. That is legal Go: the `go` statement happens-before the new goroutine starts, and it does not happen-before any later statement in the parent in the sense of the child having run. Achille confirmed this on 2026-11-22. There is no yield-at-`go` mode.
 
 ### Park and ready
 
@@ -183,7 +183,21 @@ Package-level variables of reference type are Wasm globals, one per variable, in
 
 ## Finalizers
 
-`runtime.SetFinalizer` and `runtime.AddCleanup` panic with `runtime: SetFinalizer is not supported on Wasm GC`. There is no finalizer hook in the GC proposal, and a JS `FinalizationRegistry` observes JS objects, not Wasm struct references. wasm3 left them as no-ops (`docs/wasm3-study/04-open-problems.md`). Question 3 records the alternative.
+`runtime.SetFinalizer` and `runtime.AddCleanup` are silent no-ops. Achille decided this on 2026-11-22, reversing the earlier plan to panic. `SetFinalizer` returns. `AddCleanup` returns a `Cleanup` whose `Stop` is also a no-op. There is no finalizer hook in the Wasm GC proposal, and a JS `FinalizationRegistry` observes JS objects, not Wasm struct references, so the functions cannot be implemented. They are no-ops rather than panics so that upstream packages which register a finalizer and also `Close` keep compiling and keep working when the caller does close.
+
+The leak is the caller's. A value that is never closed, and whose only release path was the finalizer, is not released. The host object (an fd, a process handle, a cache entry) stays alive for the life of the page. wasm3 had the same no-op (`docs/wasm3-study/04-open-problems.md`). The difference from a panic is that the leak is silent. The runtime does not print, and it does not count skipped finalizers.
+
+Sites in the go1.27.4 tree, and whether our build tags compile them:
+
+| Site | Built for `GOOS=js`, `GOARCH=wasmgc`? | What the no-op leaks |
+|---|---|---|
+| `os/file_unix.go` `SetFinalizer(f.file, (*file).close)` | No. The tag is `unix \|\| (js && wasm) \|\| wasip1`, and `wasm` is not our arch. | Nothing in v1. `os` does not open files (`06-stdlib-strategy.md`). A later `File` that opens a host resource must `Close` it in `Close`, not in a finalizer. |
+| `net/fd_fake.go` `SetFinalizer(fd, (*netFD).Close)` | Yes. The tag is `js \|\| wasip1`. | A `net` connection that is dropped without `Close` keeps its host resource. `net` is not in v1. When it is vendored, `Close` is mandatory. |
+| `os/exec.go` `AddCleanup` on a process handle | Yes. The file has no build tag. | A `Process` that is not `Release`d or `Wait`ed keeps the handle. `os/exec` is not in v1. |
+| `os/exec/exec.go` `SetFinalizer` on `*Cmd` | Yes, if `os/exec` is built. | This finalizer is a leak detector: it panics when a started `Cmd` is collected without `Wait`. The no-op means that panic never fires. A leaked process is silent. |
+| `crypto/tls/cache.go` `AddCleanup` on a parsed certificate | Yes, if `crypto/tls` is built. | The weak certificate cache never evicts. Entries accumulate for the life of the page. `crypto/tls` is not in v1, and it also uses `weak.Pointer`, which v1 does not implement. |
+
+`weak.Pointer` and `weak.Make` are not implemented. A package that calls them does not vendor. That is independent of the finalizer no-op, and it is why `crypto/tls` stays out.
 
 ## Atomics
 

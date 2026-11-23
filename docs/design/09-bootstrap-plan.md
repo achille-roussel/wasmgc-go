@@ -42,7 +42,7 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Scope.** Descriptors as globals, itables, conversions, calls, assertions, type switches, embedding. `internal/reflectlite` enough for `errors`. Comparability of interfaces.
 
-**Exit.** A value stored in an `error` and compared to `nil` works. A type switch on a concrete type and on `default` works. A method promoted through an embedded struct is callable through the interface. `errors.New` and `fmt.Errorf`-free wrapping (`errors.Join` can wait) link.
+**Exit.** A value stored in an `error` and compared to `nil` works. A type switch on a concrete type and on `default` works. A method promoted through an embedded struct is callable through the interface. `errors.New` and `fmt.Errorf`-free wrapping (`errors.Join` can wait) link. A reachable `reflect.StructOf` on a non-constant field list is a compile error with the diagnostic in `05-unsafe-and-reflect.md`. A call in a function that nothing reaches is not.
 
 **Streams.** Codegen of `call_ref` (A') is already required by M3. The descriptor generator is a new stream (G) that consumes the same type intern table as codegen. G does not lower function bodies.
 
@@ -74,7 +74,7 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Scope.** `reflect` for the operations `fmt` uses, the overlays for `sync` and `slices`, vendored `strconv`, `unicode/utf8`, `strings`, `bytes`, `fmt`.
 
-**Exit.** `fmt.Println("hello")`, `fmt.Println(42)`, `fmt.Println(struct{ A int }{3})`, and `fmt.Printf("%v", map[string]int{"b": 2})` produce the upstream text, modulo map order which the test sorts. Size of `fmt.Println("hello")` is under 128 KiB. `wasmgc-go test errors strconv strings bytes` passes, with skips only for tests that the upstream file itself skips on `GOOS=js`.
+**Exit.** `fmt.Println("hello")`, `fmt.Println(42)`, `fmt.Println(struct{ A int }{3})`, and `fmt.Printf("%v", map[string]int{"b": 2})` produce the upstream text, modulo map order which the test sorts. Size of `fmt.Println("hello")` is under 128 KiB. `wasmgc-go test errors strconv strings bytes` passes, with skips only for tests that the upstream file itself skips on `GOOS=js`. A program that calls `reflect.SliceOf` and `reflect.MapOf` the way `encoding/json` does (`SliceOf` of a type in the program, `MapOf` of that type with `struct{}`) compiles. A program that calls `reflect.StructOf` on a built field list does not.
 
 **Streams.** Reflect (G) and the stdlib materializer (H) start as soon as M4's descriptors exist. They do not wait for M7. `fmt` of an int does not need channels. H's first deliverable is `std check` on the pin, which can land before any of this compiles.
 
@@ -82,7 +82,7 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Scope.** Vendored `encoding/json`, `time` wired to the host clock and timers, `os` for stdio and args, the `net/http` overlay that does `fetch`.
 
-**Exit.** Marshal and unmarshal of a struct with a `json` tag, of `map[string]int`, and of `map[int]string`. `time.Now` moves forward across a `Sleep`. `os.Args` matches the process arguments. `os.Write` on a file returns an error. An HTTP `Get` of a local test server (Node's `http`) returns the body. `ListenAndServe` is not part of the exit.
+**Exit.** Marshal and unmarshal of a struct with a `json` tag, of `map[string]int`, and of `map[int]string`. The `SliceOf` and `MapOf` calls in `encoding/json/v2/arshal_default.go` are accepted by the constructor pass with no overlay (`05-unsafe-and-reflect.md`). `BenchmarkTypeFieldsCache` is a compile error and is skip-listed. `time.Now` moves forward across a `Sleep`. `os.Args` matches the process arguments. `os.Write` on a file returns an error. An HTTP `Get` of a local test server (Node's `http`) returns the body. `ListenAndServe` is not part of the exit.
 
 **Streams.** H owns the overlays. F owns timers, which M7 already started. The HTTP overlay is H, using `syscall/js` from the glue stream (B). B can land `externref` imports in M2's glue without waiting, and the prototype already covers the import returning `externref`.
 

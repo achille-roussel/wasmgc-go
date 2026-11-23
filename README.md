@@ -18,6 +18,6 @@ The design is in [`docs/design/`](docs/design/). The measurements and dead ends 
 | [07 Host and JS](docs/design/07-host-and-js.md) | Imports, the JS glue, JSPI, Node versions |
 | [08 Testing](docs/design/08-testing.md) | IR goldens, Node execution, size tracking |
 | [09 Bootstrap plan](docs/design/09-bootstrap-plan.md) | Milestones and parallel workstreams |
-| [10 Open questions](docs/design/10-open-questions.md) | Decisions that need Achille's call |
+| [10 Resolved decisions](docs/design/10-open-questions.md) | The six calls Achille made on 2026-11-22 |
 
 [`prototypes/`](prototypes/) holds three hand-written modules that the design relies on: exception handling for panic, a fat pointer for scalar and element pointers, and a JSPI scheduler. They were run on Node.js 26.13.1; the exception and pointer modules also run on Node.js 22.23.4.

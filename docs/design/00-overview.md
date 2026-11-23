@@ -37,7 +37,7 @@ The branch also showed the shape this repository refuses. It was a second copy o
 - `uintptr(unsafe.Pointer)` and pointer arithmetic. The supported `unsafe` subset is specified in `05-unsafe-and-reflect.md`.
 - `reflect.StructOf` and any other API that would mint a Wasm struct type at run time. Wasm types are closed at module generation.
 - WasmFX / core stack switching as a goroutine mechanism. As of the November 2026 spec check it is still a phase-3 proposal, V8's `wasmfx` flag defaults off, and Wasmtime's tracking issue ([bytecodealliance/wasmtime#10248](https://github.com/bytecodealliance/wasmtime/issues/10248), updated 2026-11-03) still lists GC integration as unfinished. The wasm3 toolchain emitted `cont.new` and then stubbed resume because engines would not run it (`docs/wasm3-study/04-open-problems.md`). This compiler emits no continuation types.
-- WASI as a v1 host. JSPI is a JS API. A non-JS host has no substitute that ships. See question 4 in `10-open-questions.md`.
+- WASI as a v1 host. JSPI is a JS API. A non-JS host has no substitute that ships. Decided 2026-11-22 (`10-open-questions.md`).
 - Preemptive scheduling. A goroutine runs until it parks. A tight loop holds the thread.
 
 ## Relationship to the other compilers
@@ -52,7 +52,17 @@ The branch also showed the shape this repository refuses. It was a second copy o
 
 wasm3's `int` split is the one this design closes. `ArchWasm3.PtrSize` was 8, so the type checker said `int` was `i64`, while every slice, string, map, and chan header stored lengths as `i32` and codegen inserted `i64.extend_i32_u` / `i32.wrap_i64` at each use (`docs/wasm3-study/01-type-mapping.md`). Wasm `array.len` and `array.new` are `i32` operations ([core spec, aggregate instructions](https://www.w3.org/TR/wasm-core-2/), W3C Candidate Recommendation Draft of 20 November 2026). An array cannot be longer than 2^31−1 elements. A 64-bit `int` cannot represent a longer slice on this target, and it taxes every `len`, index, and `make`.
 
-**Working decision: `int`, `uint`, and `uintptr` are `i32`. `int64` and `uint64` stay `i64`. Every length, capacity, and offset in a header is `i32`.** This is the 32-bit Go model. It is reversible; the tradeoff is question 1 in `10-open-questions.md`. The rest of the design assumes it, so a reversal changes the ABI, the `unsafe.Sizeof` numbers, and the runtime.
+**`int`, `uint`, and `uintptr` are `i32`. `int64` and `uint64` stay `i64`. Every length, capacity, and offset in a header is `i32`.** Achille confirmed this on 2026-11-22. It is the same integer model as `GOARCH=386`.
+
+### 32-bit `int` compatibility
+
+Code written for amd64 sometimes treats `int` as a 64-bit register. Three patterns show up:
+
+- An untyped constant that fits in `int64` and not in `int32`, used as an `int`: `const n = 1 << 32`, `int(1 << 40)`, a slice length, a shift count stored in an `int`. `go/types` with `StdSizes{WordSize: 4, MaxAlign: 4}` rejects these with the same diagnostic as `GOARCH=386`: `constant 4294967296 overflows int`. That error is a compile failure, not a warning.
+- An explicit conversion from `int64` or `uint64` to `int` or `uint`. `time.Duration` is `int64`, so `time.Hour` itself is fine, and `d / time.Millisecond` is an `int64`. `int(d / time.Millisecond)`, `int(time.Now().Unix())`, and `int(h)` where `h` is a 64-bit hash are not constant-checked. They wrap at run time, the same way they do on 386. The compiler emits a vet-style warning at each such conversion: `conversion from int64 to int may overflow; int is 32 bits`. The warning does not fail the build. `-vet-fail` promotes it to an error. Conversions the checker can bound (a constant source, or a value already masked to 32 bits) are silent.
+- Code that uses `int` as a hash accumulator or a bit set wider than 32 bits. The warning above is the diagnosis. `uint64` and `hash/maphash` are unchanged and are the right types for that code.
+
+`len`, `cap`, and indexing are not warned on. Their type is `int`, and the Wasm array they index is `i32`, so the widths already match.
 
 ## Language and library pin
 
@@ -78,11 +88,7 @@ Rejected at compile time, with the diagnostic in `05-unsafe-and-reflect.md`:
 - Converting between `uintptr` and `unsafe.Pointer` in either direction.
 - `unsafe.Add` on a pointer that denotes a GC object.
 - `import "C"`, and any `.s` file that a package actually needs.
-- A reachable call to `reflect.StructOf`, `reflect.FuncOf`, or `reflect.ChanOf` / `reflect.ArrayOf` / `reflect.MapOf` / `reflect.SliceOf` whose result type is not already in the closed type universe of `05-unsafe-and-reflect.md`.
-
-Rejected at run time, by panicking with a fixed string, because the engine has no hook:
-
-- `runtime.SetFinalizer` and `runtime.AddCleanup`. Wasm GC objects are not JS objects, so `FinalizationRegistry` does not observe them. wasm3 made these no-ops (`docs/wasm3-study/02-runtime-and-abi.md`). A no-op hides a leak the program asked to be told about. See question 3.
+- A reachable call to `reflect.StructOf`, `FuncOf`, `ArrayOf`, `MapOf`, `SliceOf`, `PointerTo`, or `ChanOf` whose result the compiler cannot prove is already a Wasm type in the program. The proof is the whole-program analysis in `05-unsafe-and-reflect.md`. A call the reachability pass deletes is not an error.
 
 Known semantic differences, documented and tested:
 
@@ -91,6 +97,7 @@ Known semantic differences, documented and tested:
 - `main` returning exits the process. Other goroutines do not keep it alive. This matches Go. The host implements it by resolving the main export's promise as a microtask and scheduling new goroutines as macrotasks (`07-host-and-js.md`, `prototypes/jspi-sched`).
 - `unsafe.Sizeof` reports a 32-bit Go layout. That layout is not the Wasm representation of the value. The compiler rejects the conversion that would turn the number back into an address.
 - `sync/atomic` operations are sequentially consistent only because one Wasm activation runs at a time. They are plain loads and stores. There is no shared memory and no `memory.atomic`.
+- `runtime.SetFinalizer` and `runtime.AddCleanup` are silent no-ops (decided 2026-11-22). A finalizer does not run. A value whose only release path is a finalizer leaks. `04-runtime-and-abi.md` names the standard-library sites.
 
 ## Success metrics
 
@@ -117,7 +124,7 @@ The driver is `wasmgc-go`. It does not shell out to `cmd/compile`.
 
 ```
 wasmgc-go build [-o prog.wasm] [-target node|browser] [-tags a,b]
-                [-names] [-opt] [-size] [package]
+                [-names] [-opt] [-size] [-vet-fail] [package]
 wasmgc-go run   [-tags a,b] [package] [-- args]
 wasmgc-go test  [-tags a,b] [-count n] [packages]
 wasmgc-go dump-ir  [-o dir] [package]
@@ -126,7 +133,7 @@ wasmgc-go std check
 wasmgc-go version
 ```
 
-`build` writes a Wasm module. `-target node` (the default) also writes the JS runner next to it. `-target browser` writes glue that installs the same imports on `globalThis`. `-names` emits the Wasm name section; `build` leaves it off, `run` and `test` leave it on. `-opt` runs `wasm-opt` if it is on `PATH` and accepts the module; a `wasm-opt` that rejects Wasm GC is skipped with a message, not treated as success. `-size` prints section sizes.
+`build` writes a Wasm module. `-target node` (the default) also writes the JS runner next to it. `-target browser` writes glue that installs the same imports on `globalThis`. `-names` emits the Wasm name section; `build` leaves it off, `run` and `test` leave it on. `-opt` runs `wasm-opt` if it is on `PATH` and accepts the module; a `wasm-opt` that rejects Wasm GC is skipped with a message, not treated as success. `-size` prints section sizes. `-vet-fail` turns the 32-bit `int` conversion warning into an error.
 
 `run` and `test` require Node.js 25 or newer, where `WebAssembly.Suspending` exists without a flag. Node 24 with `--experimental-wasm-jspi` is accepted if the constructor is present. Node 22 is rejected: on v22.23.4 the flag exposes `WebAssembly.Suspender` and does not expose `Suspending` (`07-host-and-js.md`).
 

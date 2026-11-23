@@ -60,7 +60,7 @@ JSPI tests skip when `WebAssembly.Suspending` is missing, and CI runs them on No
 
 - `run`, compile and execute, compare output.
 - `errorcheck`, compile and match `// ERROR` patterns. Our diagnostics use the prefix `unsupported unsafe operation`, so the errorcheck files we claim to pass are ones we have a pattern for, plus the ones that fail in `go/types` the same way upstream does.
-- `skip`, a line in `testdata/gotest/skip.txt` with the reason (`cgo`, `uintptr(unsafe.Pointer)`, `assembly`, `reflect.StructOf`). A skip without a reason fails CI.
+- `skip`, a line in `testdata/gotest/skip.txt` with the reason (`cgo`, `uintptr(unsafe.Pointer)`, `assembly`, `reflect.StructOf`). A skip without a reason fails CI. The `StructOf` skips are the json and gob tests named in `05-unsafe-and-reflect.md`. The production `encoding/json` and `fmt` packages are not skipped: their constructor calls are in the closed universe, and a test compiles `json.Marshal` of a `map[int]string` to prove the `SliceOf` / `MapOf` sites were accepted. A separate compile-fail test is a three-line program that calls `reflect.StructOf` on a non-constant field list and expects the diagnostic in `05`.
 
 The goal is not "all of `$GOROOT/test` on day one". The bootstrap plan names the milestone that turns the skip list red if it grows. Until that milestone, the list is allowed to be long and is committed.
 

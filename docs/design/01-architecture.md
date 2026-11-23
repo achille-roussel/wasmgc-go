@@ -57,13 +57,13 @@ Cgo files are a compile error naming the file. Assembly files that survive the f
 
 ### The check before IR
 
-The checker walks the type-checked AST. It rejects the `unsafe` operations in `05-unsafe-and-reflect.md` and a reachable call to a reflect constructor the type universe cannot build. Doing this in SSA, which is where wasm3 emitted `wasm3: conversion between unsafe.Pointer and uintptr is not supported`, produces the right failure and a bad location (`docs/wasm3-study/03-stdlib-and-unsafe.md`). The diagnostic cites the source expression.
+The checker walks the type-checked AST. It rejects the `unsafe` operations in `05-unsafe-and-reflect.md`, and it warns on `int64`/`uint64` to `int`/`uint` conversions (`00-overview.md`). Doing this in SSA, which is where wasm3 emitted `wasm3: conversion between unsafe.Pointer and uintptr is not supported`, produces the right failure and a bad location (`docs/wasm3-study/03-stdlib-and-unsafe.md`). The diagnostic cites the source expression. The reflect-constructor check is not this pass. It needs whole-program reachability, so it runs after dead code, below.
 
 ### Monomorphization
 
 A generic function or a generic method becomes one IR function per instantiation that the program reaches. The instantiation is a concrete type list. Identical instantiations share one function. A generic method is not entered in an itable; a call on a concrete receiver monomorphizes, and a call through an interface is an ordinary method call whose signature has no type parameters.
 
-Dictionaries are not a v1 mechanism. They erase the value to `anyref` and put a type record beside it, which fights the reason to use Wasm GC. If a measured `fmt` or `slices` binary blows the size budget because of monomorphization, question 6 in `10-open-questions.md` is the point to reopen that.
+Dictionaries are not a mechanism we will add on a guess. They erase the value to `anyref` and put a type record beside it, which fights the reason to use Wasm GC. Achille confirmed monomorphization on 2026-11-22. A later size report can still force a dictionary for a named hot function; that would be a new design change, not an open default.
 
 ### IR and passes
 
@@ -76,6 +76,7 @@ Dictionaries are not a v1 mechanism. They erase the value to `anyref` and put a 
 | Devirtualize | An interface call whose concrete type is a single reaching type becomes a direct `call`. Whole-program information is what makes this common. |
 | Inline | Small leaf functions, including the runtime helpers that are one Wasm instruction (`array.copy`, `array.len`). Budget: a function of at most 20 IR instructions, not recursive, called from one site or marked `//go:wasmgc inline`. |
 | Dead code | Drop functions, methods, and types not reached from `main`, from a `//go:wasmexport`, or from a live itable. An itable is live only when some live conversion or type assertion mentions that pair. |
+| Reflect constructors | On the functions dead code kept, run the `reflect.Type` flow in `05-unsafe-and-reflect.md`. A reachable `StructOf`, `FuncOf`, `ArrayOf`, `ChanOf`, `MapOf`, `SliceOf`, or `PointerTo` whose result is not in the universe is a compile error. |
 | Lower runtime | Replace `map.get`, `chan.send`, `panic`, slice `append` with the primitive sequences in `04-runtime-and-abi.md`. After this pass the only calls are real functions. |
 | Verify again | Codegen's input. High-level instructions are gone. |
 

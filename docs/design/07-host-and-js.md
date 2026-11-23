@@ -110,6 +110,6 @@ The glue branches on `typeof process`. Node writes with `fs.writeSync`. The brow
 
 ## What is not in the glue
 
-A Go garbage collector, a thread pool, `Atomics.wait`, finalizer registration, and any WASI import. `GOOS=wasip1` in the wasm3 tree did not link (`docs/wasm3-study/04-open-problems.md`), and a WASI host still has no JSPI and no shipping stack switching. Question 4 is the decision to keep it out of v1 rather than to ship a single-goroutine WASI mode.
+A Go garbage collector, a thread pool, `Atomics.wait`, a working finalizer, and any WASI import. `SetFinalizer` and `AddCleanup` are no-ops in the runtime (`04-runtime-and-abi.md`), not host calls. `GOOS=wasip1` in the wasm3 tree did not link (`docs/wasm3-study/04-open-problems.md`), and a WASI host still has no JSPI and no shipping stack switching. No WASI target in v1 was decided on 2026-11-22.
 
 WasmFX is not feature-detected and not emitted. The flag `wasmfx` in V8 defaults to off, and the proposal was still phase 3 in August 2026, with Wasmtime's implementation tracking issue still listing GC integration as open in November 2026. The runtime's park import is the seam a future stack-switching host would replace, inside `runtime.gopark`, without a change to the IR.
