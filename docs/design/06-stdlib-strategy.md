@@ -50,7 +50,7 @@ So `internal/bytealg` vendors the generic implementations with no overlay, as lo
 | `sync/atomic` | The API stays. The bodies are the plain operations. `Value` stores one `any`, which is the wasm3 shape (`docs/wasm3-study/03-stdlib-and-unsafe.md`) and is right here because an iface value is one immutable reference. |
 | `syscall` | The upstream tree is OS calls as `uintptr`. Replaced by a JS-shaped `syscall` that returns `ENOSYS` for the filesystem and implements `Write` on fd 1 and 2 through `runtime.write`. |
 | `syscall/js` | Rewritten on `externref`. `07-host-and-js.md`. The upstream package is the linear-memory value table and does not match this ABI. |
-| `internal/bytealg` | Vendored generic Go, listed here only because the runtime and `strings` depend on it and the re-filter is what makes the generic file win. If a future pin deletes the generic file, it becomes an overlay. |
+| `internal/bytealg` | Vendored generic Go, listed here only because the runtime and `strings` depend on it and the re-filter is what makes the generic file win. If a future pin deletes the generic file, it becomes an overlay. SIMD replacements for `IndexByte` / `Equal` / `Count` / `Compare` / `Index` wait for gated **M11** (decision 7 in `10-open-questions.md`): `$go.bytes` stays `(array i8)` until Multibyte Array Access is in CI's Node (`11-simd.md`). Not a pre-M8 rewrite. Optional earlier WAT over linear bridge memory is `12-wasm-assembly.md`, not this row. |
 
 `runtime` is small on purpose. The entrypoint, print, panic, maps' shared path, channels' shared path, park, and the linear bridge. The study's list of seventy `*_wasm3.go` mirrors is the set of files we do not write.
 
@@ -109,8 +109,8 @@ The order is the bootstrap plan's library axis. Each row is usable when the row 
 
 1. **Builtin print.** `runtime` print and the linear bridge. No `fmt`. This is the study's `println("hello, world")` at 3,718 bytes.
 2. **`errors`.** Needs `internal/reflectlite`.
-3. **`strconv` and `unicode/utf8`.** Pure once `bytealg` generics link. `math` is a dependency of `strconv` for `FormatFloat`.
-4. **`strings`, `bytes`, `sort`, `slices`.** `slices` needs its overlay. `strings.Builder` needs `NoEscape`.
+3. **`strconv` and `unicode/utf8`.** Pure once `bytealg` generics link. `math` is a dependency of `strconv` for `FormatFloat`. UTF-8 validation stays scalar until the SIMD milestone in `11-simd.md`.
+4. **`strings`, `bytes`, `sort`, `slices`.** `slices` needs its overlay. `strings.Builder` needs `NoEscape`. `bytes` / `strings` call `bytealg`; they inherit the scalar generics until `11` says otherwise.
 5. **`sync`.** Overlay on `Cond` and `Pool`. `Mutex` is the runtime's mutex, exposed by `sync` as the usual API. `sync.Once`, `WaitGroup`, `Mutex` are the ones `fmt` and tests touch.
 6. **`reflect`, then `fmt`.** `fmt` has no `unsafe` of its own. It does not work until `reflect.Type` and `Value` can describe a struct, walk its fields, and print a map. That is the long pole.
 7. **`encoding/json`.** After `fmt` and `reflect`, including `SliceOf` and `MapOf` of the closed universe. Marshal and unmarshal of a struct, a `map[string]int`, and a `map[int]string` (the non-string key path).

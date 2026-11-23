@@ -44,6 +44,8 @@ Every module starts with these types. Program types are appended and interned. R
 
 `$go.object` is the open struct base for descriptors and for values that are themselves structs. It is not the type of an array. Fat-pointer bases use `anyref`, below, because an array is not a subtype of `struct`. The prototype `prototypes/fat-pointer/pointer.wat` uses that split and ran on Node 22 and Node 26.
 
+`$go.bytes` stays `(array (mut i8))`. Wasm allows `(array v128)`, and the SIMD study (`11-simd.md`) measured it, but changing the byte backing to vector chunks would break byte-oriented slicing and fat pointers. `v128` appears only as a temporary in SIMD code, not as a heap representation of `[]byte`.
+
 ## Scalars
 
 | Go | In a struct field or a non-packed array | As a value, a parameter, or a local |

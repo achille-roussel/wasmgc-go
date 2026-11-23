@@ -99,6 +99,8 @@ Known semantic differences, documented and tested:
 - `sync/atomic` operations are sequentially consistent only because one Wasm activation runs at a time. They are plain loads and stores. There is no shared memory and no `memory.atomic`.
 - `runtime.SetFinalizer` and `runtime.AddCleanup` are silent no-ops (decided 2026-11-22). A finalizer does not run. A value whose only release path is a finalizer leaks. `04-runtime-and-abi.md` names the standard-library sites.
 
+SIMD and Go's experimental `simd/archsimd` (Go 1.27, `GOEXPERIMENT=simd`) are studied in `11-simd.md`. The Wasm SIMD ops map to the wasm `archsimd` surface, but `[]byte` / `string` live in `(array i8)` and there is no MVP load of a `v128` from that array. Achille deferred GC-array SIMD to gated M11 (decision 7 in `10-open-questions.md`, 2026-11-22): Multibyte Array Access must ship in CI's Node first. Hand-written WAT for linear-memory kernels is a separate study (`12-wasm-assembly.md`).
+
 ## Success metrics
 
 Checked in CI by the corpus in `08-testing.md`. Sizes are uncompressed Wasm, name section off, no `wasm-opt`.
@@ -156,7 +158,7 @@ internal/wasm/          Wasm binary writer
 std/                    rewritten packages, overlays, manifest
 lib/wasmgc.js           host glue
 prototypes/             engine spikes
-docs/design/            this set
+docs/design/            this set (including 11-simd.md)
 docs/wasm3-study/       the wasm3 study, verbatim
 ```
 

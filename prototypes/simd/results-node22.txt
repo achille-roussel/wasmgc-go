@@ -1,0 +1,22 @@
+ok  correctness checks passed
+size=16
+  IndexByte  scalar=29.9  lanes=30.4  bridge=34.7  mem=6.7  swar=34.9  v128arr=26.6  js=16.2
+  Equal      scalar=54.5  lanes=56.6  bridge=58.4  mem=6.6  v128arr=48.7
+  Count      scalar=34.6  lanes=29.3  bridge=34.8  mem=6.7  v128arr=26.8  js=12.3
+  bridge_copy_only=31.6  (ns/op)
+size=1024
+  IndexByte  scalar=496.2  lanes=376.9  bridge=422.1  mem=33.0  swar=397.0  v128arr=64.8  js=281.9
+  Equal      scalar=643.7  lanes=711.4  bridge=603.5  mem=40.8  v128arr=102.9
+  Count      scalar=567.1  lanes=392.4  bridge=424.1  mem=33.6  v128arr=66.7  js=921.8
+  bridge_copy_only=400.2  (ns/op)
+size=65536
+  IndexByte  scalar=29123.9  lanes=21481.8  bridge=24577.4  mem=1875.9  swar=22281.2  v128arr=3511.8  js=18406.0
+  Equal      scalar=37778.3  lanes=42736.5  bridge=41851.7  mem=2444.1  v128arr=4492.2
+  Count      scalar=33249.4  lanes=22598.8  bridge=24471.9  mem=1870.1  v128arr=3005.2  js=64417.2
+  bridge_copy_only=23862.9  (ns/op)
+size=1048576
+  IndexByte  scalar=519918.7  lanes=358821.5  bridge=391777.7  mem=29797.8  swar=357321.1  v128arr=55173.9  js=265268.9
+  Equal      scalar=610218.9  lanes=679589.1  bridge=717082.1  mem=43153.2  v128arr=75310.9
+  Count      scalar=529639.5  lanes=372262.1  bridge=410164.7  mem=31575.6  v128arr=45447.6  js=927824.4
+  bridge_copy_only=361547.3  (ns/op)
+wrote /agent/repos/wasmgc-go/prototypes/simd/results.json
