@@ -1,5 +1,7 @@
 package wasm
 
+import "math"
+
 // Core opcodes used by M0–M2 plus GC and EH.
 const (
 	OpUnreachable byte = 0x00
@@ -182,6 +184,10 @@ func (e *Encoder) op(b byte) *Encoder {
 	return e
 }
 
+// Raw appends a raw opcode byte. Used by codegen for numeric ops not
+// yet wrapped as named methods.
+func (e *Encoder) Raw(b byte) *Encoder { return e.op(b) }
+
 func (e *Encoder) u32(v uint32) *Encoder {
 	e.buf = AppendU32(e.buf, v)
 	return e
@@ -363,6 +369,22 @@ func (e *Encoder) DataDrop(dataIdx uint32) *Encoder {
 
 func (e *Encoder) I32Const(v int32) *Encoder { return e.op(OpI32Const).i32(v) }
 func (e *Encoder) I64Const(v int64) *Encoder { return e.op(OpI64Const).i64(v) }
+
+func (e *Encoder) F32Const(v float32) *Encoder {
+	e.op(OpF32Const)
+	bits := math.Float32bits(v)
+	e.buf = append(e.buf, byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24))
+	return e
+}
+
+func (e *Encoder) F64Const(v float64) *Encoder {
+	e.op(OpF64Const)
+	bits := math.Float64bits(v)
+	e.buf = append(e.buf,
+		byte(bits), byte(bits>>8), byte(bits>>16), byte(bits>>24),
+		byte(bits>>32), byte(bits>>40), byte(bits>>48), byte(bits>>56))
+	return e
+}
 
 func (e *Encoder) I32Eqz() *Encoder  { return e.op(OpI32Eqz) }
 func (e *Encoder) I32Eq() *Encoder   { return e.op(OpI32Eq) }
