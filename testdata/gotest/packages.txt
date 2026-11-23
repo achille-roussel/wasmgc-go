@@ -1,0 +1,18 @@
+# packages.txt — stdlib packages the wasmgc-go stdlib-test layer should run.
+# One import path per line. See docs/design/06-stdlib-strategy.md and 08-testing.md.
+strconv
+strings
+bytes
+unicode/utf8
+sort
+slices
+maps
+errors
+fmt
+encoding/json
+time
+container/list
+container/ring
+container/heap
+math
+math/bits

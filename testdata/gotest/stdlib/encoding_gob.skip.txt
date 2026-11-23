@@ -1,0 +1,3 @@
+# encoding/gob — reflect.StructOf/ArrayOf outside closed universe B.
+
+gobencdec StructOf/ArrayOf — reflect.StructOf/ArrayOf (encoding/gob/gobencdec_test.go; nested type not in B)

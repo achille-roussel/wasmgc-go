@@ -17,13 +17,19 @@ type stdlibBackend struct {
 func (s *stdlibBackend) paths() (stdlib.Paths, error) {
 	root := s.ModuleRoot
 	if root == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return stdlib.Paths{}, err
-		}
-		root, err = stdlib.FindModuleRoot(wd)
-		if err != nil {
-			return stdlib.Paths{}, err
+		// Prefer the compiler module (this package's source tree) so drivers
+		// and suite runners started outside the repo still materialize.
+		if r, err := stdlib.CompilerModuleRoot(); err == nil {
+			root = r
+		} else {
+			wd, err2 := os.Getwd()
+			if err2 != nil {
+				return stdlib.Paths{}, err2
+			}
+			root, err2 = stdlib.FindModuleRoot(wd)
+			if err2 != nil {
+				return stdlib.Paths{}, err2
+			}
 		}
 	}
 	return stdlib.DefaultPaths(root)

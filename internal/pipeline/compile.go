@@ -24,6 +24,9 @@ type Options struct {
 	GOROOT   string
 	Dir      string
 	Backends Backends
+	// Files, if non-empty, compiles these .go files as package main (single-file
+	// / $GOROOT/test mode) instead of resolving Package via go list.
+	Files []string
 	// SkipStdlib skips materializing GOROOT when the program needs no std.
 	SkipStdlib bool
 	// SynthPrintRuntime synthesizes print* when rtlink did not link them
@@ -84,6 +87,7 @@ func Compile(opts Options) (*Result, error) {
 		Pattern: pkg,
 		Tags:    opts.Tags,
 		GOROOT:  goroot,
+		Files:   opts.Files,
 	})
 	if err != nil {
 		return nil, err
@@ -137,6 +141,7 @@ func DumpIR(opts Options) (string, *Result, error) {
 		Pattern: pkg,
 		Tags:    opts.Tags,
 		GOROOT:  goroot,
+		Files:   opts.Files,
 	})
 	if err != nil {
 		return "", nil, err
