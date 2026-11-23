@@ -34,7 +34,10 @@ func (fl *funcLower) builtinName(e *ast.CallExpr) string {
 		if b, ok := obj.(*types.Builtin); ok {
 			return b.Name()
 		}
+		// User-defined func/var named print/println/len/… — not a builtin.
+		return ""
 	}
+	// No Uses entry (incomplete type info): fall back to the identifier name.
 	return id.Name
 }
 
