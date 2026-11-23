@@ -63,21 +63,34 @@ Seeded from a scan of `go1.27.4` `src`, excluding `cmd`, `runtime`, and `interna
 | `slices` | `slices.go` | `overlaps` returns whether both slices have `ref.eq` backings and the index ranges overlap. Upstream compares integer addresses (`slices.go` around the `overlaps` function). `array.copy` handles overlap inside one array; the function still has to be right for `slices.Insert` and friends. |
 | `sync` | `cond.go` | Delete the `copyChecker` that stores `uintptr(unsafe.Pointer(c))`. Copy detection of `Cond` is not available. The rest of `Cond` stays. |
 | `sync` | `pool.go` | `indexLocal` cannot advance an `unsafe.Pointer` by `i * sizeof`. `Pool` in v1 is a single local plus the victim list, not a per-P array. `runtime_procPin` returns 0. The pool still caches. |
-| `hash/maphash` | `maphash.go` | `runtime_memhash` is linked to the runtime hash. The `abi.Type` hasher field does not exist; `Comparable` hashes through the descriptor's `hash` funcref. |
+| `fmt` | `print.go` | `fmtPointer` used `uintptr(value.UnsafePointer())`. Overlay prints `0x0` / `0x?` placeholders. Missed by the text scan in `05`. |
+| `encoding/binary` | `native_endian_little.go` | Upstream is tagged with `wasm` among little-endian archs; `GOARCH=wasmgc` drops it. Overlay restores little-endian `NativeEndian` for wasmgc. |
+| `internal/cpu` | `cpu_wasmgc.go` | Added. Upstream `cpu_wasm.go` is dropped by the `*_wasm.go` filename rule; wasmgc needs `CacheLinePadSize` / `doinit`. |
+| `internal/goarch` | `goarch_wasmgc.go`, `zgoarch_wasmgc.go` | Same twin pattern. `GOARCH=wasmgc`, `IsWasm=0`. |
+| `hash/maphash` | `maphash.go` | Deferred: no rejected conversion on this pin (`unsafe.Pointer(&buf[0])` is supported). Overlay later when Comparable needs the descriptor `hash` funcref. |
 | `crypto/internal/fips140/alias` | `alias.go` | `AnyOverlap` uses the same backing-identity test as `slices.overlaps`. Upstream compares addresses. |
-| `os` | the `executable_sysctl.go` and `wait6_*.go` files | Not selected under `GOOS=js`. No overlay if the re-filter drops them, which it does (`*_bsd.go`, sysctl). `std check` confirms they are absent. |
-| `math` | `floor_asm.s` and the arch files | Not copied. The generic `floor_noasm.go` path is the one the tags select when the arch is `wasmgc` and no `s` file is required. Stays vendor unless the pin's tags say otherwise. |
+| `os` | — | Under wasmgc, `file_unix.go` / `stat_js.go` are tagged `js && wasm` and drop. M8 uses a rewrite placeholder for stdio so `fmt` type-checks. M9 replaces it. |
+| `math` | `floor_asm.s` and the arch files | Not copied. The generic `floor_noasm.go` path is selected when the arch is `wasmgc`. Stays vendor. |
 
 `strings.Builder` needs no overlay on this pin: `copyCheck` uses `abi.NoEscape(unsafe.Pointer(b))`, and `String` uses `unsafe.String`. Both are supported.
 
+### Inventory findings (stream H, go1.27.4)
+
+`wasmgc-go std inventory` writes `docs/stdlib/inventory.json` from the materialized GOROOT (369 packages). After rewrites/overlays:
+
+- Remaining rejected-unsafe sites outside rewrites: `internal/runtime/gc/scan`, `crypto/internal/fips140/subtle`, `crypto/internal/boring/bcache` (not on the M8 path).
+- Finalizer / `AddCleanup` sites still in vendored sources: `net`, `os/exec`, `crypto/tls`, `crypto/internal/fips140cache`.
+- Dynamic reflect in production non-test files: `encoding/json/v2` (`SliceOf`/`MapOf`/`PointerTo`, accepted by the universe rule), plus `encoding/gob`, `net/rpc`, `text/template`.
+- `std check` on the manifest supported set is green for the M8 set once rewrite placeholders exist for `runtime`, `reflect`, `internal/abi`, `internal/reflectlite`, `sync/atomic`, `syscall`, `syscall/js`, and `os`.
+
 ## Vendored as-is, and required early
 
-These are the packages the bootstrap plan compiles unchanged, once the rewrites they import exist. Confirmed against the pin: their non-test sources do not contain the rejected conversions.
+These are the packages the bootstrap plan compiles unchanged, once the rewrites they import exist. Confirmed against the pin by `wasmgc-go std check`: their non-test sources (after overlays) do not contain the rejected conversions.
 
 | Needed for | Packages |
 |---|---|
 | errors and sentinel wrapping | `errors`, `internal/reflectlite` (rewrite) |
-| `fmt.Println` of numbers and strings | `fmt`, `strconv`, `unicode/utf8`, `io`, `sync` (overlay), `reflect` (rewrite) |
+| `fmt.Println` of numbers and strings | `fmt` (overlay), `strconv`, `unicode/utf8`, `io`, `sync` (overlay), `reflect` (rewrite) |
 | `fmt` of structs and maps | the same, plus the reflect field and map walks |
 | sorting | `sort`, `slices` (overlay), `cmp` |
 | strings | `strings`, `internal/bytealg` (generic), `unicode` |
@@ -86,7 +99,7 @@ These are the packages the bootstrap plan compiles unchanged, once the rewrites 
 | time | `time`, once `runtime.walltime` and timers exist. Zone data: UTC unless the program imports `time/tzdata`. No `syscall/js` timezone lookup in v1. |
 | math used by strconv and json | `math`, generic paths |
 
-`encoding/binary` vendors. It uses `reflect`, not an in-memory overlay, on this pin. A test file casts a pointer at an integer; tests are not the library. If a later pin adds `unsafe.Add` to `binary.go`, the checker demotes it.
+`encoding/binary` is an overlay only for the native-endian file selection under wasmgc; the rest vendors. It uses `reflect`, not an in-memory overlay, on this pin. A test file casts a pointer at an integer; tests are not the library.
 
 `encoding/json` is compiled with `goexperiment.jsonv2` set, which is the Go 1.27 default. Files tagged `!goexperiment.jsonv2` (`encode.go`, `decode.go`) are not in the build. The v2 files call `reflect.PointerTo`, `SliceOf`, and `MapOf`. The analysis in `05-unsafe-and-reflect.md` accepts every one of those production calls, because the results are the one-step closure (`*T`, `[]T`, `map[T]struct{}`). `fmt` calls none of the seven constructors. Neither package gets an overlay to delete a reflect constructor. The tests that call `StructOf` (`BenchmarkTypeFieldsCache`, `TestBenchmarkUnmarshalUnknown`, the topological-breadth json case, and `encoding/gob`'s `StructOf`/`ArrayOf` test) are compile errors and are listed in `skip.txt`, not patched.
 

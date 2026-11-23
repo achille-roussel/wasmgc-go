@@ -47,7 +47,7 @@ Each stage reads and writes a value the next stage can test without the previous
 The loader therefore uses `go list` only as a module-aware file inventory:
 
 1. Run `go list -json -deps -tags=wasmgc` with `GOOS=js` and `GOARCH=wasm`. The JSON includes `GoFiles` and, when non-empty, `IgnoredGoFiles` (confirmed with Go 1.22's `go list` on `internal/bytealg`, and the field is still part of `go list -json`).
-2. Re-evaluate every candidate file with `go/build/constraint` under `{GOOS: js, GOARCH: wasmgc, BuildTags: [wasmgc, ...user tags]}`. Filename suffixes follow the same rule: `*_js.go` and `*_wasmgc.go` stay, `*_wasm.go` and `*_amd64.go` go. A file tagged `!wasm` comes back. A file tagged `wasm` drops.
+2. Re-evaluate every candidate file with `go/build/constraint` under `{GOOS: js, GOARCH: wasmgc, BuildTags: [wasmgc, ...user tags]}`. Filename suffixes follow the same rule: `*_js.go` and `*_wasmgc.go` stay, `*_wasm.go` and `*_amd64.go` go. A file tagged `!wasm` comes back. A file tagged `wasm` drops. Practical consequence (stream H): packages that only shipped arch bits as `*_wasm.go` (`internal/cpu`, `internal/goarch`) need a `*_wasmgc.go` twin in `std/overlay`, or they lose `CacheLinePadSize` / `GOARCH` constants.
 3. Apply the stdlib manifest (`06-stdlib-strategy.md`). A rewritten package replaces the whole file list. An overlay replaces named files. A deleted file (upstream path mapped to empty) disappears.
 4. Parse with `go/parser` and type-check with `go/types`. Do not use export data, and do not use the type check `go list` did.
 

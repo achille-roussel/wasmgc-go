@@ -1,0 +1,1773 @@
+{
+  "pin": "go1.27.4",
+  "packages": [
+    {
+      "path": "archive/tar",
+      "tier": "vendor"
+    },
+    {
+      "path": "archive/zip",
+      "tier": "vendor"
+    },
+    {
+      "path": "bufio",
+      "tier": "vendor"
+    },
+    {
+      "path": "builtin",
+      "tier": "vendor"
+    },
+    {
+      "path": "bytes",
+      "tier": "vendor"
+    },
+    {
+      "path": "cmp",
+      "tier": "vendor"
+    },
+    {
+      "path": "compress/bzip2",
+      "tier": "vendor"
+    },
+    {
+      "path": "compress/flate",
+      "tier": "vendor"
+    },
+    {
+      "path": "compress/gzip",
+      "tier": "vendor"
+    },
+    {
+      "path": "compress/lzw",
+      "tier": "vendor"
+    },
+    {
+      "path": "compress/zlib",
+      "tier": "vendor"
+    },
+    {
+      "path": "container/heap",
+      "tier": "vendor"
+    },
+    {
+      "path": "container/list",
+      "tier": "vendor"
+    },
+    {
+      "path": "container/ring",
+      "tier": "vendor"
+    },
+    {
+      "path": "context",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/aes",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/cipher",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/des",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/dsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/ecdh",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/ecdsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/ed25519",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/elliptic",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/fips140",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/hkdf",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/hmac",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/hpke",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/boring",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/boring/bbig",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/boring/bcache",
+      "tier": "vendor",
+      "unsafe_sites": [
+        {
+          "file": "cache.go",
+          "line": 81,
+          "text": "c.table()[uintptr(unsafe.Pointer(k))%cacheSize]"
+        },
+        {
+          "file": "cache.go",
+          "line": 81,
+          "text": "uintptr(unsafe.Pointer(k))%cacheSize]"
+        },
+        {
+          "file": "cache.go",
+          "line": 93,
+          "text": "c.table()[uintptr(unsafe.Pointer(k))%cacheSize]"
+        },
+        {
+          "file": "cache.go",
+          "line": 93,
+          "text": "uintptr(unsafe.Pointer(k))%cacheSize]"
+        }
+      ]
+    },
+    {
+      "path": "crypto/internal/boring/sig",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/constanttime",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/cryptotest",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/cryptotest/wycheproof",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/cryptotest/wycheproof/_schema",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/cryptotest/x509limbo",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/cryptotest/x509limbo/_schema",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/entropy",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/entropy/v1.0.0",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/aes",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/aes/_asm/ctr",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/aes/gcm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/aes/gcm/_asm/gcm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/alias",
+      "tier": "overlay",
+      "notes": "AnyOverlap shared-backing test"
+    },
+    {
+      "path": "crypto/internal/fips140/bigmod",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/bigmod/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/check",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/check/checktest",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/drbg",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/ecdh",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/ecdsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/ed25519",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/edwards25519",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/edwards25519/field",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/edwards25519/field/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/hkdf",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/hmac",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/mldsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/mlkem",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/nistec",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/nistec/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/nistec/fiat",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/pbkdf2",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/rsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha256",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha256/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha3",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha3/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha512",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/sha512/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/ssh",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/subtle",
+      "tier": "vendor",
+      "unsafe_sites": [
+        {
+          "file": "xor_generic.go",
+          "line": 43,
+          "text": "uintptr(unsafe.Pointer(dst))|uintptr(unsafe.Pointer(x))|uintptr(unsafe.Pointer(y)))\u0026(wordSize-1) == 0"
+        },
+        {
+          "file": "xor_generic.go",
+          "line": 43,
+          "text": "unsafe.Pointer(dst))|uintptr(unsafe.Pointer(x))|uintptr(unsafe.Pointer(y)))\u0026(wordSize-1) == 0"
+        },
+        {
+          "file": "xor_generic.go",
+          "line": 43,
+          "text": "uintptr(unsafe.Pointer(x))|uintptr(unsafe.Pointer(y)))\u0026(wordSize-1) == 0"
+        },
+        {
+          "file": "xor_generic.go",
+          "line": 43,
+          "text": "unsafe.Pointer(x))|uintptr(unsafe.Pointer(y)))\u0026(wordSize-1) == 0"
+        },
+        {
+          "file": "xor_generic.go",
+          "line": 43,
+          "text": "uintptr(unsafe.Pointer(y)))\u0026(wordSize-1) == 0"
+        }
+      ]
+    },
+    {
+      "path": "crypto/internal/fips140/tls12",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140/tls13",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140cache",
+      "tier": "vendor",
+      "finalizer_sites": [
+        {
+          "file": "cache.go",
+          "line": 45,
+          "text": "runtime.AddCleanup(k, c.evict, p)"
+        }
+      ]
+    },
+    {
+      "path": "crypto/internal/fips140deps",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140deps/byteorder",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140deps/cpu",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140deps/godebug",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140deps/time",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140hash",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/fips140only",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/impl",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/rand",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/randutil",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/sysrand",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/internal/sysrand/internal/seccomp",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/md5",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/md5/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/mldsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/mlkem",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/mlkem/mlkemtest",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/pbkdf2",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/rand",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/rc4",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/rsa",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/sha1",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/sha1/_asm",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/sha256",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/sha3",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/sha512",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/subtle",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/tls",
+      "tier": "vendor",
+      "finalizer_sites": [
+        {
+          "file": "cache.go",
+          "line": 33,
+          "text": "runtime.AddCleanup(cert, func(_ any) { wcc.CompareAndDelete(string(der), entry) }, any(string(der)))"
+        },
+        {
+          "file": "cache.go",
+          "line": 38,
+          "text": "runtime.AddCleanup(cert, func(_ any) { wcc.CompareAndDelete(string(der), wp) }, any(string(der)))"
+        }
+      ]
+    },
+    {
+      "path": "crypto/tls/internal/fips140tls",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/x509",
+      "tier": "vendor"
+    },
+    {
+      "path": "crypto/x509/pkix",
+      "tier": "vendor"
+    },
+    {
+      "path": "database/sql",
+      "tier": "vendor"
+    },
+    {
+      "path": "database/sql/driver",
+      "tier": "vendor"
+    },
+    {
+      "path": "database/sql/internal",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/buildinfo",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/dwarf",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/elf",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/gosym",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/macho",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/pe",
+      "tier": "vendor"
+    },
+    {
+      "path": "debug/plan9obj",
+      "tier": "vendor"
+    },
+    {
+      "path": "embed",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/ascii85",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/asn1",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/base32",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/base64",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/binary",
+      "tier": "overlay",
+      "notes": "native_endian_little.go is tagged wasm; add wasmgc twin"
+    },
+    {
+      "path": "encoding/csv",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/gob",
+      "tier": "vendor",
+      "dynamic_reflect_sites": [
+        {
+          "file": "decode.go",
+          "line": 1002,
+          "text": "reflect.PointerTo(rcvrType)"
+        },
+        {
+          "file": "encode.go",
+          "line": 571,
+          "text": "reflect.PointerTo(rt)"
+        },
+        {
+          "file": "type.go",
+          "line": 145,
+          "text": "reflect.PointerTo(typ).Implements(gobEncDecType) {"
+        },
+        {
+          "file": "type.go",
+          "line": 145,
+          "text": "reflect.PointerTo(typ).Implements(gobEncDecType) {"
+        }
+      ]
+    },
+    {
+      "path": "encoding/hex",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/internal",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/internal/jsonflags",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/internal/jsonopts",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/internal/jsontest",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/internal/jsonwire",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/jsontext",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/json/v2",
+      "tier": "vendor",
+      "dynamic_reflect_sites": [
+        {
+          "file": "arshal_default.go",
+          "line": 913,
+          "text": "reflect.MakeSlice(reflect.SliceOf(t.Key()), n, n)"
+        },
+        {
+          "file": "arshal_default.go",
+          "line": 913,
+          "text": "reflect.SliceOf(t.Key()), n, n)"
+        },
+        {
+          "file": "arshal_default.go",
+          "line": 914,
+          "text": "reflect.MakeSlice(reflect.SliceOf(t.Elem()), n, n)"
+        },
+        {
+          "file": "arshal_default.go",
+          "line": 914,
+          "text": "reflect.SliceOf(t.Elem()), n, n)"
+        },
+        {
+          "file": "arshal_default.go",
+          "line": 1015,
+          "text": "reflect.MakeMap(reflect.MapOf(k.Type(), emptyStructType))"
+        },
+        {
+          "file": "arshal_default.go",
+          "line": 1015,
+          "text": "reflect.MapOf(k.Type(), emptyStructType))"
+        },
+        {
+          "file": "arshal_funcs.go",
+          "line": 384,
+          "text": "reflect.PointerTo(from).Implements(to)"
+        },
+        {
+          "file": "arshal_funcs.go",
+          "line": 384,
+          "text": "reflect.PointerTo(from).Implements(to)"
+        },
+        {
+          "file": "arshal_funcs.go",
+          "line": 388,
+          "text": "reflect.PointerTo(from) == to"
+        },
+        {
+          "file": "arshal_methods.go",
+          "line": 425,
+          "text": "reflect.PointerTo(t).Implements(ifaceType):"
+        },
+        {
+          "file": "arshal_methods.go",
+          "line": 425,
+          "text": "reflect.PointerTo(t).Implements(ifaceType):"
+        },
+        {
+          "file": "fields.go",
+          "line": 234,
+          "text": "reflect.PointerTo(sf.Type).Implements(isZeroerType):"
+        },
+        {
+          "file": "fields.go",
+          "line": 234,
+          "text": "reflect.PointerTo(sf.Type).Implements(isZeroerType):"
+        }
+      ]
+    },
+    {
+      "path": "encoding/pem",
+      "tier": "vendor"
+    },
+    {
+      "path": "encoding/xml",
+      "tier": "vendor"
+    },
+    {
+      "path": "errors",
+      "tier": "vendor"
+    },
+    {
+      "path": "expvar",
+      "tier": "vendor"
+    },
+    {
+      "path": "flag",
+      "tier": "vendor"
+    },
+    {
+      "path": "fmt",
+      "tier": "overlay",
+      "notes": "fmtPointer used uintptr(UnsafePointer); wasmgc prints placeholders (doc 05 scan missed this)"
+    },
+    {
+      "path": "go/ast",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/build",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/build/constraint",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/constant",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/doc",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/doc/comment",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/format",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/importer",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/internal/gccgoimporter",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/internal/gcimporter",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/internal/srcimporter",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/parser",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/printer",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/scanner",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/token",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/types",
+      "tier": "vendor"
+    },
+    {
+      "path": "go/version",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash/adler32",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash/crc32",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash/crc64",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash/fnv",
+      "tier": "vendor"
+    },
+    {
+      "path": "hash/maphash",
+      "tier": "vendor"
+    },
+    {
+      "path": "html",
+      "tier": "vendor"
+    },
+    {
+      "path": "html/template",
+      "tier": "vendor"
+    },
+    {
+      "path": "image",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/color",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/color/palette",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/draw",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/gif",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/internal/imageutil",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/jpeg",
+      "tier": "vendor"
+    },
+    {
+      "path": "image/png",
+      "tier": "vendor"
+    },
+    {
+      "path": "index/suffixarray",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/abi",
+      "tier": "rewrite",
+      "notes": "NoEscape identity; descriptor helpers"
+    },
+    {
+      "path": "internal/asan",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/bisect",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/buildcfg",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/bytealg",
+      "tier": "vendor",
+      "notes": "generic paths via re-filter"
+    },
+    {
+      "path": "internal/byteorder",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/cfg",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/chacha8rand",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/calloc",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/cfile",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/cformat",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/cmerge",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/decodecounter",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/decodemeta",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/encodecounter",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/encodemeta",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/pods",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/rtcov",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/slicereader",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/slicewriter",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/stringtab",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/coverage/uleb128",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/cpu",
+      "tier": "overlay",
+      "notes": "cpu_wasm.go is dropped by *_wasm.go re-filter; add wasmgc twin"
+    },
+    {
+      "path": "internal/dag",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/diff",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/exportdata",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/filepathlite",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/fmtsort",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/fuzz",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/gate",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/goarch",
+      "tier": "overlay",
+      "notes": "goarch_wasm.go / zgoarch_wasm.go dropped; wasmgc twins with IsWasm=0"
+    },
+    {
+      "path": "internal/godebug",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/godebugs",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/goexperiment",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/goos",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/goroot",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/gover",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/goversion",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/lazyregexp",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/lazytemplate",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/msan",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/nettest",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/nettrace",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/obscuretestdata",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/oserror",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/pkgbits",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/platform",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/poll",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/profile",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/profilerecord",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/race",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/reflectlite",
+      "tier": "rewrite",
+      "notes": "Descriptor-based; used by errors/sort"
+    },
+    {
+      "path": "internal/runtime/atomic",
+      "tier": "rewrite",
+      "notes": "Plain loads/stores"
+    },
+    {
+      "path": "internal/runtime/cgroup",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/exithook",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/gc",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/gc/internal/gen",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/gc/scan",
+      "tier": "vendor",
+      "unsafe_sites": [
+        {
+          "file": "scan_go.go",
+          "line": 37,
+          "text": "(*uintptr)(unsafe.Add(mem, wordI*goarch.PtrSize))"
+        },
+        {
+          "file": "scan_go.go",
+          "line": 37,
+          "text": "unsafe.Add(mem, wordI*goarch.PtrSize))"
+        },
+        {
+          "file": "scan_go.go",
+          "line": 81,
+          "text": "(*T)(unsafe.Add(unsafe.Pointer(b.base), b.n*int(unsafe.Sizeof(val)))) = val"
+        },
+        {
+          "file": "scan_go.go",
+          "line": 81,
+          "text": "unsafe.Add(unsafe.Pointer(b.base), b.n*int(unsafe.Sizeof(val)))) = val"
+        },
+        {
+          "file": "scan_reference.go",
+          "line": 32,
+          "text": "(*uintptr)(unsafe.Add(mem, word*goarch.PtrSize))"
+        },
+        {
+          "file": "scan_reference.go",
+          "line": 32,
+          "text": "unsafe.Add(mem, word*goarch.PtrSize))"
+        }
+      ]
+    },
+    {
+      "path": "internal/runtime/maps",
+      "tier": "rewrite",
+      "notes": "Not linked; compiler owns maps"
+    },
+    {
+      "path": "internal/runtime/math",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/pprof/label",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/runtime/sys",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/saferio",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/singleflight",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/strconv",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/stringslite",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/sync",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/synctest",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/syscall/execenv",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/syscall/unix",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/sysinfo",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/syslist",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/testenv",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/testhash",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/testlog",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/testpty",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/internal/testgen",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/internal/tracev1",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/raw",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/testtrace",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/tracev2",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/traceviewer",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/traceviewer/format",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/trace/version",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/txtar",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/types/errors",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/unsafeheader",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/xcoff",
+      "tier": "vendor"
+    },
+    {
+      "path": "internal/zstd",
+      "tier": "vendor"
+    },
+    {
+      "path": "io",
+      "tier": "vendor"
+    },
+    {
+      "path": "io/fs",
+      "tier": "vendor"
+    },
+    {
+      "path": "io/ioutil",
+      "tier": "vendor"
+    },
+    {
+      "path": "iter",
+      "tier": "vendor"
+    },
+    {
+      "path": "log",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/internal",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/slog",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/slog/internal",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/slog/internal/benchmarks",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/slog/internal/buffer",
+      "tier": "vendor"
+    },
+    {
+      "path": "log/syslog",
+      "tier": "vendor"
+    },
+    {
+      "path": "maps",
+      "tier": "vendor"
+    },
+    {
+      "path": "math",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/big",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/big/internal/asmgen",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/bits",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/cmplx",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/rand",
+      "tier": "vendor"
+    },
+    {
+      "path": "math/rand/v2",
+      "tier": "vendor"
+    },
+    {
+      "path": "mime",
+      "tier": "vendor"
+    },
+    {
+      "path": "mime/multipart",
+      "tier": "vendor"
+    },
+    {
+      "path": "mime/quotedprintable",
+      "tier": "vendor"
+    },
+    {
+      "path": "net",
+      "tier": "vendor",
+      "finalizer_sites": [
+        {
+          "file": "fd_fake.go",
+          "line": 108,
+          "text": "runtime.SetFinalizer(fd, (*netFD).Close)"
+        },
+        {
+          "file": "fd_fake.go",
+          "line": 116,
+          "text": "runtime.SetFinalizer(fd, nil)"
+        }
+      ]
+    },
+    {
+      "path": "net/http",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/cgi",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/cookiejar",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/fcgi",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/httptest",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/httptrace",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/httputil",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal/ascii",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal/http2",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal/httpcommon",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal/httpsfv",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/internal/testcert",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/http/pprof",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/internal/socktest",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/mail",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/netip",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/rpc",
+      "tier": "vendor",
+      "dynamic_reflect_sites": [
+        {
+          "file": "server.go",
+          "line": 267,
+          "text": "suitableMethods(reflect.PointerTo(s.typ), false)"
+        },
+        {
+          "file": "server.go",
+          "line": 267,
+          "text": "reflect.PointerTo(s.typ), false)"
+        }
+      ]
+    },
+    {
+      "path": "net/rpc/jsonrpc",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/smtp",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/textproto",
+      "tier": "vendor"
+    },
+    {
+      "path": "net/url",
+      "tier": "vendor"
+    },
+    {
+      "path": "os",
+      "tier": "rewrite",
+      "notes": "M9 expands; placeholder stdio so fmt type-checks under wasmgc (upstream needs js\u0026\u0026wasm)"
+    },
+    {
+      "path": "os/exec",
+      "tier": "vendor",
+      "finalizer_sites": [
+        {
+          "file": "exec.go",
+          "line": 441,
+          "text": "runtime.SetFinalizer(cmd, func(c *Cmd) {"
+        }
+      ]
+    },
+    {
+      "path": "os/signal",
+      "tier": "vendor"
+    },
+    {
+      "path": "os/user",
+      "tier": "vendor"
+    },
+    {
+      "path": "path",
+      "tier": "vendor"
+    },
+    {
+      "path": "path/filepath",
+      "tier": "vendor"
+    },
+    {
+      "path": "reflect",
+      "tier": "rewrite",
+      "notes": "Descriptor-based; placeholder API for fmt"
+    },
+    {
+      "path": "reflect/internal/example1",
+      "tier": "vendor"
+    },
+    {
+      "path": "reflect/internal/example2",
+      "tier": "vendor"
+    },
+    {
+      "path": "regexp",
+      "tier": "vendor"
+    },
+    {
+      "path": "regexp/syntax",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime",
+      "tier": "rewrite",
+      "notes": "Wasm GC scheduler/heap; placeholder for std check"
+    },
+    {
+      "path": "runtime/_mkmalloc",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/_mkmalloc/astutil",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/coverage",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/debug",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/metrics",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/pprof",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/race",
+      "tier": "vendor"
+    },
+    {
+      "path": "runtime/trace",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/midway",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/sgutil",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/simdgen",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/simdgen/arm64",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/tmplgen",
+      "tier": "vendor"
+    },
+    {
+      "path": "simd/archsimd/_gen/unify",
+      "tier": "vendor",
+      "dynamic_reflect_sites": [
+        {
+          "file": "value.go",
+          "line": 125,
+          "text": "reflect.PointerTo(rv.Type()).Implements(decoderType) {"
+        },
+        {
+          "file": "value.go",
+          "line": 125,
+          "text": "reflect.PointerTo(rv.Type()).Implements(decoderType) {"
+        }
+      ]
+    },
+    {
+      "path": "simd/archsimd/_gen/wasmgen",
+      "tier": "vendor"
+    },
+    {
+      "path": "slices",
+      "tier": "overlay",
+      "notes": "overlaps without uintptr"
+    },
+    {
+      "path": "sort",
+      "tier": "vendor"
+    },
+    {
+      "path": "strconv",
+      "tier": "vendor"
+    },
+    {
+      "path": "strings",
+      "tier": "vendor"
+    },
+    {
+      "path": "structs",
+      "tier": "vendor"
+    },
+    {
+      "path": "sync",
+      "tier": "overlay",
+      "notes": "Cond copy check removed; Pool single-local"
+    },
+    {
+      "path": "sync/atomic",
+      "tier": "rewrite",
+      "notes": "Value stores one any"
+    },
+    {
+      "path": "syscall",
+      "tier": "rewrite",
+      "notes": "JS-shaped ENOSYS + stdio Write"
+    },
+    {
+      "path": "syscall/js",
+      "tier": "rewrite",
+      "notes": "externref rewrite"
+    },
+    {
+      "path": "testing",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/cryptotest",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/fstest",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/internal/testdeps",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/iotest",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/quick",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/slogtest",
+      "tier": "vendor"
+    },
+    {
+      "path": "testing/synctest",
+      "tier": "vendor"
+    },
+    {
+      "path": "text/scanner",
+      "tier": "vendor"
+    },
+    {
+      "path": "text/tabwriter",
+      "tier": "vendor"
+    },
+    {
+      "path": "text/template",
+      "tier": "vendor",
+      "dynamic_reflect_sites": [
+        {
+          "file": "exec.go",
+          "line": 925,
+          "text": "reflect.PointerTo(value.Type()).AssignableTo(typ) \u0026\u0026 value.CanAddr():"
+        },
+        {
+          "file": "exec.go",
+          "line": 925,
+          "text": "reflect.PointerTo(value.Type()).AssignableTo(typ) \u0026\u0026 value.CanAddr():"
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "v.CanAddr() \u0026\u0026 (reflect.PointerTo(v.Type()).Implements(errorType) || reflect.PointerTo(v.Type()).Implements(fmtString..."
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "reflect.PointerTo(v.Type()).Implements(errorType) || reflect.PointerTo(v.Type()).Implements(fmtStringerType)) {"
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "reflect.PointerTo(v.Type()).Implements(errorType) || reflect.PointerTo(v.Type()).Implements(fmtStringerType)) {"
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "v.Type()).Implements(errorType) || reflect.PointerTo(v.Type()).Implements(fmtStringerType)) {"
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "reflect.PointerTo(v.Type()).Implements(fmtStringerType)) {"
+        },
+        {
+          "file": "exec.go",
+          "line": 1124,
+          "text": "reflect.PointerTo(v.Type()).Implements(fmtStringerType)) {"
+        }
+      ]
+    },
+    {
+      "path": "text/template/parse",
+      "tier": "vendor"
+    },
+    {
+      "path": "time",
+      "tier": "vendor"
+    },
+    {
+      "path": "time/tzdata",
+      "tier": "vendor"
+    },
+    {
+      "path": "unicode",
+      "tier": "vendor"
+    },
+    {
+      "path": "unicode/utf16",
+      "tier": "vendor"
+    },
+    {
+      "path": "unicode/utf8",
+      "tier": "vendor"
+    },
+    {
+      "path": "unsafe",
+      "tier": "vendor"
+    },
+    {
+      "path": "uuid",
+      "tier": "vendor"
+    },
+    {
+      "path": "weak",
+      "tier": "vendor"
+    }
+  ]
+}
