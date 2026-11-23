@@ -22,8 +22,11 @@ func (fl *funcLower) isBuiltinPrint(e *ast.CallExpr) bool {
 	return false
 }
 
-func (fl *funcLower) printName(e *ast.CallExpr) string {
-	id := e.Fun.(*ast.Ident)
+func (fl *funcLower) builtinName(e *ast.CallExpr) string {
+	id, ok := e.Fun.(*ast.Ident)
+	if !ok {
+		return ""
+	}
 	if obj := fl.info.Uses[id]; obj != nil {
 		if b, ok := obj.(*types.Builtin); ok {
 			return b.Name()
@@ -32,13 +35,24 @@ func (fl *funcLower) printName(e *ast.CallExpr) string {
 	return id.Name
 }
 
+func (fl *funcLower) isBuiltinCall(e *ast.CallExpr) bool {
+	switch fl.builtinName(e) {
+	case "make", "new", "append", "len", "cap", "print", "println":
+		return true
+	}
+	return false
+}
+
+func (fl *funcLower) printName(e *ast.CallExpr) string {
+	return fl.builtinName(e)
+}
+
 // lowerPrint emits runtime.printstring / printint / printnl per 04-runtime-and-abi.md.
 func (fl *funcLower) lowerPrint(e *ast.CallExpr) ([]ir.Stmt, error) {
 	nl := fl.printName(e) == "println"
 	var out []ir.Stmt
 	for i, arg := range e.Args {
 		if i > 0 {
-			// Space between args (Go println/print).
 			t := fl.newTemp(typeString)
 			out = append(out, fl.assignTemp(t, &ir.Instr{Op: ir.OpStringLit, Str: " "}))
 			out = append(out, &ir.ExprStmt{
@@ -82,14 +96,13 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		// print bool as 0/1 via printint
 		stmts = append(stmts, &ir.ExprStmt{
 			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}},
 		})
 		return stmts, nil
 	}
 	if isInteger(ty) {
-		want, err := mapType(ty)
+		want, err := fl.mapType(ty)
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +111,6 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 			return nil, err
 		}
 		if irNumWidth(want) == ir.I64 {
-			// 04 lists only printint (i32). Truncate for M2; document gap.
 			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
 		}
 		stmts = append(stmts, &ir.ExprStmt{
@@ -106,5 +118,109 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 		})
 		return stmts, nil
 	}
-	return nil, fl.errorf(arg, "print of type %s not supported in M1/M2 (need string or int)", ty)
+	return nil, fl.errorf(arg, "print of type %s not supported in M3 (need string or int)", ty)
+}
+
+func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	switch fl.builtinName(e) {
+	case "len":
+		return fl.builtinLenCap(e, ir.OpLen, want)
+	case "cap":
+		return fl.builtinLenCap(e, ir.OpCap, want)
+	case "make":
+		return fl.builtinMake(e, want)
+	case "new":
+		return fl.builtinNew(e, want)
+	case "append":
+		return fl.builtinAppend(e, want)
+	case "print", "println":
+		return nil, nil, fl.errorf(e, "print used as value")
+	default:
+		return nil, nil, fl.errorf(e, "unknown builtin")
+	}
+}
+
+func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) != 1 {
+		return nil, nil, fl.errorf(e, "len/cap wants 1 arg")
+	}
+	arg, stmts, err := fl.expr(e.Args[0], nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = want
+	return &ir.Instr{Op: op, Args: []ir.Expr{arg}}, stmts, nil
+}
+
+func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) < 2 {
+		return nil, nil, fl.errorf(e, "make needs type and length")
+	}
+	resTy := fl.typeOf(e)
+	irt, err := fl.mapType(resTy)
+	if err != nil {
+		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	if want != nil {
+		irt = want
+	}
+	if !isSlice(resTy) {
+		return nil, nil, fl.errorf(e, "make of non-slice not supported in M3")
+	}
+	lenEx, stmts, err := fl.expr(e.Args[1], ir.TypeI32)
+	if err != nil {
+		return nil, nil, err
+	}
+	var capEx ir.Expr
+	if len(e.Args) >= 3 {
+		var cstmts []ir.Stmt
+		capEx, cstmts, err = fl.expr(e.Args[2], ir.TypeI32)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, cstmts...)
+	} else {
+		capEx = lenEx
+	}
+	return &ir.Instr{Op: ir.OpMakeSlice, Type: irt, Args: []ir.Expr{lenEx, capEx}}, stmts, nil
+}
+
+func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) != 1 {
+		return nil, nil, fl.errorf(e, "new wants 1 type arg")
+	}
+	resTy := fl.typeOf(e)
+	irt, err := fl.mapType(resTy)
+	if err != nil {
+		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	if want != nil {
+		irt = want
+	}
+	// literal … Str:"new" → RuntimeOps allocates (1-elem array + fat ptr, or struct).
+	return &ir.Instr{Op: ir.OpLiteral, Type: irt, Str: "new"}, nil, nil
+}
+
+func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) < 1 {
+		return nil, nil, fl.errorf(e, "append needs a slice")
+	}
+	slice, stmts, err := fl.expr(e.Args[0], nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	args := []ir.Expr{slice}
+	for _, a := range e.Args[1:] {
+		ex, st, err := fl.expr(a, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+		args = append(args, ex)
+	}
+	ty := want
+	if ty == nil {
+		ty, _ = fl.mapType(fl.typeOf(e))
+	}
+	return &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: args}, stmts, nil
 }

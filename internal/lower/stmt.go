@@ -84,7 +84,7 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 			if obj == nil {
 				continue
 			}
-			ty, err := mapType(obj.Type())
+			ty, err := fl.mapType(obj.Type())
 			if err != nil {
 				return nil, fl.errorf(name, "%v", err)
 			}
@@ -148,7 +148,7 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				return nil, fl.errorf(s, "%v", err)
 			}
 			rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
-		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) {
+		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {
 			// x = f(...) → single assign from call (no extra temp).
 			name, results, err := fl.resolveCallee(call)
 			if err != nil {
@@ -229,13 +229,64 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		if lhs.Name == "_" {
 			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{rhs}}}}, nil
 		}
+		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
+			return []ir.Stmt{fl.assignVar(v, rhs)}, nil
+		}
+		if obj := fl.info.Uses[lhs]; obj != nil {
+			if g, ok := fl.pkg.globals[obj]; ok {
+				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+					Op:     ir.OpGlobalSet,
+					Global: g.Name,
+					Args:   []ir.Expr{rhs},
+				}}}, nil
+			}
+		}
 		v, err := fl.lookupVar(lhs)
 		if err != nil {
 			return nil, err
 		}
 		return []ir.Stmt{fl.assignVar(v, rhs)}, nil
+	case *ast.StarExpr:
+		ptr, stmts, err := fl.expr(lhs.X, nil)
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{ptr, rhs}}})
+		return stmts, nil
+	case *ast.SelectorExpr:
+		sel := fl.info.Selections[lhs]
+		if sel == nil || sel.Kind() != types.FieldVal {
+			return nil, fl.errorf(lhs, "assignment to non-field selector")
+		}
+		base, stmts, err := fl.expr(lhs.X, nil)
+		if err != nil {
+			return nil, err
+		}
+		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Field: lhs.Sel.Name}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{addr, rhs}}})
+		return stmts, nil
+	case *ast.IndexExpr:
+		base, stmts, err := fl.expr(lhs.X, nil)
+		if err != nil {
+			return nil, err
+		}
+		idx, istmts, err := fl.expr(lhs.Index, ir.TypeI32)
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, istmts...)
+		xt := fl.typeOf(lhs.X)
+		if isSlice(xt) {
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{base, idx, rhs}}})
+			return stmts, nil
+		}
+		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base, idx}, Field: "elem", Str: "elem"}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{addr, rhs}}})
+		return stmts, nil
+	case *ast.ParenExpr:
+		return fl.assignTo(lhs.X, rhs)
 	default:
-		return nil, fl.errorf(lhs, "assignment to %T not supported in M1/M2", lhs)
+		return nil, fl.errorf(lhs, "assignment to %T not supported in M3", lhs)
 	}
 }
 
@@ -256,7 +307,7 @@ func (fl *funcLower) lhsType(lhs ast.Expr) (ir.Type, error) {
 	if t == nil {
 		return nil, fl.errorf(lhs, "no type for LHS")
 	}
-	return mapType(t)
+	return fl.mapType(t)
 }
 
 func (fl *funcLower) exprStmt(s *ast.ExprStmt) ([]ir.Stmt, error) {
@@ -482,7 +533,7 @@ func (fl *funcLower) branchStmt(s *ast.BranchStmt) ([]ir.Stmt, error) {
 
 func (fl *funcLower) incDecStmt(s *ast.IncDecStmt) ([]ir.Stmt, error) {
 	ty := fl.typeOf(s.X)
-	want, err := mapType(ty)
+	want, err := fl.mapType(ty)
 	if err != nil {
 		return nil, fl.errorf(s, "%v", err)
 	}
@@ -554,7 +605,7 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 	var tagType types.Type
 	if s.Tag != nil {
 		tagType = fl.typeOf(s.Tag)
-		want, err := mapType(tagType)
+		want, err := fl.mapType(tagType)
 		if err != nil {
 			return nil, fl.errorf(s.Tag, "%v", err)
 		}
@@ -583,7 +634,7 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 			arm.conds = cc.List
 		} else {
 			for _, c := range cc.List {
-				want, _ := mapType(tagType)
+				want, _ := fl.mapType(tagType)
 				ex, stmts, err := fl.expr(c, want)
 				if err != nil {
 					return nil, err
@@ -740,7 +791,7 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, ex}}
 			}
 		} else {
-			want, _ := mapType(tagType)
+			want, _ := fl.mapType(tagType)
 			eqOp := ir.OpI32Eq
 			if irNumWidth(want) == ir.I64 {
 				eqOp = ir.OpI64Eq

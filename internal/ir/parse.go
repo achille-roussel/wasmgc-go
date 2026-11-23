@@ -1084,6 +1084,22 @@ func (p *parser) parseOpExpr(pos Pos, op Op, lit string) (Expr, error) {
 		inst.Str = p.tok.lit
 		p.next()
 		return inst, nil
+	case OpAddr:
+		// Optional field/elem immediate: "addr X s" or "addr elem a, i" or "addr s".
+		if p.tok.kind == tokIdent {
+			field := p.tok.lit
+			p.next()
+			if looksLikeExpr(p.tok) && !isStmtKeyword(p.tok) {
+				inst.Field = field
+				if field == "elem" {
+					inst.Str = "elem"
+				}
+			} else {
+				// Rewind: the ident was the sole argument.
+				inst.Args = []Expr{&Name{Raw: field, Pos: pos}}
+				return inst, nil
+			}
+		}
 	case OpI32Const, OpI64Const:
 		if p.tok.kind != tokInt && p.tok.kind != tokFloat {
 			return nil, p.errorf(p.tok.pos, "expected integer immediate")

@@ -19,10 +19,57 @@ type pkgLower struct {
 	meta  *meta
 
 	initCount int
+	globals   map[types.Object]*ir.Global // package-level vars
 }
 
 func (l *pkgLower) lower() error {
-	// Collect top-level funcs in source order across files.
+	if l.globals == nil {
+		l.globals = map[types.Object]*ir.Global{}
+	}
+
+	var initStmts []ir.Stmt
+	for _, f := range l.files {
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, name := range vs.Names {
+					if name.Name == "_" {
+						continue
+					}
+					obj := l.info.Defs[name]
+					if obj == nil {
+						continue
+					}
+					ty, err := l.mapType(obj.Type())
+					if err != nil {
+						return l.errorf(name, "%v", err)
+					}
+					gname := l.pkg.Name() + "." + name.Name
+					g := &ir.Global{Name: gname, Typ: ty, Mut: true}
+					l.mod.Globals = append(l.mod.Globals, g)
+					l.globals[obj] = g
+					if vs.Values != nil && i < len(vs.Values) {
+						fl := l.newInitLower()
+						ex, stmts, err := fl.expr(vs.Values[i], ty)
+						if err != nil {
+							return err
+						}
+						initStmts = append(initStmts, stmts...)
+						initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
+							Op:     ir.OpGlobalSet,
+							Global: gname,
+							Args:   []ir.Expr{ex},
+						}})
+					}
+				}
+			}
+		}
+	}
+
 	type fnDecl struct {
 		file *ast.File
 		decl *ast.FuncDecl
@@ -36,21 +83,26 @@ func (l *pkgLower) lower() error {
 			if !ok {
 				continue
 			}
-			if fd.Recv != nil {
-				return l.errorf(fd, "methods not supported in M1/M2")
-			}
 			if fd.Body == nil {
 				// Body-less: asm / intrinsic / wasmimport candidate (design 12).
 				bodyless = append(bodyless, fnDecl{f, fd})
 				continue
 			}
-			if fd.Name.Name == "init" && (fd.Type.Params == nil || len(fd.Type.Params.List) == 0) {
+			if fd.Name.Name == "init" && fd.Recv == nil && (fd.Type.Params == nil || len(fd.Type.Params.List) == 0) {
 				inits = append(inits, fnDecl{f, fd})
 				continue
 			}
 			funcs = append(funcs, fnDecl{f, fd})
 		}
 	}
+
+	if len(initStmts) > 0 {
+		name := l.initName()
+		body := &ir.Seq{Stmts: append(initStmts, &ir.Return{})}
+		l.mod.Funcs = append(l.mod.Funcs, &ir.Func{Name: name, Body: body})
+		l.meta.initOrder = append(l.meta.initOrder, name)
+	}
+
 	for _, id := range inits {
 		name := l.initName()
 		fn, err := l.lowerFunc(id.decl, name)
@@ -61,7 +113,7 @@ func (l *pkgLower) lower() error {
 		l.meta.initOrder = append(l.meta.initOrder, name)
 	}
 	for _, fd := range funcs {
-		name := l.funcName(fd.decl.Name.Name)
+		name := l.funcIRName(fd.decl)
 		if name == "main.main" {
 			l.meta.hasMain = true
 		}
@@ -82,19 +134,38 @@ func (l *pkgLower) lower() error {
 	return nil
 }
 
+func (l *pkgLower) newInitLower() *funcLower {
+	return &funcLower{
+		pkg:    l,
+		fset:   l.fset,
+		info:   l.info,
+		mod:    l.mod,
+		irName: l.pkg.Name() + ".init",
+		vars:   map[types.Object]*ir.Var{},
+		labels: map[string]*labelTargets{},
+	}
+}
+
 func (l *pkgLower) initName() string {
 	n := l.initCount
 	l.initCount++
 	pkg := l.pkg.Name()
-	if n == 0 {
-		// Prefer main.init when only one; still unique with .N for many.
-		return pkg + ".init." + strconv.Itoa(n)
-	}
 	return pkg + ".init." + strconv.Itoa(n)
 }
 
 func (l *pkgLower) funcName(name string) string {
 	return l.pkg.Name() + "." + name
+}
+
+func (l *pkgLower) funcIRName(fd *ast.FuncDecl) string {
+	obj, _ := l.info.Defs[fd.Name].(*types.Func)
+	if obj == nil {
+		return l.funcName(fd.Name.Name)
+	}
+	if fd.Recv != nil {
+		return methodIRName(obj)
+	}
+	return l.funcName(fd.Name.Name)
 }
 
 func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) {
@@ -115,7 +186,34 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	if len(fl.results) == 0 && !endsWithReturn(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
 	}
-	// Prepend named-result and local var defs.
+
+	// Clone by-value struct params/receivers when the callee assigns a field
+	// (docs/design/03): caller must not observe the write.
+	var clones []ir.Stmt
+	for i := 0; i < fl.sig.Params().Len(); i++ {
+		p := fl.sig.Params().At(i)
+		if isPointer(p.Type()) || !isStruct(p.Type()) {
+			continue
+		}
+		if !fl.paramFieldAssigned(p, fd.Body) {
+			continue
+		}
+		clone, err := fl.cloneStruct(fl.vars[p])
+		if err != nil {
+			return nil, err
+		}
+		clones = append(clones, clone...)
+	}
+	if recv := fl.sig.Recv(); recv != nil && !isPointer(recv.Type()) && isStruct(recv.Type()) {
+		if fl.paramFieldAssigned(recv, fd.Body) {
+			clone, err := fl.cloneStruct(fl.vars[recv])
+			if err != nil {
+				return nil, err
+			}
+			clones = append(clones, clone...)
+		}
+	}
+
 	var preamble []ir.Stmt
 	for _, v := range fl.namedResults {
 		preamble = append(preamble, &ir.VarDef{Var: v})
@@ -123,6 +221,7 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
+	preamble = append(preamble, clones...)
 	if len(preamble) > 0 {
 		seq.Stmts = append(preamble, seq.Stmts...)
 	}
@@ -175,9 +274,23 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 		labels: map[string]*labelTargets{},
 	}
 
+	if recv := sig.Recv(); recv != nil {
+		ty, err := l.mapType(recv.Type())
+		if err != nil {
+			return nil, l.errorf(fd, "recv: %v", err)
+		}
+		name := recv.Name()
+		if name == "" || name == "_" {
+			name = "recv"
+		}
+		v := &ir.Var{Name: name, Typ: ty}
+		fl.params = append(fl.params, v)
+		fl.vars[recv] = v
+	}
+
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)
-		ty, err := mapType(p.Type())
+		ty, err := l.mapType(p.Type())
 		if err != nil {
 			return nil, l.errorf(fd, "param %s: %v", p.Name(), err)
 		}
@@ -191,7 +304,7 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 	}
 	for i := 0; i < sig.Results().Len(); i++ {
 		r := sig.Results().At(i)
-		ty, err := mapType(r.Type())
+		ty, err := l.mapType(r.Type())
 		if err != nil {
 			return nil, l.errorf(fd, "result: %v", err)
 		}
@@ -203,6 +316,64 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 		}
 	}
 	return fl, nil
+}
+
+func (fl *funcLower) paramFieldAssigned(obj types.Object, body *ast.BlockStmt) bool {
+	assigned := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if assigned {
+			return false
+		}
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			if fl.assignsFieldOf(lhs, obj) {
+				assigned = true
+				return false
+			}
+		}
+		return true
+	})
+	return assigned
+}
+
+func (fl *funcLower) assignsFieldOf(lhs ast.Expr, obj types.Object) bool {
+	switch lhs := lhs.(type) {
+	case *ast.SelectorExpr:
+		if id, ok := lhs.X.(*ast.Ident); ok {
+			if fl.info.Uses[id] == obj || fl.info.Defs[id] == obj {
+				return true
+			}
+		}
+		return fl.assignsFieldOf(lhs.X, obj)
+	case *ast.ParenExpr:
+		return fl.assignsFieldOf(lhs.X, obj)
+	}
+	return false
+}
+
+func (fl *funcLower) cloneStruct(v *ir.Var) ([]ir.Stmt, error) {
+	name := refTypeName(v.Typ)
+	td := fl.mod.LookupType(name)
+	if td == nil {
+		return nil, fmt.Errorf("clone: unknown type %s", name)
+	}
+	var args []ir.Expr
+	for _, f := range td.Fields {
+		args = append(args, &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: name},
+			Field: f.Name,
+			Args:  []ir.Expr{fl.useVar(v)},
+		})
+	}
+	return []ir.Stmt{fl.assignVar(v, &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: name},
+		Args: args,
+	})}, nil
 }
 
 func endsWithReturn(s *ir.Seq) bool {
