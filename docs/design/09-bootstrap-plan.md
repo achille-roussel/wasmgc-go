@@ -92,13 +92,17 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Exit.** CI runs the four layers from `08-testing.md`. The skip list is reviewed in the milestone's change and does not contain a test that actually passes. Growing the skip list fails CI from this milestone on.
 
-### M11 — SIMD / `archsimd` (conditional)
+### M11 — SIMD / `archsimd` (gated)
 
-**Scope.** Only after Multibyte Array Access (or equivalent `v128` loads from `(array i8)`) is available in the Node versions of `07`, or after Achille picks option B/C/D in `10-open-questions.md` §7. Lower `simd/archsimd` for wasm; vectorize `internal/bytealg`. Design and prototype evidence: `11-simd.md`, `prototypes/simd/`.
+**Decided.** Achille, 2026-11-22 (`10-open-questions.md` §7): defer until the gate below. Not optional scope creep — it is the scheduled place for GC-array SIMD once engines allow it.
+
+**Gate.** Multibyte Array Access (or equivalent `v128` / multibyte loads from `(array i8)`) is available in the Node versions of `07` **without a flag**, the same bar as JSPI. Until then M8–M10 keep scalar `bytealg` generics and do not change `$go.bytes`.
+
+**Scope.** Lower `simd/archsimd` for wasm so `Load*` / `Store*` of `[]T` use GC-array wide loads; vectorize `internal/bytealg` (`IndexByte`, `Equal`, `Compare`, `Count`, `Index`). Design and prototype evidence: `11-simd.md`, `prototypes/simd/`.
 
 **Exit.** `GOEXPERIMENT=simd` user code using `Uint8x16` loads from `[]byte` runs; `bytes.IndexByte` on a 1 MiB buffer beats the scalar generic by a factor recorded in a re-run of the prototype; empty-main size unchanged when `archsimd` is unused.
 
-**Streams.** Codegen (A') for SIMD ops and GC-array loads; stdlib (H) for a `bytealg` overlay or intrinsics. Does not start before M8.
+**Streams.** Codegen (A') for SIMD ops and GC-array loads; stdlib (H) for a `bytealg` overlay or intrinsics. Does not start before M8. Independent of the hand-written WAT escape hatch (`12-wasm-assembly.md`, PR #5): that study may host SIMD over **linear-memory** bridge buffers earlier; GC `[]byte` SIMD still waits on this gate.
 
 ## Workstreams
 

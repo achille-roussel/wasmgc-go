@@ -5,7 +5,10 @@ Hand-written (generated) WAT kernels that measure how expensive it is to run
 versus strategies that reach Wasm's 128-bit SIMD.
 
 This is the measurement behind [`docs/design/11-simd.md`](../../docs/design/11-simd.md).
-It is not the compiler.
+It is not the compiler. Achille deferred GC-array SIMD to gated M11
+(`10-open-questions.md` §7). Linear-memory SIMD kernels via hand-written WAT
+are covered by the separate study [`12-wasm-assembly.md`](../../docs/design/12-wasm-assembly.md)
+([PR #5](https://github.com/achille-roussel/wasmgc-go/pull/5)).
 
 ## Run
 

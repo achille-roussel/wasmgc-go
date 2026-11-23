@@ -11,13 +11,19 @@ today that loads or stores a `v128` from that array at a byte offset. Building
 vectors from sixteen `array.get_u`s is only a mild win. Copying through the
 linear bridge to use `v128.load` does not amortize on a single scan. Storing
 hot buffers as `(array v128)` would unlock ~10× kernels but breaks slicing,
-`unsafe.Slice`, the immutable-header design, and interop. **Defer end-to-end
-`archsimd` and SIMD `bytealg` until Multibyte Array Access ships or a later
-milestone deliberately adopts a dual representation.** Ship scalar generics
-through M8; revisit as M11 (after M8 `fmt`, preferably after Multibyte Array
-Access is in V8/Node).
+`unsafe.Slice`, the immutable-header design, and interop.
 
-The open product choice for Achille is recorded in `10-open-questions.md`.
+**Decision (Achille, 2026-11-22).** Option A: defer end-to-end `archsimd` and
+SIMD `bytealg` on GC arrays to **gated M11**, which starts only when Multibyte
+Array Access (or equivalent) ships in CI's Node without a flag
+(`10-open-questions.md` §7, `09-bootstrap-plan.md`). Keep `$go.bytes` as
+`(array i8)`; ship scalar generics through M8–M10. Dual-rep, bridge-first
+defaults, and lane-build `Load*` are rejected for production.
+
+**Related.** Hand-written WAT (`12-wasm-assembly.md`, [PR #5](https://github.com/achille-roussel/wasmgc-go/pull/5))
+is the likely escape hatch for SIMD kernels over **linear-memory** bridge data
+before Multibyte Array Access exists. That does not unblock GC `[]byte`
+`archsimd.Load*` and is not a dependency of this decision.
 
 ## Primary sources checked
 
@@ -175,7 +181,9 @@ host anyway).
 **When it helps.** `mem` (SIMD after a prior copy) is ~15–17× faster than
 scalar at 1 MiB. Useful if the compiler or runtime already bridged the bytes
 for another reason, or for a multi-pass API that pins a view. Not the default
-`bytealg` path.
+`bytealg` path. Kernels that *start* from bridge memory (host I/O, codecs that
+copy once) are a natural fit for hand-written WAT with `v128.load` on linear
+memory (`12-wasm-assembly.md`); that is orthogonal to M11's GC-array gate.
 
 ### (c) Build `v128` from scalar `array.get` + lane ops
 
@@ -285,15 +293,16 @@ probe or an import stub.
 `06-stdlib-strategy.md` vendors `internal/bytealg` as the **generic** Go
 files via the `GOARCH=wasmgc` re-filter. That remains correct for M8:
 
-1. **M8 path (now):** generic `IndexByte`, `Equal`, `Compare`, `Count`,
+1. **M8–M10 path:** generic `IndexByte`, `Equal`, `Compare`, `Count`,
    `Index` — scalar `array.get_u` loops. No overlay.
-2. **After Multibyte Array Access (proposed M11):** either
+2. **M11 (gated on Multibyte Array Access in CI Node):** either
    - compiler intrinsics for those five functions, or
    - an overlay/`rewrite` of `internal/bytealg` written in `archsimd` once
      `LoadUint8x16` lowers to a single GC-array load.
-3. **Do not** rewrite `bytealg` in `archsimd` before loads are cheap — the
-   prototype shows the lane-build form is not enough to justify the dependency
-   and the `GOEXPERIMENT=simd` story for user code.
+3. **Do not** rewrite GC `bytealg` in `archsimd` before loads are cheap — the
+   prototype shows the lane-build form is not enough. Optional earlier WAT
+   kernels over linear bridge memory are a `12` concern, not a substitute for
+   this gate.
 
 Hashes, hex/base64, UTF-8 validation, and map hashing follow the same gate:
 SIMD helps only after loads from `$go.bytes` are wide.
@@ -320,25 +329,27 @@ SIMD is behind an import of `simd/archsimd` or a use of a vectorized
 |---|---|
 | M0–M7 | None. Scalar memory ops only. |
 | **M8** (`fmt`, vendored `bytealg` generics) | Keep generics. No `archsimd` in the materializer. |
-| M9–M10 | Still scalar unless Multibyte Array Access is already in CI's Node. |
-| **M11 (proposed)** | Enable `GOEXPERIMENT=simd` user code; lower `archsimd` ops; vectorize `bytealg` once GC-array `v128.load` exists **or** accept bridge amortization for specific codecs that already copy. |
+| M9–M10 | Scalar GC `bytealg`. Optional: WAT SIMD over linear bridge only, if `12` lands (`12-wasm-assembly.md`). |
+| **M11 (gated)** | Enable `GOEXPERIMENT=simd` user code; lower `archsimd` ops; vectorize GC `bytealg` once GC-array `v128.load` exists in CI's Node without a flag. |
 
 M8 is the wrong place to pay for this: `fmt` does not need SIMD, and the
 stdlib strategy's first deliverable is correctness under the checker.
 
-## Recommendation
+## Recommendation (adopted)
 
 1. **Feasible now for register-to-register SIMD**, not for `[]byte`-backed
-   `archsimd.Load` / `bytealg`.
+   `archsimd.Load` / GC `bytealg`.
 2. **Do not** change `$go.bytes` to `(array v128)`.
 3. **Do not** make one-shot bridge copying the default kernel path.
-4. **Do** keep scalar generics through M8; file Multibyte Array Access as an
+4. **Do** keep scalar generics through M8–M10; Multibyte Array Access is the
    external dependency; speak up in the CG that Go GC-array languages need it
    (Dart already did).
-5. **Do** plan M11: `archsimd` intrinsics + vector `bytealg` when engines
+5. **Do** run gated M11: `archsimd` intrinsics + vector `bytealg` when engines
    ship the proposal, with a prototype re-run that adds a `v128.load (type
-   $bytes)` cell the day a flagged V8 can run it.
+   $bytes)` cell the day CI's Node can validate it without a flag.
 6. Lane-build and SWAR are fallback curiosities, not the design.
+7. **Do** treat `12-wasm-assembly.md` (PR #5) as the place for SIMD over
+   linear-memory data when a kernel already lives on the bridge — without
+   waiting on M11 and without changing this deferral for GC arrays.
 
-The decision Achille still needs to make (defer vs dual-rep vs bridge-first)
-is in `10-open-questions.md`.
+Recorded as decision 7 in `10-open-questions.md`.
