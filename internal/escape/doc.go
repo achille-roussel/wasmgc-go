@@ -1,13 +1,7 @@
-// Package escape will rewrite non-escaping addresses and spill escaping
-// scalar locals (docs/design/01-architecture.md). Correctness does not
-// depend on this pass: spill lowering is valid for every &.
+// Package escape rewrites non-escaping addresses and spills escaping
+// scalar locals (docs/design/01-architecture.md, 03-type-mapping.md).
 //
-// For M1/M2 this package is a stub: those milestones have no pointers.
+// Correctness does not depend on this pass alone: RuntimeOps can materialize
+// a fat pointer for every remaining addr. Escape deletes spills when the
+// address does not leave the function.
 package escape
-
-import "github.com/achille-roussel/wasmgc-go/internal/ir"
-
-// Analyze is a no-op for M1/M2.
-func Analyze(_ *ir.Module) error {
-	return nil
-}
