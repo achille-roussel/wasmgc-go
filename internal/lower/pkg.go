@@ -41,7 +41,12 @@ func (l *pkgLower) lower() error {
 		gname string
 		val   ast.Expr // nil → emit Go zero value (needed for struct refs)
 	}
+	type multiInit struct {
+		names []*ast.Ident
+		val   ast.Expr
+	}
 	var pending []varInit
+	var pendingMulti []multiInit
 	for _, f := range l.files {
 		for _, d := range f.Decls {
 			gd, ok := d.(*ast.GenDecl)
@@ -50,6 +55,10 @@ func (l *pkgLower) lower() error {
 			}
 			for _, sp := range gd.Specs {
 				vs := sp.(*ast.ValueSpec)
+				multi := len(vs.Names) > 1 && len(vs.Values) == 1
+				if multi {
+					pendingMulti = append(pendingMulti, multiInit{names: vs.Names, val: vs.Values[0]})
+				}
 				for i, name := range vs.Names {
 					if name.Name == "_" {
 						continue
@@ -66,6 +75,10 @@ func (l *pkgLower) lower() error {
 					g := &ir.Global{Name: gname, Typ: ty, Mut: true}
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
+					if multi {
+						// Initialized in pendingMulti (one RHS for all LHS).
+						continue
+					}
 					if vs.Values != nil && i < len(vs.Values) {
 						pending = append(pending, varInit{
 							name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
@@ -107,6 +120,16 @@ func (l *pkgLower) lower() error {
 			Global: vi.gname,
 			Args:   []ir.Expr{ex},
 		}})
+	}
+	for _, mi := range pendingMulti {
+		if l.initLower == nil {
+			l.initLower = l.newInitLower()
+		}
+		stmts, err := l.lowerPkgMultiValueSpec(l.initLower, mi.names, mi.val)
+		if err != nil {
+			return err
+		}
+		initStmts = append(initStmts, stmts...)
 	}
 
 	type fnDecl struct {
@@ -231,6 +254,69 @@ func (l *pkgLower) newInitLower() *funcLower {
 		vars:   map[types.Object]*ir.Var{},
 		labels: map[string]*labelTargets{},
 	}
+}
+
+// lowerPkgMultiValueSpec lowers `var a, b = f()` / `var v, ok = m[k]` (and
+// blank forms like `var _, _ = bal()`) at package scope.
+func (l *pkgLower) lowerPkgMultiValueSpec(fl *funcLower, names []*ast.Ident, rhs ast.Expr) ([]ir.Stmt, error) {
+	lhs := make([]ast.Expr, len(names))
+	for i, n := range names {
+		lhs[i] = n
+	}
+	fake := &ast.AssignStmt{Tok: token.ASSIGN, Lhs: lhs, Rhs: []ast.Expr{rhs}}
+	if ta, ok := rhs.(*ast.TypeAssertExpr); ok {
+		return fl.multiAssignTypeAssert(fake, ta, nil)
+	}
+	if u, ok := rhs.(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.multiAssignRecv(fake, u, nil)
+	}
+	if ix, ok := rhs.(*ast.IndexExpr); ok && isMap(fl.typeOf(ix.X)) {
+		return fl.mapIndexCommaOk(fake, ix, nil)
+	}
+	call, ok := rhs.(*ast.CallExpr)
+	if !ok {
+		return nil, l.errorf(rhs, "multi-value package init requires a call, type assert, or channel receive")
+	}
+	temps, stmts, err := fl.callMaterialize(call, nil)
+	if err != nil {
+		return nil, err
+	}
+	srcGos := fl.callResultGoTypes(call)
+	for i, t := range temps {
+		if i >= len(names) {
+			break
+		}
+		name := names[i]
+		var ex ir.Expr = fl.useTemp(t)
+		if name.Name == "_" {
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			continue
+		}
+		obj := l.info.Defs[name]
+		if obj == nil {
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			continue
+		}
+		var srcGo types.Type
+		if i < len(srcGos) {
+			srcGo = srcGos[i]
+		}
+		dstGo := obj.Type()
+		if isIface(dstGo) && srcGo != nil && !isIface(srcGo) {
+			ex = fl.boxIRToIface(ex, srcGo, dstGo)
+		}
+		g, ok := l.globals[obj]
+		if !ok {
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			continue
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+			Op:     ir.OpGlobalSet,
+			Global: g.Name,
+			Args:   []ir.Expr{ex},
+		}})
+	}
+	return stmts, nil
 }
 
 // needsHeapZero reports whether a package var with no explicit initializer

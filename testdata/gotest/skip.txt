@@ -78,7 +78,6 @@ fixedbugs/bug154.go — wasm validate/compile error
 fixedbugs/bug168.go — wasm validate/compile error
 fixedbugs/bug177.go — compile error: build: load: typecheck
 fixedbugs/bug178.go — compile error: lower: break label L not in scope
-fixedbugs/bug184.go — compile error: lower: multi-value call used in single-value context
 fixedbugs/bug187.go — wasm validate/compile error
 fixedbugs/bug196.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
 fixedbugs/bug201.go — output mismatch
@@ -90,15 +89,13 @@ fixedbugs/bug221.go — compile error: codegen
 fixedbugs/bug227.go — wasm validate/compile error
 fixedbugs/bug236.go — compile error: codegen
 fixedbugs/bug242.go — runtime error
-fixedbugs/bug243.go — compile error: lower: multi-value call used in single-value context
-fixedbugs/bug244.go — compile error: lower: multi-value call used in single-value context
+fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
 fixedbugs/bug257.go — could not import crypto/md5
 fixedbugs/bug258.go — runtime error
 fixedbugs/bug259.go — runtime error
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug262.go — compile error: lower: print of type error not supported in M3 (need string or int)
-fixedbugs/bug264.go — compile error: lower: multi-value call used in single-value context
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
 fixedbugs/bug269.go — compile error: codegen
 fixedbugs/bug271.go — compile error: lower: tuple type not a single value: (int, int)
@@ -128,7 +125,7 @@ fixedbugs/bug370.go — compile error: codegen
 fixedbugs/bug401.go — wasm validate/compile error
 fixedbugs/bug433.go — runtime error
 fixedbugs/bug434.go — runtime error
-fixedbugs/bug436.go — compile error: lower: multi-value call used in single-value context
+fixedbugs/bug436.go — runtime error: package init order (var c = b before var a, b = foo())
 fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug444.go — compile error: lower: untyped nil needs a typed context
@@ -273,7 +270,6 @@ fixedbugs/issue40367.go — failed: build: pipeline: IR verify: br target $goto.
 fixedbugs/issue40629.go — compile error: lower: range over *[40]int not supported
 fixedbugs/issue4085b.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 fixedbugs/issue40917.go — unsupported: unsafe
-fixedbugs/issue4167.go — compile error: lower: multi-value call used in single-value context
 fixedbugs/issue42703.go — runtime error
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3c2b17f60340 stack=[0x3c…
@@ -309,7 +305,6 @@ fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue50671.go — failed: build: pipeline: IR verify: return value 1: have f64, want i64 in main.F pipeline: IR verify: return…
-fixedbugs/issue50672.go — compile error: lower: multi-value call used in single-value context
 fixedbugs/issue51101.go — wasm validate/compile error
 fixedbugs/issue51401.go — compile error: codegen
 fixedbugs/issue51913.go — failed: panic: FAIL
