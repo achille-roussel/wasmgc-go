@@ -232,12 +232,26 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	// AppendFiles from Ensure* may have registered package inits (e.g.
 	// runtime.init for gp/ngo) after Finish already built main.run.
 	lower.LinkPendingInits(mod)
+	// Drop RegisterPoolCleanup calls (no-op) so sync.poolCleanup can die.
+	ir.PruneNoopCalls(mod)
 	// Blank fmt type-switch arms for types never boxed as any in this
 	// program so float/complex strconv paths die before DCE (M8 size).
 	ir.PruneDeadFmtTypeCases(mod)
-	// Drop runtime (and other) funcs not reachable from exports / ref.func
-	// sites so GOROOT import "runtime" cannot keep unused map/select/Frames.
+	// Blank fmt verb arms unused by Print/Println-only programs.
+	ir.PruneDeadFmtVerbs(mod)
+	// Remove write-only package globals (pow10Tab, math tables) and their
+	// init stores, then drop empty inits / unused data.
+	ir.PruneDeadInits(mod)
+	// Drop funcs not reachable from exports / ref.func sites.
 	ir.PruneUnreachable(mod)
+	// Second scrub: DCE may have removed the only global.get of a table.
+	ir.PruneDeadInits(mod)
+	ir.PruneUnreachable(mod)
+	// Pack remaining live const struct tables (e.g. pow10Tab when floats are
+	// printed) after dead-init scrub so we do not keep side-effecting fill
+	// loops for write-only tables.
+	ir.PackConstStructArrays(mod)
+	ir.PruneUnusedData(mod)
 	return mod, nil
 }
 

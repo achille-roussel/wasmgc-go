@@ -203,6 +203,16 @@ func pruneFmtStmt(s Stmt, boxed map[string]bool, typeOfVar map[string]string, li
 	}
 }
 
+func regionStmts(r Region) []Stmt {
+	if r == nil {
+		return nil
+	}
+	if seq, ok := r.(*Seq); ok {
+		return seq.Stmts
+	}
+	return []Stmt{r}
+}
+
 func noteTypeEqAssign(s *Assign, typeOfVar map[string]string) {
 	if len(s.Lhs) != 1 {
 		return

@@ -1,0 +1,6 @@
+# Hard ceilings (names off). Fail CI if a build exceeds the budget.
+# Headroom is small so regressions are caught; stretch targets are lower.
+empty_main	256
+println	1100
+m8_fmt_hello	72000
+m8_fmt_map	96000

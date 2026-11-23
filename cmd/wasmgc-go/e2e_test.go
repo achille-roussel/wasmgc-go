@@ -680,7 +680,8 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	runM8(t, "m8_fmt_hello", "hello\n", 128*1024)
+	// Target: under 80 KiB names off (stretch 64 KiB; hard ceiling still 128 KiB).
+	runM8(t, "m8_fmt_hello", "hello\n", 80*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {

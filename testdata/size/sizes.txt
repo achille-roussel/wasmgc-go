@@ -1,0 +1,6 @@
+# Recorded names-off Wasm sizes (bytes). Update when a change moves size by
+# more than ±64 B (TestSizeCorpus slack). Budgets are the hard CI ceilings.
+empty_main	208
+println	1031
+m8_fmt_hello	68300
+m8_fmt_map	91500
