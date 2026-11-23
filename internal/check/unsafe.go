@@ -8,12 +8,34 @@ import (
 	"strings"
 )
 
+// Severity classifies a diagnostic.
+type Severity int
+
+const (
+	// SeverityError fails the build.
+	SeverityError Severity = iota
+	// SeverityWarning is reported but does not fail unless VetFail is set.
+	SeverityWarning
+)
+
+// Kind classifies the diagnostic family for formatting.
+type Kind string
+
+const (
+	KindUnsafe     Kind = "unsafe"
+	KindIntConvert Kind = "intconvert"
+)
+
 // Diagnostic is a pre-IR check finding.
 type Diagnostic struct {
 	Pos        token.Position
+	Severity   Severity
+	Kind       Kind
 	Message    string
 	Expression string
 }
+
+func (d Diagnostic) Error() string { return d.String() }
 
 func (d Diagnostic) String() string {
 	var b strings.Builder
@@ -21,6 +43,10 @@ func (d Diagnostic) String() string {
 		fmt.Fprintf(&b, "%s: ", d.Pos)
 	}
 	b.WriteString(d.Message)
+	if d.Kind == KindIntConvert {
+		return b.String()
+	}
+	// Default / unsafe format from docs/design/05-unsafe-and-reflect.md.
 	if d.Expression != "" {
 		fmt.Fprintf(&b, "\n    expression: %s", d.Expression)
 	}

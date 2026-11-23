@@ -1,4 +1,6 @@
-// Package load owns build-tag re-filtering and (later) go list integration.
+// Package load resolves Go packages for wasmgc-go: go list inventory,
+// wasmgc build-tag re-filtering, parsing, and type-checking with
+// types.StdSizes{WordSize: 4, MaxAlign: 4}.
 package load
 
 import (
