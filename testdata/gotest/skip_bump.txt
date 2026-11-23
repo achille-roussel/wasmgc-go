@@ -1,1 +1,0 @@
-M10 initial $GOROOT/test skip inventory for the v1 runner (reviewed with the suites milestone).

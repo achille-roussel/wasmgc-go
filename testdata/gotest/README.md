@@ -62,3 +62,7 @@ Per-package skips (including historical StructOf entries) live under `stdlib/`.
 | `WASMGC_STDLIB_TEST=1` | Force full packages.txt stdlib suite even under `-short` |
 | `WASMGC_UPDATE_SKIP=1` | Allow `-update-skip` to rewrite `skip.txt` |
 | `WASMGC_SKIP_BASE` | Git ref for skip growth comparison (default `origin/main`) |
+
+## Skip categories
+
+Post-M10 root-cause breakdown and burn-down order: [`docs/gotest-skip-categories.md`](../../docs/gotest-skip-categories.md).
