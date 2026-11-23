@@ -473,6 +473,18 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 	if len(e.Args) != 1 {
 		return nil, nil, fl.errorf(e, "len/cap wants 1 arg")
 	}
+	argTy := fl.typeOf(e.Args[0])
+	// [N]T and *[N]T: len/cap is the constant N. For *[N]T, do not OpLen the
+	// (possibly nil) pointer — evaluate the arg for side effects only.
+	if n, ok := arrayRangeLen(argTy); ok {
+		_, stmts, err := fl.expr(e.Args[0], nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = want
+		_ = op
+		return fl.i32const(n), stmts, nil
+	}
 	arg, stmts, err := fl.expr(e.Args[0], nil)
 	if err != nil {
 		return nil, nil, err

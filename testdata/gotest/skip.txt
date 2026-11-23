@@ -133,7 +133,6 @@ fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug444.go — compile error: lower: untyped nil needs a typed context
 fixedbugs/bug446.go — failed: panic: dummy1 != 1
-fixedbugs/bug454.go — compile error: lower: range over *[10]int not supported
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/bug483.go — compile error: codegen
@@ -368,7 +367,6 @@ fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue71857.go — unsupported: unsafe
 fixedbugs/issue71932.go — compile error: codegen
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
-fixedbugs/issue72844.go — compile error: lower: range over *[4]int not supported
 fixedbugs/issue72860.go — runtime error
 fixedbugs/issue73476.go — output mismatch
 fixedbugs/issue73748a.go — could not import context

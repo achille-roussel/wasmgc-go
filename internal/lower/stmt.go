@@ -978,6 +978,11 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	switch u := u.(type) {
 	case *types.Slice, *types.Array:
 		// ok
+	case *types.Pointer:
+		// for range over *[N]T — same IR as [N]T (shared array ref).
+		if _, ok := types.Unalias(u.Elem()).Underlying().(*types.Array); !ok {
+			return nil, fl.errorf(s.X, "range over %s not supported", xType)
+		}
 	case *types.Map:
 		return fl.rangeMapStmt(s, goLabel)
 	case *types.Chan:
@@ -1008,9 +1013,14 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	xv := fl.newVar("rng", xIR)
 	out = append(out, fl.assignVar(xv, x))
 
-	lenEx := &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(xv)}}
+	// [N]T and *[N]T: length is N even when the pointer is nil (Go spec).
+	// OpLen on a null array ref would trap; use the type's constant size.
 	lenV := fl.newVar("rlen", ir.TypeI32)
-	out = append(out, fl.assignVar(lenV, lenEx))
+	if n, ok := arrayRangeLen(xType); ok {
+		out = append(out, fl.assignVar(lenV, fl.i32const(n)))
+	} else {
+		out = append(out, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(xv)}}))
+	}
 
 	i := fl.newVar("ri", ir.TypeI32)
 	out = append(out, fl.assignVar(i, fl.i32const(0)))
