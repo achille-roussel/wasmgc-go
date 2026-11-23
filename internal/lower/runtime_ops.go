@@ -972,15 +972,13 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	if in.Op == ir.OpCap {
 		field = "cap"
 	}
-	// Determine type from arg
-	var ty ir.Type = &ir.Ref{Named: "$go.slice.i32"}
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Var != nil && nm.Var.Typ != nil {
-			ty = nm.Var.Typ
-		}
-		if nm.Temp != nil && nm.Temp.Typ != nil {
-			ty = nm.Temp.Typ
-		}
+	// Determine type from arg (var/temp/global — package []T uses global.get).
+	ty := lenCapArgType(rt.mod, in.Args[0])
+	if ty == nil {
+		ty = lenCapArgType(rt.mod, arg)
+	}
+	if ty == nil {
+		ty = &ir.Ref{Named: "$go.slice.i32"}
 	}
 	if r, ok := ty.(*ir.Ref); ok && r.Named == "$go.string" {
 		if in.Op == ir.OpCap {
@@ -1027,6 +1025,28 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		Rhs: &ir.Instr{Op: ir.OpStructGet, Type: ty, Field: field, Args: []ir.Expr{arg}},
 	})
 	return pre, nil
+}
+
+func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
+	switch e := e.(type) {
+	case *ir.Name:
+		if e.Var != nil && e.Var.Typ != nil {
+			return e.Var.Typ
+		}
+		if e.Temp != nil && e.Temp.Typ != nil {
+			return e.Temp.Typ
+		}
+	case *ir.Instr:
+		if e.Op == ir.OpGlobalGet && mod != nil {
+			if g := mod.LookupGlobal(e.Global); g != nil && g.Typ != nil {
+				return g.Typ
+			}
+		}
+		if e.Type != nil {
+			return e.Type
+		}
+	}
+	return nil
 }
 
 func (rt *runtimeLower) expandStringGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {

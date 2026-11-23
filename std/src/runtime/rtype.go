@@ -1,0 +1,131 @@
+package runtime
+
+import "unsafe"
+
+// Rtype is the Go view of $go.type (docs/design/03). Field names match the
+// Wasm layout; the concrete Wasm typedef is the prelude's $go.type (aliased).
+// name/extra are unsafe.Pointer stand-ins for (ref null $go.string) /
+// (ref null $go.object) — read them only via the Reflect* helpers below.
+type Rtype struct {
+	id    int32
+	kind  int32
+	name  unsafe.Pointer
+	extra unsafe.Pointer
+}
+
+// Kind returns the abi/reflect kind discriminant stored on the descriptor.
+func (t *Rtype) Kind() int32 {
+	if t == nil {
+		return 0
+	}
+	return t.kind
+}
+
+// ID returns the dense descriptor id.
+func (t *Rtype) ID() int32 {
+	if t == nil {
+		return 0
+	}
+	return t.id
+}
+
+// ReflectType returns the concrete type descriptor of a non-nil interface.
+// Body-less: desc fills the IR (iface.itab.type).
+func ReflectType(i any) *Rtype
+
+// ReflectData returns the interface data word (anyref).
+// Body-less: desc fills the IR (iface.data).
+func ReflectData(i any) unsafe.Pointer
+
+// ReflectTypeName returns the descriptor name, or "" when null.
+// Body-less: desc fills the IR.
+func ReflectTypeName(t *Rtype) string
+
+// ReflectExtra returns the kind-specific $extra object (may be nil).
+// Body-less: desc fills the IR.
+func ReflectExtra(t *Rtype) unsafe.Pointer
+
+// ReflectCallGetField calls $go.extra.struct.getField(data, i) → anyref.
+// Body-less: desc fills when struct extras exist.
+func ReflectCallGetField(extra unsafe.Pointer, data unsafe.Pointer, i int) unsafe.Pointer
+
+// ReflectCallIndex calls $go.extra.slice.index(data, i) → anyref.
+func ReflectCallIndex(extra unsafe.Pointer, data unsafe.Pointer, i int) unsafe.Pointer
+
+// ReflectCallLen calls $go.extra.slice.len(data) → i32.
+func ReflectCallLen(extra unsafe.Pointer, data unsafe.Pointer) int
+
+// ReflectString unboxes a string data word to a Go string.
+// Body-less: desc fills (ref.cast to $go.string).
+func ReflectString(data unsafe.Pointer) string
+
+// ReflectUnboxI32 reads $go.box.i32.v (bool/int/uint family).
+func ReflectUnboxI32(data unsafe.Pointer) int32
+
+// ReflectUnboxI64 reads $go.box.i64.v.
+func ReflectUnboxI64(data unsafe.Pointer) int64
+
+// ReflectUnboxF32 reads $go.box.f32.v.
+func ReflectUnboxF32(data unsafe.Pointer) float32
+
+// ReflectUnboxF64 reads $go.box.f64.v.
+func ReflectUnboxF64(data unsafe.Pointer) float64
+
+// ReflectMapLen returns len of a map whose data word is an hmap ref.
+// Body requires hmap from map.go — EnsureReflect typechecks them together.
+func ReflectMapLen(data unsafe.Pointer) int {
+	if data == nil {
+		return 0
+	}
+	h := (*hmap)(data)
+	if h == nil {
+		return 0
+	}
+	return int(h.used)
+}
+
+// ReflectMapPairs returns snapshot key/value slices for map ranging (fmtsort).
+func ReflectMapPairs(data unsafe.Pointer) (keys, vals []any) {
+	if data == nil {
+		return nil, nil
+	}
+	h := (*hmap)(data)
+	if h == nil || h.ctrl == nil {
+		return nil, nil
+	}
+	n := int(h.used)
+	keys = make([]any, 0, n)
+	vals = make([]any, 0, n)
+	for i := 0; i < len(h.ctrl); i++ {
+		if h.ctrl[i] == ctrlFull {
+			keys = append(keys, h.keys[i])
+			vals = append(vals, h.vals[i])
+		}
+	}
+	return keys, vals
+}
+
+// ReflectIface returns a non-nil interface from a type descriptor and data word.
+// Body-less: desc builds $go.iface{itab-for-any, data}.
+func ReflectIface(typ *Rtype, data unsafe.Pointer) any
+
+// ReflectStructNumField reads $go.extra.struct.numField.
+func ReflectStructNumField(extra unsafe.Pointer) int
+
+// ReflectStructFieldType calls extra.fieldType(i).
+func ReflectStructFieldType(extra unsafe.Pointer, i int) *Rtype
+
+// ReflectStructFieldName calls extra.fieldName(i).
+func ReflectStructFieldName(extra unsafe.Pointer, i int) string
+
+// ReflectSliceElem reads $go.extra.slice.elem.
+func ReflectSliceElem(extra unsafe.Pointer) *Rtype
+
+// ReflectPtrElem reads $go.extra.ptr.elem.
+func ReflectPtrElem(extra unsafe.Pointer) *Rtype
+
+// ReflectMapKey reads $go.extra.map.key.
+func ReflectMapKey(extra unsafe.Pointer) *Rtype
+
+// ReflectMapElem reads $go.extra.map.elem.
+func ReflectMapElem(extra unsafe.Pointer) *Rtype

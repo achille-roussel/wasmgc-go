@@ -121,6 +121,23 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				ex, err := fl.constVal(c.Val(), ty)
 				return ex, nil, err
 			}
+			if _, ok := obj.(*types.Var); ok {
+				if g := fl.lookupGlobal(e.Sel); g != nil {
+					return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
+				}
+				// Cross-package var: Qual.Name → pkg.Name global.
+				if id, ok := e.X.(*ast.Ident); ok {
+					if pn, ok := fl.info.Uses[id].(*types.PkgName); ok && pn.Imported() != nil {
+						gname := pn.Imported().Name() + "." + e.Sel.Name
+						if g := fl.pkg.mod.LookupGlobal(gname); g != nil {
+							return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
+						}
+						// Global may be declared when the package is lowered;
+						// emit the qualified name anyway.
+						return &ir.Instr{Op: ir.OpGlobalGet, Global: gname}, nil, nil
+					}
+				}
+			}
 		}
 		return nil, nil, fl.errorf(e, "unsupported selector")
 	}
@@ -305,6 +322,16 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	}
 }
 
+// structLitField lowers a composite-literal field value, boxing into an
+// interface when the field type is an interface.
+func (fl *funcLower) structLitField(val ast.Expr, fieldTy types.Type) (ir.Expr, []ir.Stmt, error) {
+	if isIface(fieldTy) && !isIface(fl.typeOf(val)) && !isNilIdent(val) {
+		return fl.convertToIface(val, fl.typeOf(val), fieldTy, typeIface)
+	}
+	ft, _ := fl.mapType(fieldTy)
+	return fl.expr(val, ft)
+}
+
 func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Type) (ir.Expr, []ir.Stmt, error) {
 	n := st.NumFields()
 	vals := make([]ir.Expr, n)
@@ -342,8 +369,7 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 			if idx < 0 {
 				return nil, nil, fl.errorf(kv.Key, "unknown field %s", name)
 			}
-			ft, _ := fl.mapType(st.Field(idx).Type())
-			ex, stmts2, err := fl.expr(kv.Value, ft)
+			ex, stmts2, err := fl.structLitField(kv.Value, st.Field(idx).Type())
 			if err != nil {
 				return nil, nil, err
 			}
@@ -352,8 +378,7 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 		}
 	} else {
 		for i, el := range e.Elts {
-			ft, _ := fl.mapType(st.Field(i).Type())
-			ex, stmts2, err := fl.expr(el, ft)
+			ex, stmts2, err := fl.structLitField(el, st.Field(i).Type())
 			if err != nil {
 				return nil, nil, err
 			}

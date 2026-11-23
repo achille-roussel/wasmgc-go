@@ -333,7 +333,41 @@ func (g *gen) lookupIface(key string) *types.Interface {
 }
 
 func (g *gen) emitAll() error {
-	// Assign dense ids.
+	// Assign dense ids and fill kind/name; extras may discover more types.
+	for {
+		keys := make([]string, 0, len(g.types))
+		for k := range g.types {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		before := len(keys)
+		for _, k := range keys {
+			tr := g.types[k]
+			if tr.id < 0 {
+				tr.id = g.nextID
+				g.nextID++
+			}
+			if tr.goType != nil {
+				tr.kind = kindOf(tr.goType)
+				if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
+					tr.name = n.Obj().Name()
+				} else {
+					tr.name = tr.goType.String()
+				}
+				tr.comparable = types.Comparable(tr.goType)
+			} else if tr.kind == 0 {
+				tr.kind, tr.name, tr.comparable = kindFromKey(k)
+			}
+		}
+		// Discover extras' dependent types without emitting globals yet.
+		for _, k := range keys {
+			tr := g.types[k]
+			g.discoverExtraDeps(tr)
+		}
+		if len(g.types) == before {
+			break
+		}
+	}
 	keys := make([]string, 0, len(g.types))
 	for k := range g.types {
 		keys = append(keys, k)
@@ -341,23 +375,15 @@ func (g *gen) emitAll() error {
 	sortStrings(keys)
 	for _, k := range keys {
 		tr := g.types[k]
-		if tr.id < 0 {
-			tr.id = g.nextID
-			g.nextID++
-		}
-		if tr.goType != nil {
-			tr.kind = kindOf(tr.goType)
-			tr.name = tr.goType.String()
-			tr.comparable = types.Comparable(tr.goType)
-		} else {
-			tr.kind, tr.name, tr.comparable = kindFromKey(k)
-		}
 		if err := g.emitTypeGlobal(tr); err != nil {
 			return err
 		}
 		if err := g.emitEqualFunc(tr); err != nil {
 			return err
 		}
+	}
+	if err := g.fillReflectHelpers(); err != nil {
+		return err
 	}
 	if err := g.emitDispatchEq(); err != nil {
 		return err
@@ -399,16 +425,42 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 	if g.mod.LookupGlobal(tr.global) != nil {
 		return nil
 	}
-	// Minimal descriptor: id, kind, name=null, extra=null.
-	// Per-type equal lives in $go.dispatchEq (keeps $go.type at 4 fields).
+	// Slice/map/pointer extras embed global.get of element descriptors in their
+	// init, so those deps must appear earlier in the globals list.
+	switch tr.kind {
+	case KindSlice, KindArray, KindPointer:
+		if ek, _ := g.elemOf(tr); ek != "" {
+			if dep := g.types[ek]; dep != nil {
+				if err := g.emitTypeGlobal(dep); err != nil {
+					return err
+				}
+			}
+		}
+	case KindMap:
+		if tr.goType != nil {
+			if m, ok := tr.goType.Underlying().(*types.Map); ok {
+				for _, t := range []types.Type{m.Key(), m.Elem()} {
+					if dep := g.types[TypeKey(t)]; dep != nil {
+						if err := g.emitTypeGlobal(dep); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	// Keep $go.type at 4 fields (empty_main size budget). Heavy metadata in $extra.
+	// Extra structs subtype $go.object — pass them directly (no ref.cast: Wasm
+	// constant initializers disallow cast).
+	extra := g.emitTypeExtra(tr)
 	init := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.type"},
 		Args: []ir.Expr{
 			&ir.Const{Op: ir.OpI32Const, I64: int64(tr.id)},
 			&ir.Const{Op: ir.OpI32Const, I64: int64(tr.kind)},
-			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.string"}},
-			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}},
+			g.nameExpr(tr),
+			extra,
 		},
 	}
 	g.mod.Globals = append(g.mod.Globals, &ir.Global{
@@ -418,6 +470,51 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 		Init: init,
 	})
 	return nil
+}
+
+// discoverExtraDeps registers type keys that extras will need, without emitting.
+func (g *gen) discoverExtraDeps(tr *typeRec) {
+	if tr.goType == nil {
+		return
+	}
+	switch tr.kind {
+	case KindStruct:
+		st, _ := g.structShape(tr)
+		if st == nil {
+			return
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			if isZeroSizeType(f.Type()) {
+				continue
+			}
+			fk := TypeKey(f.Type())
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = f.Type()
+			}
+		}
+	case KindSlice, KindArray, KindPointer:
+		ek, et := g.elemOf(tr)
+		if ek != "" {
+			g.needTypeKey(ek)
+			if t := g.types[ek]; t != nil && t.goType == nil {
+				t.goType = et
+			}
+		}
+	case KindMap:
+		if m, ok := tr.goType.Underlying().(*types.Map); ok {
+			kk, ek := TypeKey(m.Key()), TypeKey(m.Elem())
+			g.needTypeKey(kk)
+			g.needTypeKey(ek)
+			if t := g.types[kk]; t != nil && t.goType == nil {
+				t.goType = m.Key()
+			}
+			if t := g.types[ek]; t != nil && t.goType == nil {
+				t.goType = m.Elem()
+			}
+		}
+	}
 }
 
 func (g *gen) emitEqualFunc(tr *typeRec) error {
@@ -1123,6 +1220,8 @@ func runtimeStructAliasName(t *types.Named) string {
 		return "$go.semaRoot"
 	case "semaEntry":
 		return "$go.semaEntry"
+	case "Rtype":
+		return "$go.type"
 	default:
 		return ""
 	}

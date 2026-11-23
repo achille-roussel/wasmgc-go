@@ -77,6 +77,47 @@ func (l *pkgLower) mapChan(t *types.Chan) (ir.Type, error) {
 
 // ensureMapBaseTypes interns $go.hmap / $go.mapIter with the field layout of
 // runtime.hmap / mapIter so PackageHigh and AppendFiles agree.
+// ensureTypeDescLayout interns $go.type with the prelude field types (name is
+// ref null $go.string, not any). Called when lowering runtime.Rtype before
+// desc.Populate so AppendFiles cannot poison the descriptor layout.
+func (l *pkgLower) ensureTypeDescLayout() {
+	if l.mod.LookupType("$go.object") == nil {
+		l.mod.InternType(&ir.TypeDef{Name: "$go.object", Kind: ir.TypeStruct})
+	}
+	if l.mod.LookupType("$go.bytes") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name: "$go.bytes", Kind: ir.TypeArray, Elem: ir.TypeI8, ElemMut: true,
+		})
+	}
+	if l.mod.LookupType("$go.string") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.string",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "data", Type: &ir.Ref{Named: "$go.bytes"}},
+				{Name: "off", Type: ir.TypeI32},
+				{Name: "len", Type: ir.TypeI32},
+			},
+		})
+	}
+	fields := []ir.Field{
+		{Name: "id", Type: ir.TypeI32},
+		{Name: "kind", Type: ir.TypeI32},
+		{Name: "name", Type: &ir.Ref{Null: true, Named: "$go.string"}},
+		{Name: "extra", Type: &ir.Ref{Null: true, Named: "$go.object"}},
+	}
+	if td := l.mod.LookupType("$go.type"); td != nil {
+		if len(td.Fields) == 0 {
+			td.Fields = fields
+		}
+		return
+	}
+	l.mod.InternType(&ir.TypeDef{
+		Name: "$go.type", Kind: ir.TypeStruct, Super: "$go.object", Fields: fields,
+	})
+}
+
 func (l *pkgLower) ensureMapBaseTypes() {
 	if l.mod.LookupType("$go.hmap") != nil && len(l.mod.LookupType("$go.hmap").Fields) > 0 {
 		return
@@ -393,6 +434,12 @@ func (l *pkgLower) mapNamedStruct(t *types.Named) (ir.Type, error) {
 		// for hmap/mapIter used to intern chan/select/sema types into every
 		// map-only module (~type-section bloat).
 		switch alias {
+		case "$go.type":
+			// Prelude layout owned by desc (name=$go.string, extra=$go.object).
+			// Do not fill from Go Rtype — unsafe.Pointer fields become any and
+			// break ReflectTypeName / descriptor inits.
+			l.ensureTypeDescLayout()
+			return &ir.Ref{Null: true, Named: "$go.type"}, nil
 		case "$go.hmap", "$go.mapIter":
 			l.ensureMapBaseTypes()
 		case "$go.g", "$go.panicObj":
@@ -551,6 +598,8 @@ func runtimeStructAlias(t *types.Named) string {
 		return "$go.hmap"
 	case "mapIter":
 		return "$go.mapIter"
+	case "Rtype":
+		return "$go.type"
 	}
 	return ""
 }

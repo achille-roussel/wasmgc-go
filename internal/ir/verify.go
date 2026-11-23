@@ -324,7 +324,11 @@ func (v *verifier) stmt(s Stmt) {
 				v.temps[d.Temp.Name] = d.Temp
 			} else if d.Var != nil {
 				if want := d.Var.Typ; got != nil && want != nil && !typesCompatible(want, got) {
-					v.errorf(d.Pos, "cannot assign %s to var %s of type %s", got, d.Var.Name, want)
+					fn := "?"
+					if v.fn != nil {
+						fn = v.fn.Name
+					}
+					v.errorf(d.Pos, "cannot assign %s to var %s of type %s in %s", got, d.Var.Name, want, fn)
 				}
 			} else if strings.HasPrefix(d.Name, "%") {
 				t := &Temp{Name: d.Name, Typ: got, Def: s, Pos: d.Pos}
@@ -461,7 +465,11 @@ func (v *verifier) exprTypes(e Expr) []Type {
 	case *Name:
 		if e.Temp != nil {
 			if _, ok := v.temps[e.Temp.Name]; !ok {
-				v.errorf(e.Pos, "temp %s used outside its defining region", e.Temp.Name)
+				fn := "?"
+				if v.fn != nil {
+					fn = v.fn.Name
+				}
+				v.errorf(e.Pos, "temp %s used outside its defining region in %s", e.Temp.Name, fn)
 			}
 			return []Type{e.Temp.Typ}
 		}

@@ -285,7 +285,11 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 				}
 			}
 		}
-		// ref.eq for comparable pointer / string refs
+		// string == / != → runtime.stringeq (not ref.eq / i32.ne).
+		if isString(xt) || isString(yt) {
+			return fl.stringCompare(e, e.Op)
+		}
+		// ref.eq for comparable pointer refs
 		if xt != nil {
 			if irt, err := fl.mapType(xt); err == nil {
 				if r, ok := irt.(*ir.Ref); ok && r.Named != "" && r.Named != "$go.string" {
@@ -364,6 +368,23 @@ func (fl *funcLower) stringConcat(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error)
 	}
 	stmts := append(xstmts, ystmts...)
 	return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{x, y}}, stmts, nil
+}
+
+func (fl *funcLower) stringCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	x, xstmts, err := fl.expr(e.X, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	eq := &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{x, y}}
+	if op == token.NEQ {
+		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
+	}
+	return eq, stmts, nil
 }
 
 func (fl *funcLower) binaryOp(op token.Token, goType types.Type) (ir.Op, error) {
@@ -768,6 +789,17 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if ir.TypesEqual(dstIR, srcIR) {
 		return x, stmts, nil
 	}
+	// unsafe.Pointer ↔ *T / ref: Wasm GC has no integer address; this is ref.cast
+	// (docs/design/05-unsafe-and-reflect.md).
+	if isUnsafePointer(src) || isUnsafePointer(dst) {
+		if isRefIR(dstIR) {
+			return &ir.Instr{Op: ir.OpRefCast, Type: dstIR, Args: []ir.Expr{x}}, stmts, nil
+		}
+		if isRefIR(srcIR) {
+			anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+			return &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}}, stmts, nil
+		}
+	}
 	conv, err := numericConv(srcIR, dstIR, isUnsigned(src), isUnsigned(dst))
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
@@ -776,6 +808,19 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		return x, stmts, nil
 	}
 	return &ir.Instr{Op: conv, Args: []ir.Expr{x}}, stmts, nil
+}
+
+func isUnsafePointer(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := types.Unalias(t).Underlying().(*types.Basic)
+	return ok && b.Kind() == types.UnsafePointer
+}
+
+func isRefIR(t ir.Type) bool {
+	_, ok := t.(*ir.Ref)
+	return ok
 }
 
 func (fl *funcLower) refCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {

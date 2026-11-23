@@ -73,8 +73,15 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 
 func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 	gd, ok := s.Decl.(*ast.GenDecl)
-	if !ok || gd.Tok != token.VAR {
-		return nil, fl.errorf(s, "only var declarations supported in functions")
+	if !ok {
+		return nil, fl.errorf(s, "only var/const declarations supported in functions")
+	}
+	// Local consts are compile-time; Idents resolve via types.Info.Uses.
+	if gd.Tok == token.CONST {
+		return nil, nil
+	}
+	if gd.Tok != token.VAR {
+		return nil, fl.errorf(s, "only var/const declarations supported in functions")
 	}
 	var out []ir.Stmt
 	for _, sp := range gd.Specs {
