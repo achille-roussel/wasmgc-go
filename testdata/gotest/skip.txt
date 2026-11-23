@@ -69,7 +69,6 @@ fixedbugs/bug058.go — failed: panic: assignment to entry in nil map
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — compile error: codegen
-fixedbugs/bug148.go — compile error: lower: print used as value
 fixedbugs/bug154.go — wasm validate/compile error
 fixedbugs/bug168.go — wasm validate/compile error
 fixedbugs/bug177.go — compile error: build: load: typecheck
@@ -330,7 +329,6 @@ fixedbugs/issue68227.go — wasm validate/compile error
 fixedbugs/issue68322.go — runtime error
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
-fixedbugs/issue6866.go — compile error: lower: print used as value
 fixedbugs/issue68816.go — runtime error
 fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
