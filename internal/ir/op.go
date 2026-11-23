@@ -439,8 +439,13 @@ func OpArity(op Op) int {
 		return 3
 	case OpSliceSlice: // s, lo, hi [, hiCap]
 		return -1
-	case OpCall, OpCallRef, OpStructNew, OpArrayNew, OpArrayNewFixed, OpArrayNewData,
-		OpArrayNewDefault, OpStructNewDefault, OpArrayCopy, OpSliceAppend,
+	case OpArrayNewData, OpStructNewDefault:
+		// Immediates only (type, and data segment for array.new_data).
+		return 0
+	case OpArrayNewDefault:
+		return 1 // length
+	case OpCall, OpCallRef, OpStructNew, OpArrayNew, OpArrayNewFixed,
+		OpArrayCopy, OpSliceAppend,
 		OpMapMake, OpMapGet, OpChanMake, OpChanRecv, OpSelect,
 		OpIfaceMake, OpIfaceCall, OpIfaceAssert, OpLiteral, OpMemoryCopy, OpMemoryFill:
 		return -1

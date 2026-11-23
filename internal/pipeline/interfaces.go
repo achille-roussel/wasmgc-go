@@ -8,7 +8,8 @@ import (
 )
 
 // Lowerer turns a type-checked program into IR.
-// Assumed real API (stream D): lower.Package(pkgs, main) (*ir.Module, error).
+// Real API (stream D): lower.Package(pkgs, main) (*ir.Module, error).
+// The module must be Low and export "run".
 type Lowerer interface {
 	Package(pkgs []*load.Package, main *load.Package) (*ir.Module, error)
 }

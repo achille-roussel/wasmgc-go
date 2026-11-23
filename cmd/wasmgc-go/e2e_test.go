@@ -13,25 +13,71 @@ import (
 
 // TestM1EmptyMainE2E is the M1 exit gate: wasmgc-go run of empty main exits 0,
 // the module is under 2048 bytes with names off, and dump-ir matches the golden.
-//
-// Skip until stream D (internal/lower) is wired in internal/pipeline/wire.go.
-// Codegen (A') and stdlib (H) are already real. When D lands, replace
-// stubLowerer with a lower.Package adapter so pipeline.Default.Real() becomes
-// true; this test then runs without further changes.
 func TestM1EmptyMainE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
-		t.Skip("M1 e2e gated on real lowerer: update internal/pipeline/wire.go when stream D lands (see pipeline/doc.go)")
+		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
 	runEmptyMainM1(t)
 }
 
-// TestM1EmptyMainStubLower exercises the driver with the stub lowerer so CI
-// covers load → check → (stub)lower → codegen → node while D is absent.
-func TestM1EmptyMainStubLower(t *testing.T) {
-	if pipeline.Default.Real() {
-		t.Skip("real lowerer wired; covered by TestM1EmptyMainE2E")
+// TestM2PrintlnE2E is the M2 hello gate: println("hello, world") under node.
+func TestM2PrintlnE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
-	runEmptyMainM1(t)
+	runM2(t, "println", "hello, world\n", 8192)
+}
+
+// TestM2FibE2E prints fib(20) → 6765 with no extra NUL.
+func TestM2FibE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "fib", "6765\n", 0)
+}
+
+func runM2(t *testing.T, name, wantStdout string, maxSize int) {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := buildDriver(t)
+	if maxSize > 0 {
+		wasmPath := filepath.Join(dir, name+".wasm")
+		cmd := exec.Command(exe, "build", "-skip-stdlib", "-o", wasmPath, ".")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("build: %v\n%s", err, out)
+		}
+		wasm, err := os.ReadFile(wasmPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wasm) > maxSize {
+			t.Fatalf("wasm size %d > %d", len(wasm), maxSize)
+		}
+		t.Logf("%s.wasm size = %d", name, len(wasm))
+	}
+	cmd := exec.Command(exe, "run", "-skip-stdlib", ".")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if stdout.String() != wantStdout {
+		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
+	}
 }
 
 func runEmptyMainM1(t *testing.T) {

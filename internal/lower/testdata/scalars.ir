@@ -1,0 +1,93 @@
+func export "run" main.run() {
+  call main.main()
+  return
+}
+
+func main.add(a i32, b i32) i32 {
+  return i32.add a, b
+}
+
+func main.abs(x i32) i32 {
+  if i32.lt_s x, 0 {
+    return i32.sub 0, x
+  }
+  return x
+}
+
+func main.sum(n i32) i32 {
+  var s i32
+  var i i32
+  s = 0
+  i = 0
+  block $break.1 {
+    loop $L.3 {
+      br_if $break.1 i32.eqz i32.lt_s i, n
+      block $cont.2 {
+        s = i32.add s, i
+      }
+      i = i32.add i, 1
+      br $L.3
+    }
+  }
+  return s
+}
+
+func main.forever() {
+  block $break.1 {
+    loop $L.3 {
+      block $cont.2 {
+        br $break.1
+      }
+      br $L.3
+    }
+  }
+  return
+}
+
+func main.classified(x i32) i32 {
+  var tag i32
+  tag = x
+  block $sw.1 {
+    switch tag {
+      case 0: {
+        return 1
+        br $sw.1
+      }
+      case 1: {
+        return 2
+        br $sw.1
+      }
+      case 2: {
+        return 2
+        br $sw.1
+      }
+      default: {
+        return 3
+        br $sw.1
+      }
+    }
+  }
+}
+
+func main.multi() i32, i32 {
+  return 1, 2
+}
+
+func main.useMulti() i32 {
+  var a i32
+  var b i32
+  %0, %1 = call main.multi()
+  a = %0
+  b = %1
+  return i32.add a, b
+}
+
+func main.main() {
+  %0 = call main.add(1, 2)
+  call runtime.printint(%0)
+  call runtime.printnl()
+  %1 = call main.sum(5)
+  call runtime.printint(%1)
+  call runtime.printnl()
+  return
+}
