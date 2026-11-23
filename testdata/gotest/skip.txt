@@ -24,13 +24,13 @@ abi/struct_lower_1.go — output mismatch
 alias1.go — failed: panic: byte != uint8
 append.go — wasm validate/compile error
 args.go — failed: panic: argc
-bigalg.go — compile error: lower: print of type []int not supported in M3 (need string or int)
+bigalg.go — output mismatch: map/slice print vs expected
 bigmap.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
 blank.go — wasm validate/compile error
 chan/doubleselect.go — compile error: lower: unsupported deferred builtin close
 chan/nonblock.go — compile error: build: load: typecheck
-chan/powser1.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
-chan/powser2.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+chan/powser1.go — compile error: lower: copy: unsupported dst type
+chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
 chan/select2.go — compile error: build: load: typecheck
 chan/select3.go — compile error: lower: unsupported select assign
 chan/sieve2.go — output mismatch
@@ -43,10 +43,9 @@ cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
 complit2.go — runtime error: stack overflow in fmt equality of nested structs with any
 const.go — compile error: lower: untyped nil needs a typed context
-const3.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
 const4.go — compile error: lower: untyped nil needs a typed context
 const7.go — could not import io/ioutil
-convT2X.go — compile error: lower: print of type interface{} not supported in M3 (need string or int)
+convT2X.go — codegen: missing struct field
 convert.go — wasm validate/compile error
 convert4.go — runtime error
 convert5.go — failed: build: pipeline: IR verify: duplicate var v_0 in main.main pipeline: IR verify: duplicate var v_0 in…
@@ -70,7 +69,6 @@ fixedbugs/bug058.go — failed: panic: assignment to entry in nil map
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — compile error: codegen
-fixedbugs/bug141.go — compile error: lower: print of type gotestcase.Empty not supported in M3 (need string or int)
 fixedbugs/bug148.go — compile error: lower: print used as value
 fixedbugs/bug154.go — wasm validate/compile error
 fixedbugs/bug168.go — wasm validate/compile error
@@ -93,7 +91,7 @@ fixedbugs/bug257.go — could not import crypto/md5
 fixedbugs/bug258.go — runtime error
 fixedbugs/bug259.go — runtime error
 fixedbugs/bug260.go — output mismatch
-fixedbugs/bug262.go — compile error: lower: print of type error not supported in M3 (need string or int)
+fixedbugs/bug262.go — output mismatch
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
 fixedbugs/bug269.go — compile error: codegen
 fixedbugs/bug271.go — compile error: lower: tuple type not a single value: (int, int)
@@ -106,14 +104,12 @@ fixedbugs/bug293.go — output mismatch
 fixedbugs/bug294.go — wasm validate/compile error
 fixedbugs/bug295.go — could not import testing
 fixedbugs/bug296.go — wasm validate/compile error
-fixedbugs/bug312.go — compile error: lower: print of type interface{} not supported in M3 (need string or int)
+fixedbugs/bug312.go — runtime error
 fixedbugs/bug317.go — compile error: lower: unsupported binary op &^ for width i32
 fixedbugs/bug328.go — unsupported: unsafe
-fixedbugs/bug329.go — compile error: lower: print of type complex128 not supported in M3 (need string or int)
-fixedbugs/bug331.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+fixedbugs/bug329.go — output mismatch: complex print/value
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug339.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
-fixedbugs/bug343.go — compile error: lower: print of type map[string]string not supported in M3 (need string or int)
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug352.go — runtime error
@@ -129,7 +125,7 @@ fixedbugs/bug444.go — compile error: lower: untyped nil needs a typed context
 fixedbugs/bug446.go — failed: panic: dummy1 != 1
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
-fixedbugs/bug491.go — compile error: lower: print of type complex128 not supported in M3 (need string or int)
+fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug494.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*MyInt)…
 fixedbugs/bug499.go — failed: build: pipeline: IR verify: cannot assign refnull $go.hmap to var h1 of type i32 in main.main pipeli…
 fixedbugs/bug512.go — unsupported: unsafe
@@ -141,7 +137,7 @@ fixedbugs/issue10486.go — compile error: codegen
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue11286.go — compile error: codegen
 fixedbugs/issue11945.go — wasm validate/compile error
-fixedbugs/issue12577.go — compile error: lower: print of type float32 not supported in M3 (need string or int)
+fixedbugs/issue12577.go — wasm validate/compile error
 fixedbugs/issue12621.go — runtime error
 fixedbugs/issue1304.go — runtime error
 fixedbugs/issue13160.go — compile error: build: load: typecheck
@@ -233,7 +229,7 @@ fixedbugs/issue30116u.go — compile error: lower: untyped nil needs a typed con
 fixedbugs/issue30606.go — wasm validate/compile error
 fixedbugs/issue30709.go — output mismatch
 fixedbugs/issue30977.go — compile error: codegen
-fixedbugs/issue31419.go — compile error: lower: print of type gotestcase.I not supported in M3 (need string or int)
+fixedbugs/issue31419.go — wasm validate/compile error
 fixedbugs/issue31546.go — output mismatch
 fixedbugs/issue31782.go — compile error: codegen
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
@@ -340,7 +336,7 @@ fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
 fixedbugs/issue6866.go — compile error: lower: print used as value
 fixedbugs/issue68816.go — runtime error
-fixedbugs/issue6899.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
 fixedbugs/issue70189.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
 fixedbugs/issue7044.go — output mismatch
@@ -374,14 +370,14 @@ fixedbugs/issue79197.go — runtime error
 fixedbugs/issue79236.go — runtime error
 fixedbugs/issue79236b.go — runtime error
 fixedbugs/issue79762.go — could not import runtime/debug
-fixedbugs/issue79812.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+fixedbugs/issue79812.go — compile error: unsupported conversion complex128 → float64
 fixedbugs/issue79886.go — failed: panic: want -2305843009213693952; got 6917529027641081856
 fixedbugs/issue7995.go — wasm validate/compile error
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — compile error: build: load: typecheck
 fixedbugs/issue80127.go — runtime error
 fixedbugs/issue80188.go — compile error: codegen
-fixedbugs/issue80196.go — compile error: lower: print of type *byte not supported in M3 (need string or int)
+fixedbugs/issue80196.go — output mismatch: non-nil pointer print
 fixedbugs/issue8039.go — compile error: lower: unsupported deferred builtin copy
 fixedbugs/issue8047.go — compile error: lower: unsupported defer call form *ast.ParenExpr
 fixedbugs/issue8047b.go — runtime error
@@ -432,17 +428,15 @@ interface/convert.go — wasm validate/compile error
 interface/convert1.go — compile error: codegen
 interface/convert2.go — compile error: codegen
 interface/embed.go — failed: build: pipeline: IR verify: return value 0: have i32, want i64 in $go.acc.go_array_i32.elem.get pipe…
-interface/receiver.go — compile error: lower: print of type *gotestcase.T not supported in M3 (need string or int)
+interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
-ken/convert.go — compile error: lower: print of type gotestcase.big not supported in M3 (need string or int)
-ken/cplx1.go — compile error: lower: print of type complex64 not supported in M3 (need string or int)
-ken/cplx2.go — compile error: lower: print of type complex64 not supported in M3 (need string or int)
-ken/cplx3.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+ken/cplx1.go — runtime error: illegal cast (complex compare)
+ken/cplx2.go — compile error: IR verify: complex64 assign from i32
+ken/cplx3.go — compile error: IR verify: complex128 assign from i32
 ken/cplx4.go — failed: build: pipeline: IR verify: cannot assign i32 to var c3 of type refnull $go.complex128 in main.main …
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
-ken/embed.go — compile error: lower: print of type *gotestcase.SubpSubp not supported in M3 (need string or int)
 ken/interfun.go — compile error: codegen
 ken/intervar.go — compile error: codegen
 ken/label.go — failed: build: pipeline: IR verify: br target $goto.loop not in scope pipeline: IR verify: br target $goto.l…
@@ -453,8 +447,8 @@ ken/rob2.go — wasm validate/compile error
 ken/shift.go — wasm validate/compile error
 ken/simparray.go — wasm validate/compile error
 ken/simpswitch.go — compile error: codegen
-ken/slicearray.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
-ken/sliceslice.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+ken/slicearray.go — wasm validate/compile error
+ken/sliceslice.go — wasm validate/compile error
 ken/string.go — compile error: codegen
 literal2.go — runtime error
 makeslice.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
@@ -469,18 +463,17 @@ named.go — compile error: lower: unsupported binary op &^ for width i32
 newexpr.go — wasm validate/compile error
 nil.go — compile error: lower: range over *[10]int not supported
 nilptr.go — unsupported: unsafe
-nilptr2.go — compile error: lower: print of type *int not supported in M3 (need string or int)
+nilptr2.go — codegen: missing struct field in closure
 noinit.go — wasm validate/compile error
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
-print.go — compile error: lower: print of type interface{} not supported in M3 (need string or int)
 printbig.go — compile error: build: load: typecheck
 range.go — compile error: lower: range over *[5]int not supported
 range3.go — failed: panic: must not be executed
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
 recover1.go — compile error: build: load: typecheck
-recover2.go — compile error: lower: print of type []byte not supported in M3 (need string or int)
-recover3.go — compile error: lower: print of type gotestcase.m not supported in M3 (need string or int)
+recover2.go — wasm validate/compile error
+recover3.go — compile error: IR verify: temp used outside defining region
 reflectmethod1.go — compile error: lower: unsupported callee *ast.TypeAssertExpr
 reflectmethod2.go — compile error: build: load: typecheck
 reflectmethod3.go — compile error: lower: unsupported callee *ast.TypeAssertExpr
@@ -602,7 +595,7 @@ typeparam/typeswitch1.go — output mismatch
 typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (in main.f$any)
 typeparam/typeswitch3.go — compile error: codegen
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
-typeparam/typeswitch5.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
+typeparam/typeswitch5.go — output mismatch
 typeparam/typeswitch6.go — compile error: lower: untyped nil needs a typed context
 typeparam/typeswitch7.go — compile error: lower: untyped nil needs a typed context
 typeswitch.go — wasm validate/compile error
@@ -614,4 +607,4 @@ unsafe_string_data.go — compile error: build: load: typecheck
 unsafebuiltins.go — unsupported: unsafe
 winbatch.go — could not import io/ioutil
 zerodivide.go — failed: build: pipeline: IR verify: cannot assign refnull $go.complex128 to var ia21065 of type refnull $go.…
-zerosize.go — compile error: lower: print of type *[0]int not supported in M3 (need string or int)
+zerosize.go — output mismatch: zerobase pointer identity

@@ -117,6 +117,7 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			switch bname {
 			case "print", "println", "panic", "recover":
 				// Capture args; thunk re-emits the builtin.
+				var printKinds []int
 				for i, a := range call.Args {
 					src := fl.typeOf(a)
 					var want ir.Type
@@ -141,9 +142,16 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 					t := fl.newTemp(want)
 					stmts = append(stmts, fl.assignTemp(t, ex))
 					addCap("a"+deferItoa(i), want, fl.useTemp(t))
+					if bname == "print" || bname == "println" {
+						printKinds = append(printKinds, printArgKind(src))
+					}
 				}
 				nargs := len(call.Args)
+				kinds := printKinds
 				callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+					if bname == "print" || bname == "println" {
+						return child.deferredPrint(bname, nargs, kinds, fieldOf)
+					}
 					return child.deferredBuiltin(bname, nargs, fieldOf)
 				}
 			default:
@@ -388,63 +396,130 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 	return ex, stmts, nil
 }
 
-// deferredBuiltin emits print/println/panic/recover inside a defer thunk,
-// reading captured args via fieldOf("a0"), ...
-func (fl *funcLower) deferredBuiltin(name string, nargs int, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
-	switch name {
-	case "print", "println":
-		var out []ir.Stmt
-		for i := 0; i < nargs; i++ {
-			if i > 0 {
-				t := fl.newTemp(typeString)
-				out = append(out, fl.assignTemp(t, &ir.Instr{Op: ir.OpStringLit, Str: " "}))
-				out = append(out, &ir.ExprStmt{
-					X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{fl.useTemp(t)}},
-				})
-			}
-			arg := fieldOf("a" + deferItoa(i))
-			// Captured IR type drives the print form.
-			switch typ := arg.(type) {
-			default:
-				_ = typ
-			}
-			// Heuristic: string-typed captures print as string; else printint.
-			// Cap types are on the clos fields; fieldOf returns struct.get with no Typ.
-			// Use printint for i32/i64 and printstring when the field is $go.string —
-			// deferredBuiltin is only used with args we typed at capture time, so
-			// look at the clos type field via the get's Type/Field.
-			get, _ := arg.(*ir.Instr)
-			var isStr bool
-			if get != nil && get.Type != nil {
-				if r, ok := get.Type.(*ir.Ref); ok && r.Named != "" {
-					td := fl.mod.LookupType(r.Named)
-					if td != nil {
-						for _, f := range td.Fields {
-							if f.Name == get.Field {
-								if sr, ok := f.Type.(*ir.Ref); ok && sr.Named == "$go.string" {
-									isStr = true
-								}
-								break
+// printArgKind tags deferred print captures (bool and int share i32 IR).
+const (
+	printKindInt = iota
+	printKindBool
+	printKindString
+	printKindIface
+	printKindSlice
+	printKindPtr // pointer, map, chan, func
+	printKindFloat32
+	printKindFloat64
+	printKindComplex64
+	printKindComplex128
+)
+
+func printArgKind(ty types.Type) int {
+	if ty == nil {
+		return printKindInt
+	}
+	ty = types.Unalias(ty)
+	switch {
+	case isBoolean(ty):
+		return printKindBool
+	case isString(ty):
+		return printKindString
+	case isIface(ty):
+		return printKindIface
+	case isSlice(ty):
+		return printKindSlice
+	case isPointer(ty), isMap(ty), isChan(ty), isSignature(ty):
+		return printKindPtr
+	case isFloat(ty):
+		if b, ok := ty.Underlying().(*types.Basic); ok && b.Kind() == types.Float32 {
+			return printKindFloat32
+		}
+		return printKindFloat64
+	case isComplex(ty):
+		if b, ok := ty.Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+			return printKindComplex64
+		}
+		return printKindComplex128
+	default:
+		return printKindInt
+	}
+}
+
+// deferredPrint emits print/println inside a defer thunk using kinds captured
+// at the defer site (so bool vs int, both i32, stay distinct).
+func (fl *funcLower) deferredPrint(name string, nargs int, kinds []int, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+	var out []ir.Stmt
+	for i := 0; i < nargs; i++ {
+		if i > 0 {
+			t := fl.newTemp(typeString)
+			out = append(out, fl.assignTemp(t, &ir.Instr{Op: ir.OpStringLit, Str: " "}))
+			out = append(out, &ir.ExprStmt{
+				X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{fl.useTemp(t)}},
+			})
+		}
+		arg := fieldOf("a" + deferItoa(i))
+		kind := printKindInt
+		if i < len(kinds) {
+			kind = kinds[i]
+		}
+		out = append(out, fl.deferredPrintKind(arg, kind)...)
+	}
+	if name == "println" {
+		out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printnl"}})
+	}
+	out = append(out, &ir.Return{})
+	return out, nil
+}
+
+func (fl *funcLower) deferredPrintKind(arg ir.Expr, kind int) []ir.Stmt {
+	switch kind {
+	case printKindBool:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printbool", Args: []ir.Expr{arg}}}}
+	case printKindString:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{arg}}}}
+	case printKindIface:
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{arg}}
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printiface", Args: []ir.Expr{isnull}}}}
+	case printKindSlice:
+		lenEx := &ir.Instr{Op: ir.OpLen, Type: ir.TypeI32, Args: []ir.Expr{arg}}
+		capEx := &ir.Instr{Op: ir.OpCap, Type: ir.TypeI32, Args: []ir.Expr{arg}}
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{arg}}
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printslice", Args: []ir.Expr{lenEx, capEx, isnull}}}}
+	case printKindPtr:
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{arg}}
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printpointer", Args: []ir.Expr{isnull}}}}
+	case printKindFloat32:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printfloat32", Args: []ir.Expr{arg}}}}
+	case printKindFloat64:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printfloat64", Args: []ir.Expr{arg}}}}
+	case printKindComplex64:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printcomplex64", Args: []ir.Expr{arg}}}}
+	case printKindComplex128:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printcomplex128", Args: []ir.Expr{arg}}}}
+	default:
+		// Integers: wrap i64 → i32 like printArg.
+		ex := arg
+		if get, ok := arg.(*ir.Instr); ok && get.Op == ir.OpStructGet {
+			if r, ok := get.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := fl.mod.LookupType(r.Named); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == get.Field {
+							if n, ok := f.Type.(*ir.NumType); ok && n.Kind == ir.I64 {
+								ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{arg}}
 							}
+							break
 						}
 					}
 				}
 			}
-			if isStr {
-				out = append(out, &ir.ExprStmt{
-					X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{arg}},
-				})
-			} else {
-				out = append(out, &ir.ExprStmt{
-					X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{arg}},
-				})
-			}
 		}
-		if name == "println" {
-			out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printnl"}})
-		}
-		out = append(out, &ir.Return{})
-		return out, nil
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}}}}
+	}
+}
+
+// deferredBuiltin emits panic/recover inside a defer thunk,
+// reading captured args via fieldOf("a0"), ...
+func (fl *funcLower) deferredBuiltin(name string, nargs int, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+	switch name {
+	case "print", "println":
+		// Backward-compatible path without kinds (treat as int/string heuristic).
+		return fl.deferredPrint(name, nargs, nil, fieldOf)
 	case "panic":
 		fl.mayPanic = true
 		if nargs != 1 {

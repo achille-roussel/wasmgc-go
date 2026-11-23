@@ -101,7 +101,56 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 			return nil, err
 		}
 		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}},
+			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printbool", Args: []ir.Expr{ex}},
+		})
+		return stmts, nil
+	}
+	if isIface(ty) {
+		ex, stmts, err := fl.expr(arg, typeIface)
+		if err != nil {
+			return nil, err
+		}
+		t := fl.newTemp(typeIface)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
+		stmts = append(stmts, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printiface", Args: []ir.Expr{isnull}},
+		})
+		return stmts, nil
+	}
+	if isSlice(ty) {
+		want, err := fl.mapType(ty)
+		if err != nil {
+			return nil, err
+		}
+		ex, stmts, err := fl.expr(arg, want)
+		if err != nil {
+			return nil, err
+		}
+		t := fl.newTemp(want)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		lenEx := &ir.Instr{Op: ir.OpLen, Type: ir.TypeI32, Args: []ir.Expr{fl.useTemp(t)}}
+		capEx := &ir.Instr{Op: ir.OpCap, Type: ir.TypeI32, Args: []ir.Expr{fl.useTemp(t)}}
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
+		stmts = append(stmts, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printslice", Args: []ir.Expr{lenEx, capEx, isnull}},
+		})
+		return stmts, nil
+	}
+	if isPointer(ty) || isMap(ty) || isChan(ty) || isSignature(ty) {
+		want, err := fl.mapType(ty)
+		if err != nil {
+			return nil, err
+		}
+		ex, stmts, err := fl.expr(arg, want)
+		if err != nil {
+			return nil, err
+		}
+		t := fl.newTemp(want)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
+		stmts = append(stmts, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printpointer", Args: []ir.Expr{isnull}},
 		})
 		return stmts, nil
 	}

@@ -292,3 +292,42 @@ func printcomplex128(c complex128) {
 func printcomplex64(c complex64) {
 	printcomplex128(complex128(c))
 }
+
+// printbool matches cmd/compile's printbool (true/false, not 0/1).
+func printbool(v bool) {
+	if v {
+		printstring("true")
+	} else {
+		printstring("false")
+	}
+}
+
+// printpointer formats a pointer-like value. Wasm GC refs have no stable
+// uintptr identity; nil is "0x0", non-nil is opaque "0x1".
+func printpointer(isNil bool) {
+	if isNil {
+		printstring("0x0")
+	} else {
+		printstring("0x1")
+	}
+}
+
+// printiface formats an interface as (type,data) hex pairs. Nil is (0x0,0x0);
+// non-nil type word is opaque 0x1 (data stays 0x0 — no linear address).
+func printiface(isNil bool) {
+	printstring("(")
+	printpointer(isNil)
+	printstring(",")
+	printstring("0x0")
+	printstring(")")
+}
+
+// printslice formats [len/cap]ptr like cmd/compile's printslice.
+func printslice(length, capacity int, isNil bool) {
+	printstring("[")
+	printint(length)
+	printstring("/")
+	printint(capacity)
+	printstring("]")
+	printpointer(isNil)
+}
