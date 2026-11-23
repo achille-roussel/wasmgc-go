@@ -1,0 +1,403 @@
+{
+  "host": {
+    "node": "v22.23.4",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "methodology": {
+    "timer": "process.hrtime.bigint",
+    "warmup": 5,
+    "targetNsPerCell": 50000000,
+    "note": "ns/op is wall time / iterations. Data is GC (array i8) unless noted. Miss cases search the full buffer (needle past end). Equal compares two identical buffers. Count counts a buffer filled with the needle."
+  },
+  "sizes": {
+    "16": {
+      "indexbyte_scalar": {
+        "nsPerOp": 29.85364866256714,
+        "iters": 2097152,
+        "elapsedNs": 62607639
+      },
+      "indexbyte_lanes": {
+        "nsPerOp": 30.403137683868408,
+        "iters": 2097152,
+        "elapsedNs": 63760001
+      },
+      "indexbyte_bridge": {
+        "nsPerOp": 34.707587242126465,
+        "iters": 2097152,
+        "elapsedNs": 72787086
+      },
+      "indexbyte_mem": {
+        "nsPerOp": 6.715650200843811,
+        "iters": 8388608,
+        "elapsedNs": 56334957
+      },
+      "indexbyte_swar": {
+        "nsPerOp": 34.920724868774414,
+        "iters": 2097152,
+        "elapsedNs": 73234068
+      },
+      "indexbyte_v128arr": {
+        "nsPerOp": 26.553680419921875,
+        "iters": 2097152,
+        "elapsedNs": 55687104
+      },
+      "equal_scalar": {
+        "nsPerOp": 54.531158447265625,
+        "iters": 1048576,
+        "elapsedNs": 57180064
+      },
+      "equal_lanes": {
+        "nsPerOp": 56.612661361694336,
+        "iters": 1048576,
+        "elapsedNs": 59362678
+      },
+      "equal_bridge": {
+        "nsPerOp": 58.42580986022949,
+        "iters": 1048576,
+        "elapsedNs": 61263902
+      },
+      "equal_mem": {
+        "nsPerOp": 6.642576813697815,
+        "iters": 8388608,
+        "elapsedNs": 55721973
+      },
+      "equal_v128arr": {
+        "nsPerOp": 48.735347747802734,
+        "iters": 1048576,
+        "elapsedNs": 51102716
+      },
+      "count_scalar": {
+        "nsPerOp": 34.55024480819702,
+        "iters": 2097152,
+        "elapsedNs": 72457115
+      },
+      "count_lanes": {
+        "nsPerOp": 29.334585189819336,
+        "iters": 2097152,
+        "elapsedNs": 61519084
+      },
+      "count_bridge": {
+        "nsPerOp": 34.773008823394775,
+        "iters": 2097152,
+        "elapsedNs": 72924285
+      },
+      "count_mem": {
+        "nsPerOp": 6.673131346702576,
+        "iters": 8388608,
+        "elapsedNs": 55978283
+      },
+      "count_v128arr": {
+        "nsPerOp": 26.78629732131958,
+        "iters": 2097152,
+        "elapsedNs": 56174937
+      },
+      "bridge_copy_only": {
+        "nsPerOp": 31.574491024017334,
+        "iters": 2097152,
+        "elapsedNs": 66216507
+      },
+      "indexbyte_js_u8": {
+        "nsPerOp": 16.17746877670288,
+        "iters": 4194304,
+        "elapsedNs": 67853222
+      },
+      "count_js_u8": {
+        "nsPerOp": 12.313661098480225,
+        "iters": 4194304,
+        "elapsedNs": 51647238
+      }
+    },
+    "1024": {
+      "indexbyte_scalar": {
+        "nsPerOp": 496.2422866821289,
+        "iters": 131072,
+        "elapsedNs": 65043469
+      },
+      "indexbyte_lanes": {
+        "nsPerOp": 376.89924240112305,
+        "iters": 262144,
+        "elapsedNs": 98801875
+      },
+      "indexbyte_bridge": {
+        "nsPerOp": 422.10926818847656,
+        "iters": 131072,
+        "elapsedNs": 55326706
+      },
+      "indexbyte_mem": {
+        "nsPerOp": 33.03409147262573,
+        "iters": 2097152,
+        "elapsedNs": 69277511
+      },
+      "indexbyte_swar": {
+        "nsPerOp": 396.9945983886719,
+        "iters": 131072,
+        "elapsedNs": 52034876
+      },
+      "indexbyte_v128arr": {
+        "nsPerOp": 64.77120780944824,
+        "iters": 1048576,
+        "elapsedNs": 67917534
+      },
+      "equal_scalar": {
+        "nsPerOp": 643.6689987182617,
+        "iters": 131072,
+        "elapsedNs": 84366983
+      },
+      "equal_lanes": {
+        "nsPerOp": 711.4223175048828,
+        "iters": 131072,
+        "elapsedNs": 93247546
+      },
+      "equal_bridge": {
+        "nsPerOp": 603.5173492431641,
+        "iters": 131072,
+        "elapsedNs": 79104226
+      },
+      "equal_mem": {
+        "nsPerOp": 40.840981006622314,
+        "iters": 2097152,
+        "elapsedNs": 85649745
+      },
+      "equal_v128arr": {
+        "nsPerOp": 102.91726112365723,
+        "iters": 524288,
+        "elapsedNs": 53958285
+      },
+      "count_scalar": {
+        "nsPerOp": 567.0963745117188,
+        "iters": 131072,
+        "elapsedNs": 74330456
+      },
+      "count_lanes": {
+        "nsPerOp": 392.4017562866211,
+        "iters": 131072,
+        "elapsedNs": 51432883
+      },
+      "count_bridge": {
+        "nsPerOp": 424.1498031616211,
+        "iters": 131072,
+        "elapsedNs": 55594163
+      },
+      "count_mem": {
+        "nsPerOp": 33.589768409729004,
+        "iters": 2097152,
+        "elapsedNs": 70442850
+      },
+      "count_v128arr": {
+        "nsPerOp": 66.66851711273193,
+        "iters": 1048576,
+        "elapsedNs": 69907007
+      },
+      "bridge_copy_only": {
+        "nsPerOp": 400.17030334472656,
+        "iters": 131072,
+        "elapsedNs": 52451122
+      },
+      "indexbyte_js_u8": {
+        "nsPerOp": 281.9214324951172,
+        "iters": 262144,
+        "elapsedNs": 73904012
+      },
+      "count_js_u8": {
+        "nsPerOp": 921.7690277099609,
+        "iters": 65536,
+        "elapsedNs": 60409055
+      }
+    },
+    "65536": {
+      "indexbyte_scalar": {
+        "nsPerOp": 29123.92236328125,
+        "iters": 2048,
+        "elapsedNs": 59645793
+      },
+      "indexbyte_lanes": {
+        "nsPerOp": 21481.7705078125,
+        "iters": 4096,
+        "elapsedNs": 87989332
+      },
+      "indexbyte_bridge": {
+        "nsPerOp": 24577.439453125,
+        "iters": 2048,
+        "elapsedNs": 50334596
+      },
+      "indexbyte_mem": {
+        "nsPerOp": 1875.9268493652344,
+        "iters": 32768,
+        "elapsedNs": 61470371
+      },
+      "indexbyte_swar": {
+        "nsPerOp": 22281.224853515625,
+        "iters": 4096,
+        "elapsedNs": 91263897
+      },
+      "indexbyte_v128arr": {
+        "nsPerOp": 3511.80517578125,
+        "iters": 16384,
+        "elapsedNs": 57537416
+      },
+      "equal_scalar": {
+        "nsPerOp": 37778.25927734375,
+        "iters": 2048,
+        "elapsedNs": 77369875
+      },
+      "equal_lanes": {
+        "nsPerOp": 42736.49609375,
+        "iters": 2048,
+        "elapsedNs": 87524344
+      },
+      "equal_bridge": {
+        "nsPerOp": 41851.67724609375,
+        "iters": 2048,
+        "elapsedNs": 85712235
+      },
+      "equal_mem": {
+        "nsPerOp": 2444.0516357421875,
+        "iters": 32768,
+        "elapsedNs": 80086684
+      },
+      "equal_v128arr": {
+        "nsPerOp": 4492.200378417969,
+        "iters": 16384,
+        "elapsedNs": 73600211
+      },
+      "count_scalar": {
+        "nsPerOp": 33249.39501953125,
+        "iters": 2048,
+        "elapsedNs": 68094761
+      },
+      "count_lanes": {
+        "nsPerOp": 22598.82861328125,
+        "iters": 4096,
+        "elapsedNs": 92564802
+      },
+      "count_bridge": {
+        "nsPerOp": 24471.88623046875,
+        "iters": 2048,
+        "elapsedNs": 50118423
+      },
+      "count_mem": {
+        "nsPerOp": 1870.0660705566406,
+        "iters": 32768,
+        "elapsedNs": 61278325
+      },
+      "count_v128arr": {
+        "nsPerOp": 3005.2069091796875,
+        "iters": 32768,
+        "elapsedNs": 98474620
+      },
+      "bridge_copy_only": {
+        "nsPerOp": 23862.907958984375,
+        "iters": 4096,
+        "elapsedNs": 97742471
+      },
+      "indexbyte_js_u8": {
+        "nsPerOp": 18405.9931640625,
+        "iters": 4096,
+        "elapsedNs": 75390948
+      },
+      "count_js_u8": {
+        "nsPerOp": 64417.2099609375,
+        "iters": 1024,
+        "elapsedNs": 65963223
+      }
+    },
+    "1048576": {
+      "indexbyte_scalar": {
+        "nsPerOp": 519918.7421875,
+        "iters": 128,
+        "elapsedNs": 66549599
+      },
+      "indexbyte_lanes": {
+        "nsPerOp": 358821.48828125,
+        "iters": 256,
+        "elapsedNs": 91858301
+      },
+      "indexbyte_bridge": {
+        "nsPerOp": 391777.7265625,
+        "iters": 128,
+        "elapsedNs": 50147549
+      },
+      "indexbyte_mem": {
+        "nsPerOp": 29797.78271484375,
+        "iters": 2048,
+        "elapsedNs": 61025859
+      },
+      "indexbyte_swar": {
+        "nsPerOp": 357321.09375,
+        "iters": 256,
+        "elapsedNs": 91474200
+      },
+      "indexbyte_v128arr": {
+        "nsPerOp": 55173.9326171875,
+        "iters": 1024,
+        "elapsedNs": 56498107
+      },
+      "equal_scalar": {
+        "nsPerOp": 610218.875,
+        "iters": 128,
+        "elapsedNs": 78108016
+      },
+      "equal_lanes": {
+        "nsPerOp": 679589.0859375,
+        "iters": 128,
+        "elapsedNs": 86987403
+      },
+      "equal_bridge": {
+        "nsPerOp": 717082.09375,
+        "iters": 128,
+        "elapsedNs": 91786508
+      },
+      "equal_mem": {
+        "nsPerOp": 43153.1533203125,
+        "iters": 2048,
+        "elapsedNs": 88377658
+      },
+      "equal_v128arr": {
+        "nsPerOp": 75310.919921875,
+        "iters": 1024,
+        "elapsedNs": 77118382
+      },
+      "count_scalar": {
+        "nsPerOp": 529639.5,
+        "iters": 128,
+        "elapsedNs": 67793856
+      },
+      "count_lanes": {
+        "nsPerOp": 372262.0859375,
+        "iters": 256,
+        "elapsedNs": 95299094
+      },
+      "count_bridge": {
+        "nsPerOp": 410164.734375,
+        "iters": 128,
+        "elapsedNs": 52501086
+      },
+      "count_mem": {
+        "nsPerOp": 31575.5625,
+        "iters": 2048,
+        "elapsedNs": 64666752
+      },
+      "count_v128arr": {
+        "nsPerOp": 45447.5673828125,
+        "iters": 2048,
+        "elapsedNs": 93076618
+      },
+      "bridge_copy_only": {
+        "nsPerOp": 361547.29296875,
+        "iters": 256,
+        "elapsedNs": 92556107
+      },
+      "indexbyte_js_u8": {
+        "nsPerOp": 265268.8984375,
+        "iters": 256,
+        "elapsedNs": 67908838
+      },
+      "count_js_u8": {
+        "nsPerOp": 927824.359375,
+        "iters": 64,
+        "elapsedNs": 59380759
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+ok  correctness checks passed
+size=16
+  IndexByte  scalar=17.5  lanes=17.1  bridge=20.1  mem=6.0  swar=19.2  v128arr=16.2  js=22.8
+  Equal      scalar=29.0  lanes=30.1  bridge=32.4  mem=6.1  v128arr=24.2
+  Count      scalar=19.5  lanes=16.5  bridge=20.9  mem=5.9  v128arr=15.8  js=10.9
+  bridge_copy_only=18.9  (ns/op)
+size=64
+  IndexByte  scalar=40.4  lanes=31.6  bridge=36.3  mem=7.1  swar=36.5  v128arr=17.4  js=38.3
+  Equal      scalar=55.3  lanes=60.3  bridge=58.8  mem=7.4  v128arr=25.4
+  Count      scalar=41.1  lanes=31.1  bridge=37.0  mem=7.4  v128arr=16.8  js=49.8
+  bridge_copy_only=41.5  (ns/op)
+size=256
+  IndexByte  scalar=126.2  lanes=89.6  bridge=111.6  mem=11.2  swar=101.4  v128arr=21.2  js=96.6
+  Equal      scalar=169.6  lanes=191.6  bridge=160.3  mem=13.7  v128arr=32.8
+  Count      scalar=126.9  lanes=88.7  bridge=110.2  mem=11.3  v128arr=23.3  js=187.4
+  bridge_copy_only=98.1  (ns/op)
+size=1024
+  IndexByte  scalar=475.0  lanes=317.2  bridge=418.3  mem=32.9  swar=379.6  v128arr=56.1  js=289.6
+  Equal      scalar=585.9  lanes=639.8  bridge=587.9  mem=39.5  v128arr=83.1
+  Count      scalar=476.4  lanes=321.5  bridge=423.8  mem=32.0  v128arr=52.3  js=729.9
+  bridge_copy_only=374.6  (ns/op)
+size=4096
+  IndexByte  scalar=1800.5  lanes=1234.7  bridge=1652.4  mem=111.5  swar=1407.3  v128arr=203.0  js=1069.7
+  Equal      scalar=2284.3  lanes=2464.4  bridge=2239.4  mem=144.2  v128arr=281.7
+  Count      scalar=1837.1  lanes=1242.5  bridge=1650.5  mem=108.1  v128arr=170.0  js=2870.5
+  bridge_copy_only=1419.5  (ns/op)
+size=65536
+  IndexByte  scalar=28803.7  lanes=19624.5  bridge=26273.7  mem=1797.4  swar=22259.5  v128arr=3189.4  js=16806.5
+  Equal      scalar=35489.6  lanes=39052.9  bridge=41826.9  mem=2579.7  v128arr=4484.6
+  Count      scalar=29660.7  lanes=19589.4  bridge=26137.5  mem=1797.3  v128arr=2769.2  js=45725.1
+  bridge_copy_only=22407.0  (ns/op)
+size=1048576
+  IndexByte  scalar=461988.8  lanes=312581.3  bridge=418194.8  mem=27784.1  swar=358282.1  v128arr=53012.8  js=266133.6
+  Equal      scalar=566625.0  lanes=629506.1  bridge=711737.8  mem=47836.8  v128arr=74882.0
+  Count      scalar=481818.4  lanes=313299.6  bridge=418973.9  mem=28240.2  v128arr=47565.6  js=728357.9
+  bridge_copy_only=357290.0  (ns/op)
+wrote /agent/repos/wasmgc-go/prototypes/simd/results.json

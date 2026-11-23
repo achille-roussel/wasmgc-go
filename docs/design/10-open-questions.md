@@ -1,6 +1,6 @@
-# 10 — Resolved decisions
+# 10 — Decisions
 
-Achille answered the six open questions on 2026-11-22. The design documents are written to these answers. This file is the record. It is not a list of things still to choose.
+Achille answered the six open questions on 2026-11-22. The design documents are written to those answers. New design studies may add questions below; until answered they are not product law.
 
 ## 1. `int` is 32 bits
 
@@ -60,9 +60,28 @@ Achille answered the six open questions on 2026-11-22. The design documents are 
 
 **Rationale.** A dictionary erases the value to `anyref`. Go 1.27 generic methods are not interface methods, so they do not need a dictionary to be called through an itable. A size report that later names a specific function can justify a dictionary for that function. It is not the default, and it is not an open choice.
 
-## Still open
-
-Nothing in the six answers left a product choice. Two follow-ons are recorded here so they are not mistaken for undecided design:
+## Follow-ons from the six answers (not open product choices)
 
 - `weak.Pointer` is unimplemented. `crypto/tls` uses it, together with `AddCleanup`, and stays out of v1 for both reasons. Implementing `weak` would be a new design, not a flip of decision 3.
 - The vet warning on `int64` to `int` is off the build's failure path unless `-vet-fail`. That is the 386 shape (a hard error for constants, a warning for conversions) and it is part of decision 1, not a second question.
+
+## Open
+
+### 7. SIMD / `archsimd` on Wasm GC
+
+**Question.** Should wasmgc-go try to support Go's experimental `simd/archsimd` (and SIMD `internal/bytealg`) before engines ship Multibyte Array Access, and if so with which representation?
+
+**Options.**
+
+| Option | Meaning | Tradeoff |
+|---|---|---|
+| **A. Defer (recommended)** | Keep `$go.bytes` as `(array i8)`. Vendor scalar `bytealg` generics through M8–M10. Add M11 when Multibyte Array Access is in Node without a flag: lower `archsimd.Load*` to GC-array `v128.load`, vectorize `bytealg`. | No representation risk. No speedup for byte kernels until the proposal ships. Matches Dart's dependency on the same proposal. |
+| **B. Dual representation** | Hot `[]byte` / selected buffers as `(array v128)` chunks; general bytes stay `i8`. | `v128arr` prototype is ~9× scalar at 1 MiB. Breaks unaligned reslice-without-copy, complicates fat pointers, `unsafe.Slice`, and the immutable-header story (`03`, `05`). |
+| **C. Bridge-first kernels** | Copy to linear memory, then `v128.load`, for `bytealg` and codecs. | One-shot copy+SIMD **loses** to scalar (`11-simd.md` tables). Only wins when a buffer is already bridged or scanned many times. |
+| **D. Lane-build lowering** | Implement `archsimd.Load*` as 16× `array.get_u` + `replace_lane` now. | ~1.5× IndexByte/Count; Equal regresses. Code size up. User `archsimd` code "works" but is a poor advertisement. |
+
+**Evidence.** `docs/design/11-simd.md`, `prototypes/simd/` (Node 26.13.1 and 22.23.4, 2026-11-23). Multibyte Array Access is phase 2 ([proposals list](https://github.com/WebAssembly/proposals/blob/main/README.md)).
+
+**Recommendation.** **A.** Do not block M8. Do not change `$go.bytes`. Track the proposal; speak to the Wasm CG that Go needs byte-addressable loads from packed GC arrays for `[]byte` and `archsimd`. Revisit when a CI Node can run `v128.load` on an `(array i8)`.
+
+**Date opened.** 2026-11-23.
