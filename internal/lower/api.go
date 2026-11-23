@@ -20,7 +20,24 @@ import (
 // This is the driver contract (internal/pipeline.Lowerer):
 //
 //	mod, err := lower.Package(prog.Packages, prog.Main)
+//
+// Pipeline prefers PackageHigh + stream F's rtlink + RuntimeOps so rewrite
+// runtime print can be linked before string expansion.
 func Package(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
+	mod, err := PackageHigh(pkgs, main)
+	if err != nil {
+		return nil, err
+	}
+	if err := RuntimeOps(mod); err != nil {
+		return nil, err
+	}
+	return mod, nil
+}
+
+// PackageHigh is Package without RuntimeOps. Module.Low stays false so the
+// pipeline can append rewrite-runtime funcs (stream F) before expanding
+// string literals.
+func PackageHigh(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
 	if main == nil {
 		return nil, fmt.Errorf("lower.Package: no main package")
 	}
@@ -45,10 +62,25 @@ func Package(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
 	if err := Finish(mod); err != nil {
 		return nil, err
 	}
-	if err := RuntimeOps(mod); err != nil {
-		return nil, err
-	}
 	return mod, nil
+}
+
+// AppendFiles lowers already type-checked files into an existing module.
+// Does not call Finish or RuntimeOps. Used by stream F to link std/src/runtime
+// print without pulling the whole rewrite package.
+func AppendFiles(mod *ir.Module, fset *token.FileSet, files []*ast.File, pkg *types.Package, info *types.Info) error {
+	if mod == nil {
+		return fmt.Errorf("lower.AppendFiles: nil module")
+	}
+	l := &pkgLower{
+		fset:  fset,
+		files: files,
+		pkg:   pkg,
+		info:  info,
+		mod:   mod,
+		meta:  metaOf(mod),
+	}
+	return l.lower()
 }
 
 func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {

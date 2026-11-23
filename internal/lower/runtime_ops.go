@@ -24,10 +24,9 @@ func RuntimeOps(mod *ir.Module) error {
 	if mod == nil {
 		return fmt.Errorf("lower.RuntimeOps: nil module")
 	}
-	if mod.Low {
-		return nil
-	}
-	n := 0
+	// Idempotent: skip already-expanded string lits; n continues past existing data
+	// so a second pass after rtlink can expand new literals without name clashes.
+	n := len(mod.Data)
 	for _, f := range mod.Funcs {
 		if f.Body == nil {
 			continue

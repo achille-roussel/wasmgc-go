@@ -3,10 +3,14 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/achille-roussel/wasmgc-go/internal/check"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
+	"github.com/achille-roussel/wasmgc-go/internal/lower"
+	"github.com/achille-roussel/wasmgc-go/internal/rtlink"
+	"github.com/achille-roussel/wasmgc-go/internal/stdlib"
 )
 
 // Options controls a compile.
@@ -20,9 +24,12 @@ type Options struct {
 	Backends Backends
 	// SkipStdlib skips materializing GOROOT when the program needs no std.
 	SkipStdlib bool
-	// SynthPrintRuntime forwards to codegen until stream F lands the runtime.
-	// Default true for run; size builds may leave it true (empty main ignores it).
+	// SynthPrintRuntime synthesizes print* when rtlink did not link them
+	// (unit tests). Drivers default this off; rtlink supplies std/src/runtime.
 	SynthPrintRuntime bool
+	// ModuleRoot is the wasmgc-go repo root (for std/src rewrites). Empty =
+	// discover via FindModuleRoot.
+	ModuleRoot string
 }
 
 // Result is the output of a compile.
@@ -90,7 +97,7 @@ func Compile(opts Options) (*Result, error) {
 		}
 		warnings = append(warnings, d)
 	}
-	mod, err := b.Lower.Package(prog.Packages, prog.Main)
+	mod, err := lowerProgram(b, prog, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +145,7 @@ func DumpIR(opts Options) (string, *Result, error) {
 		}
 		warnings = append(warnings, d)
 	}
-	mod, err := b.Lower.Package(prog.Packages, prog.Main)
+	mod, err := lowerProgram(b, prog, opts)
 	if err != nil {
 		return "", nil, err
 	}
@@ -146,4 +153,39 @@ func DumpIR(opts Options) (string, *Result, error) {
 		return "", nil, fmt.Errorf("pipeline: IR verify: %w", err)
 	}
 	return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, nil
+}
+
+// lowerProgram runs PackageHigh, links rewrite runtime print (stream F), then
+// RuntimeOps. Stub lowerers skip rtlink (empty main has no print).
+func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, error) {
+	if isStubLowerer(b.Lower) {
+		return b.Lower.Package(prog.Packages, prog.Main)
+	}
+	mod, err := lower.PackageHigh(prog.Packages, prog.Main)
+	if err != nil {
+		return nil, err
+	}
+	rewriteDir, err := rewriteDir(opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	if err := lower.RuntimeOps(mod); err != nil {
+		return nil, err
+	}
+	return mod, nil
+}
+
+func rewriteDir(opts Options) (string, error) {
+	root := opts.ModuleRoot
+	if root == "" {
+		var err error
+		root, err = stdlib.CompilerModuleRoot()
+		if err != nil {
+			return "", fmt.Errorf("pipeline: compiler module root: %w", err)
+		}
+	}
+	return filepath.Join(root, "std", "src"), nil
 }

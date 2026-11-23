@@ -1,5 +1,7 @@
-// Package runtime is a wasmgc rewrite placeholder for std check.
-// Real bodies land with streams F/G; signatures keep dependents type-checking.
+// Package runtime is the wasmgc rewrite of the Go runtime
+// (docs/design/04-runtime-and-abi.md). Print and the linear bridge live in
+// print.go / bridge.go. Other symbols here keep dependents type-checking
+// until later milestones (defer/panic M5, maps M6, goroutines M7).
 package runtime
 
 import "unsafe"

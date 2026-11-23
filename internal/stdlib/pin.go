@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -67,4 +68,15 @@ func FindModuleRoot(start string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// CompilerModuleRoot returns the wasmgc-go module root that contains
+// std/src/runtime. Uses the source path of this package at compile time so
+// drivers started outside the repo (e2e temp dirs) still find rewrites.
+func CompilerModuleRoot() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("stdlib: runtime.Caller failed")
+	}
+	return FindModuleRoot(filepath.Dir(file))
 }
