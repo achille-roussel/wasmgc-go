@@ -564,7 +564,7 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 			return nil, l.errorf(fd, "param %s: %v", p.Name(), err)
 		}
 		name := p.Name()
-		if name == "" {
+		if name == "" || name == "_" {
 			name = "_" + strconv.Itoa(i)
 		}
 		v := &ir.Var{Name: name, Typ: ty}
@@ -578,8 +578,14 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 			return nil, l.errorf(fd, "result: %v", err)
 		}
 		fl.results = append(fl.results, ty)
-		if r.Name() != "" {
-			v := &ir.Var{Name: r.Name(), Typ: ty}
+		name := r.Name()
+		if name == "_" {
+			// Blank named results still need locals for naked returns;
+			// uniquify so IR verify accepts multiple `_` results.
+			name = "_" + strconv.Itoa(i)
+		}
+		if name != "" {
+			v := &ir.Var{Name: name, Typ: ty}
 			fl.namedResults = append(fl.namedResults, v)
 			fl.vars[r] = v
 		}

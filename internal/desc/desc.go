@@ -7,6 +7,7 @@ package desc
 
 import (
 	"fmt"
+	"go/ast"
 	"go/types"
 	"strconv"
 	"strings"
@@ -53,20 +54,22 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 		return fmt.Errorf("desc.Populate: nil module")
 	}
 	g := &gen{
-		mod:      mod,
-		prog:     prog,
-		types:    map[string]*typeRec{},
-		itabs:    map[string]*itabRec{},
-		ifaces:   map[string]bool{},
-		asserts:  map[string]bool{},
-		wrappers: map[string]bool{},
-		equals:   map[string]bool{},
-		boxes:    map[string]bool{},
+		mod:         mod,
+		prog:        prog,
+		types:       map[string]*typeRec{},
+		itabs:       map[string]*itabRec{},
+		ifaces:      map[string]bool{},
+		asserts:     map[string]bool{},
+		wrappers:    map[string]bool{},
+		equals:      map[string]bool{},
+		boxes:       map[string]bool{},
+		nointerface: map[string]bool{},
 	}
 	g.ensurePreludeShapes()
 	g.scanModule()
 	if prog != nil {
 		g.collectFromProgram()
+		g.collectNointerface()
 		g.synthesizeAssertItabs()
 	}
 	if err := g.emitAll(); err != nil {
@@ -103,16 +106,17 @@ type methodSlot struct {
 }
 
 type gen struct {
-	mod      *ir.Module
-	prog     *load.Program
-	types    map[string]*typeRec
-	itabs    map[string]*itabRec
-	ifaces   map[string]bool // iface keys needed for OpIfaceCall (itabtype)
-	asserts  map[string]bool // iface keys that are OpIfaceAssert destinations
-	wrappers map[string]bool
-	equals   map[string]bool
-	boxes    map[string]bool
-	nextID   int32
+	mod          *ir.Module
+	prog         *load.Program
+	types        map[string]*typeRec
+	itabs        map[string]*itabRec
+	ifaces       map[string]bool // iface keys needed for OpIfaceCall (itabtype)
+	asserts      map[string]bool // iface keys that are OpIfaceAssert destinations
+	wrappers     map[string]bool
+	equals       map[string]bool
+	boxes        map[string]bool
+	nointerface  map[string]bool // //go:nointerface methods (fn.String() keys)
+	nextID       int32
 }
 
 func (g *gen) ensurePreludeShapes() {
@@ -394,7 +398,7 @@ func (g *gen) synthesizeAssertItabs() {
 			ifaceTy = tr.goType
 		}
 		for _, c := range concretes {
-			if !types.Implements(c.typ, iface) {
+			if !g.implementsForItab(c.typ, iface) {
 				continue
 			}
 			name := ItabGlobal(ifaceTy, c.typ)
@@ -414,6 +418,77 @@ func (g *gen) synthesizeAssertItabs() {
 			}
 		}
 	}
+}
+
+// collectNointerface records methods marked //go:nointerface.
+// go/types does not set Func.nointerface (types2 does); scan AST pragmas.
+func (g *gen) collectNointerface() {
+	if g.prog == nil {
+		return
+	}
+	for _, pkg := range g.prog.Packages {
+		if pkg == nil || pkg.Info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Recv == nil || fd.Name == nil || !hasNointerfacePragma(fd) {
+					continue
+				}
+				fn, _ := pkg.Info.Defs[fd.Name].(*types.Func)
+				if fn != nil {
+					g.nointerface[fn.Id()] = true
+					g.nointerface[fn.FullName()] = true
+				}
+			}
+		}
+	}
+}
+
+func hasNointerfacePragma(fd *ast.FuncDecl) bool {
+	if fd.Doc == nil {
+		return false
+	}
+	for _, c := range fd.Doc.List {
+		if strings.Contains(c.Text, "go:nointerface") {
+			return true
+		}
+	}
+	return false
+}
+
+// implementsForItab is types.Implements plus //go:nointerface exclusion.
+// Without this, iface→iface assert synthesis would emit itabs for methods the
+// compiler must omit (fixedbugs/issue47928.go).
+func (g *gen) implementsForItab(V types.Type, iface *types.Interface) bool {
+	if !types.Implements(V, iface) {
+		return false
+	}
+	if len(g.nointerface) == 0 {
+		return true
+	}
+	ms := types.NewMethodSet(V)
+	for i := 0; i < iface.NumMethods(); i++ {
+		m := iface.Method(i)
+		sel := ms.Lookup(m.Pkg(), m.Name())
+		if sel == nil {
+			return false
+		}
+		fn, ok := sel.Obj().(*types.Func)
+		if !ok {
+			return false
+		}
+		if g.nointerface[fn.Id()] || g.nointerface[fn.FullName()] {
+			return false
+		}
+		// Promoted methods: the selection may point at the embedded type's
+		// method; also check that object's identity.
+		if g.nointerface[sel.Obj().Id()] {
+			return false
+		}
+	}
+	return true
 }
 
 // closeUniverse extends the descriptor set with one constructor step:
@@ -1295,15 +1370,22 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	// Match wanted receiver pointer-ness.
 	havePtr := isPointer(obj)
 	needPtr := isPointer(wantRecv)
-	if needPtr && !havePtr {
+	switch {
+	case needPtr && !havePtr:
 		// Value in iface but method wants pointer — data was addressable; for
 		// interface method calls on value types stored as refs, the ref is the object.
 		// Struct values in interfaces are boxed as the struct ref; pointer methods
 		// can use that same ref.
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
-	} else if !needPtr && havePtr {
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
-	} else {
+	case !needPtr && havePtr:
+		// Pointer concrete, value method. *Struct data is already the object
+		// ref (cast above); *scalar/*string/*slice data is a fat pointer — deref.
+		if isStruct(derefIfPtr(obj)) {
+			expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		} else {
+			expr = &ir.Instr{Op: ir.OpDeref, Type: wantIR, Args: []ir.Expr{expr}}
+		}
+	default:
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
 	}
 	return stmts, expr, nil
@@ -1464,14 +1546,17 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 				return mapArrayApprox(u)
 			}
 		}
-		if _, ok := elem.(*types.Struct); ok {
-			return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+		if st, ok := elem.(*types.Struct); ok {
+			// *anonStruct shares the struct object ref (same as *Named struct).
+			return &ir.Ref{Null: true, Named: anonStructWasmName(st)}, nil
 		}
 		if a, ok := elem.(*types.Array); ok {
 			return mapArrayApprox(a)
 		}
 		// *string / *int / *[]T → fat pointer ($go.ptr.ref / .i32 / …).
 		return &ir.Ref{Null: true, Named: "$go.ptr." + fatPtrKindApprox(elem)}, nil
+	case *types.Struct:
+		return &ir.Ref{Null: true, Named: anonStructWasmName(t)}, nil
 	case *types.Named:
 		switch u := t.Underlying().(type) {
 		case *types.Struct:
@@ -1928,11 +2013,16 @@ func derefNamed(t types.Type) types.Type {
 }
 
 func baseIROf(t types.Type) ir.Type {
-	t = derefIfPtr(t)
-	if n, ok := types.Unalias(t).(*types.Named); ok {
+	t = types.Unalias(derefIfPtr(t))
+	if n, ok := t.(*types.Named); ok {
 		if _, ok := n.Underlying().(*types.Struct); ok {
 			return &ir.Ref{Named: structName(n)}
 		}
+	}
+	// Anonymous structs (e.g. struct{encoding.TextAppender}) need their
+	// $go.struct.anon.* name for StructGet in synthesized itab wrappers.
+	if st, ok := t.(*types.Struct); ok {
+		return &ir.Ref{Named: anonStructWasmName(st)}
 	}
 	return &ir.Ref{Null: true, Heap: ir.HeapAny}
 }

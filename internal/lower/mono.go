@@ -129,8 +129,21 @@ func (l *pkgLower) finishLowerFunc(fl *funcLower, fd *ast.FuncDecl) (*ir.Func, e
 	if !ok {
 		seq = &ir.Seq{Stmts: []ir.Stmt{body}}
 	}
-	if len(fl.results) == 0 && !endsWithReturn(seq) {
+	// Match pkg.lowerFunc: void → return; non-void fallthru → named results
+	// or unreachable (infinite for{} in errors.asType needs the latter).
+	if len(fl.results) == 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
+	}
+	if len(fl.results) > 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
+		if len(fl.namedResults) > 0 {
+			args := make([]ir.Expr, len(fl.namedResults))
+			for i, v := range fl.namedResults {
+				args[i] = fl.useVar(v)
+			}
+			seq.Stmts = append(seq.Stmts, &ir.Return{Results: args})
+		} else {
+			seq.Stmts = append(seq.Stmts, &ir.Unreachable{})
+		}
 	}
 
 	originSig := fl.obj.Type().(*types.Signature)
@@ -279,7 +292,7 @@ func (l *pkgLower) newFuncLowerInst(fd *ast.FuncDecl, inst *mono.Instance) (*fun
 			return nil, l.errorf(fd, "param %s: %v", p.Name(), err)
 		}
 		name := p.Name()
-		if name == "" {
+		if name == "" || name == "_" {
 			name = "_" + strconv.Itoa(i)
 		}
 		v := &ir.Var{Name: name, Typ: ty}
@@ -294,8 +307,14 @@ func (l *pkgLower) newFuncLowerInst(fd *ast.FuncDecl, inst *mono.Instance) (*fun
 		fl.results = append(fl.results, rty)
 		if i < originSig.Results().Len() {
 			rOrig := originSig.Results().At(i)
-			if rOrig.Name() != "" {
-				v := &ir.Var{Name: rOrig.Name(), Typ: rty}
+			name := rOrig.Name()
+			if name == "_" {
+				// Blank named results still need locals for naked returns
+				// (e.g. errors.asType); uniquify so IR verify accepts them.
+				name = "_" + strconv.Itoa(i)
+			}
+			if name != "" {
+				v := &ir.Var{Name: name, Typ: rty}
 				fl.namedResults = append(fl.namedResults, v)
 				fl.vars[rOrig] = v
 			}
