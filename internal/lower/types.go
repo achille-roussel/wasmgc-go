@@ -29,6 +29,10 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Basic:
 		return mapBasic(t)
 	case *types.Named:
+		if isJSValue(t) {
+			// syscall/js.Value is externref (docs/design/07).
+			return ir.TypeExtern, nil
+		}
 		u := t.Underlying()
 		switch u.(type) {
 		case *types.Struct:
@@ -353,7 +357,7 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 	case types.UntypedString:
 		return typeString, nil
 	case types.UntypedNil:
-		return nil, fmt.Errorf("untyped nil needs a typed context")
+		return nil, fmt.Errorf("untyped nil needs a typed context") // mapBasic
 	case types.Complex64:
 		return &ir.Ref{Null: true, Named: "$go.complex64"}, nil
 	case types.Complex128, types.UntypedComplex:
@@ -367,7 +371,11 @@ func (l *pkgLower) mapPointer(t *types.Pointer) (ir.Type, error) {
 	elem := types.Unalias(t.Elem())
 	switch e := elem.(type) {
 	case *types.Named:
-		switch e.Underlying().(type) {
+		if isJSValue(e) {
+			// *js.Value is not meaningful for externref; same shape as Value.
+			return ir.TypeExtern, nil
+		}
+		switch u := e.Underlying().(type) {
 		case *types.Struct:
 			// *Struct is the same ref as the struct value.
 			st, err := l.mapNamedStruct(e)
@@ -375,6 +383,10 @@ func (l *pkgLower) mapPointer(t *types.Pointer) (ir.Type, error) {
 				return nil, err
 			}
 			return st, nil
+		case *types.Array:
+			// *[N]T and named array pointers share the array ref
+			// (e.g. *byteReplacer / *[256]byte → $go.bytes).
+			return l.mapArray(u)
 		default:
 			return l.mapPointerToScalarOrRef(e.Underlying())
 		}
@@ -532,8 +544,17 @@ func (l *pkgLower) structFields(st *types.Struct) ([]ir.Field, error) {
 			return nil, fmt.Errorf("field %s: %w", f.Name(), err)
 		}
 		fld := ir.Field{Name: f.Name(), Type: ft, Mut: true}
-		if a, ok := types.Unalias(f.Type()).Underlying().(*types.Array); ok {
+		ftGo := types.Unalias(f.Type())
+		if a, ok := ftGo.Underlying().(*types.Array); ok {
 			fld.Len = a.Len()
+		}
+		// *NamedStruct / *[N]T share IR with the value; mark so structZero
+		// leaves null (e.g. structFields.errUnsupportedFormat *SemanticError).
+		if _, ok := ftGo.Underlying().(*types.Pointer); ok {
+			if r, ok := ft.(*ir.Ref); ok && (strings.HasPrefix(r.Named, "$go.struct.") ||
+				r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
+				fld.Ptr = true
+			}
 		}
 		fields = append(fields, fld)
 	}
@@ -553,6 +574,10 @@ func isZeroSize(t types.Type) bool {
 	case *types.Array:
 		return t.Len() == 0 || isZeroSize(t.Elem())
 	case *types.Named:
+		// js.Value is externref in IR despite an empty Go struct underlying.
+		if isJSValue(t) {
+			return false
+		}
 		return isZeroSize(t.Underlying())
 	default:
 		return false
@@ -808,6 +833,48 @@ func isSlice(t types.Type) bool {
 	return ok
 }
 
+// isByteSliceOrArray reports []byte / [N]byte / *[N]byte.
+func isByteSliceOrArray(t types.Type) bool {
+	t = types.Unalias(t)
+	if isPtrToArray(t) {
+		p := t.Underlying().(*types.Pointer)
+		t = types.Unalias(p.Elem())
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Slice:
+		return isByteElem(u.Elem())
+	case *types.Array:
+		return isByteElem(u.Elem())
+	}
+	return false
+}
+
+// isRuneSlice reports []rune (or []int32 named as rune).
+func isRuneSlice(t types.Type) bool {
+	s, ok := types.Unalias(t).Underlying().(*types.Slice)
+	if !ok {
+		return false
+	}
+	e := types.Unalias(s.Elem())
+	if b, ok := e.Underlying().(*types.Basic); ok {
+		return b.Kind() == types.Int32 || b.Kind() == types.UntypedRune
+	}
+	// Named rune alias.
+	if n, ok := e.(*types.Named); ok && n.Obj() != nil && n.Obj().Name() == "rune" {
+		return true
+	}
+	return false
+}
+
+func isByteElem(t types.Type) bool {
+	b, ok := types.Unalias(t).Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	k := b.Kind()
+	return k == types.Uint8 || k == types.Int8 // Byte aliases Uint8
+}
+
 func isArray(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Array)
@@ -834,6 +901,19 @@ func isStruct(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Struct)
 	return ok
+}
+
+// isJSValue reports the syscall/js.Value named type (mapped to externref).
+func isJSValue(t *types.Named) bool {
+	if t == nil || t.Obj() == nil || t.Obj().Pkg() == nil {
+		return false
+	}
+	return t.Obj().Pkg().Path() == "syscall/js" && t.Obj().Name() == "Value"
+}
+
+func isJSValueType(t types.Type) bool {
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && isJSValue(n)
 }
 
 func isPointer(t types.Type) bool {

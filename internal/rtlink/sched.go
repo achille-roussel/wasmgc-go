@@ -196,6 +196,7 @@ var schedSyms = []string{
 	"runtime.scheduleTimer", "runtime.clearTimer", "runtime.throw", "runtime.fatal",
 	"runtime.Gosched", "runtime.getg", "runtime.mintParkID",
 	"runtime.fastrand", "runtime.fastrandn",
+	"runtime.walltime", "runtime.nanotime", "runtime.Walltime", "runtime.Nanotime",
 }
 
 // schedNeed is the granular set of runtime pieces a module requires.
@@ -222,7 +223,9 @@ func scanSchedNeeds(mod *ir.Module) schedNeed {
 				need.any = true
 				need.select_ = true
 			case "runtime.timeSleep", "runtime.TimeSleep",
-				"runtime.scheduleTimer", "runtime.clearTimer":
+				"runtime.scheduleTimer", "runtime.clearTimer",
+				"runtime.Walltime", "runtime.walltime",
+				"runtime.Nanotime", "runtime.nanotime":
 				need.any = true
 				need.time = true
 			case "runtime.semacquire", "runtime.semrelease",

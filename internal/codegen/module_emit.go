@@ -48,6 +48,23 @@ var hostImportIR = []struct {
 	{"runtime.goschedImport", "runtime.gosched", false},
 	{"runtime.scheduleTimer", "runtime.scheduleTimer", false},
 	{"runtime.clearTimer", "runtime.clearTimer", false},
+	{"runtime.walltime", "runtime.walltime", false},
+	{"runtime.nanotime", "runtime.nanotime", false},
+	{"runtime.getArgc", "runtime.getArgc", false},
+	{"runtime.getArg", "runtime.getArg", false},
+	// syscall/js host imports (07); reachability-gated like clocks/args.
+	{"syscall.js.jsGet", "js.get", false},
+	{"syscall.js.jsSet", "js.set", false},
+	{"syscall.js.jsCall", "js.call", false},
+	{"syscall.js.jsNew", "js.new", false},
+	{"syscall.js.jsValue", "js.value", false},
+	{"syscall.js.jsAwait", "js.await", false},
+	{"syscall.js.jsHTTPGet", "js.httpGet", false},
+	{"syscall.js.jsStringCopy", "js.stringCopy", false},
+	{"syscall.js.jsNumber", "js.number", false},
+	{"syscall.js.jsTruthy", "js.truthy", false},
+	{"syscall.js.jsTypeof", "js.typeof", false},
+	{"syscall.js.jsEqual", "js.equal", false},
 }
 
 // alwaysSchedImportSigs are Wasm types for the always-on scheduler imports
@@ -99,7 +116,24 @@ func (g *gen) needsHostImport(irName string) bool {
 	if f == nil || !emptyPrintBody(f) {
 		return false
 	}
-	return g.callsHost(irName)
+	if g.callsHost(irName) {
+		return true
+	}
+	// getArg is only invoked from the getArgString codegen fill (reverse bridge).
+	if irName == "runtime.getArg" {
+		gs := g.m.LookupFunc("runtime.getArgString")
+		return gs != nil && emptyPrintBody(gs) && g.callsHost("runtime.getArgString")
+	}
+	// js.value / js.stringCopy are called from string-bridge fills.
+	if irName == "syscall.js.jsValue" {
+		vs := g.m.LookupFunc("syscall.js.valueOfString")
+		return vs != nil && emptyPrintBody(vs) && g.callsHost("syscall.js.valueOfString")
+	}
+	if irName == "syscall.js.jsStringCopy" {
+		vs := g.m.LookupFunc("syscall.js.valueToString")
+		return vs != nil && emptyPrintBody(vs) && g.callsHost("syscall.js.valueToString")
+	}
+	return false
 }
 
 func (g *gen) callsHost(name string) bool {
@@ -249,6 +283,15 @@ func (g *gen) emitFuncBodies() error {
 			continue
 		case f.Name == "syscall.writeHost" && g.fillWriteHost:
 			g.wm.AddCode(g.bodyWriteHost())
+			continue
+		case f.Name == "runtime.getArgString" && g.fillGetArgString:
+			g.wm.AddCode(g.bodyGetArgString())
+			continue
+		case f.Name == "syscall.js.valueOfString" && g.fillJSValueOfString:
+			g.wm.AddCode(g.bodyJSValueOfString())
+			continue
+		case f.Name == "syscall.js.valueToString" && g.fillJSValueToString:
+			g.wm.AddCode(g.bodyJSValueToString())
 			continue
 		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
 			if g.hasEH {

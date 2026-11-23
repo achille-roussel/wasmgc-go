@@ -74,24 +74,24 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 }
 
 type typeRec struct {
-	key      string
-	goType   types.Type // may be nil for synthetic
-	global   string
-	id       int32
-	kind     int
-	name     string
+	key        string
+	goType     types.Type // may be nil for synthetic
+	global     string
+	id         int32
+	kind       int
+	name       string
 	comparable bool
-	ptrElem  string // type key of element for pointers
+	ptrElem    string // type key of element for pointers
 }
 
 type itabRec struct {
-	key       string // full itab global name
-	ifaceKey  string
-	concKey   string
-	iface     *types.Interface
-	concrete  types.Type
-	typeName  string // Wasm itab struct type name
-	methods   []methodSlot
+	key      string // full itab global name
+	ifaceKey string
+	concKey  string
+	iface    *types.Interface
+	concrete types.Type
+	typeName string // Wasm itab struct type name
+	methods  []methodSlot
 }
 
 type methodSlot struct {
@@ -158,6 +158,8 @@ func (g *gen) ensurePreludeShapes() {
 		},
 	})
 	// Box types for scalar → interface.
+	// $go.box.string is not part of the unconditional prelude (empty_main size
+	// budget); intern it lazily via ensureBoxString when reflect New/Set needs it.
 	for _, kind := range []struct {
 		name string
 		ty   ir.Type
@@ -172,9 +174,20 @@ func (g *gen) ensurePreludeShapes() {
 			Kind:  ir.TypeStruct,
 			Super: "$go.object",
 			Fields: []ir.Field{
-				{Name: "v", Type: kind.ty, Mut: false},
+				{Name: "v", Type: kind.ty, Mut: true},
 			},
 		})
+	}
+	// lower may have interned boxes first with immutable v; patch for Set*.
+	// Include $go.box.string when present (added lazily by ensureBoxString).
+	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64", "$go.box.string"} {
+		if td := g.mod.LookupType(name); td != nil {
+			for i := range td.Fields {
+				if td.Fields[i].Name == "v" {
+					td.Fields[i].Mut = true
+				}
+			}
+		}
 	}
 }
 
@@ -324,6 +337,63 @@ func (g *gen) collectFromProgram() {
 		}
 		if tr := g.types[it.ifaceKey]; tr != nil && tr.goType == nil && it.iface != nil {
 			tr.goType = it.iface
+		}
+	}
+	g.closeUniverse()
+}
+
+// closeUniverse extends the descriptor set with one constructor step:
+// *T, []T, and map[T]struct{} for every comparable T already in B.
+// See docs/design/05-unsafe-and-reflect.md (universe U = B ∪ …).
+func (g *gen) closeUniverse() {
+	type pair struct {
+		key string
+		typ types.Type
+	}
+	var base []pair
+	for key, tr := range g.types {
+		if tr.goType == nil {
+			continue
+		}
+		base = append(base, pair{key: key, typ: tr.goType})
+	}
+	empty := types.NewStruct(nil, nil)
+	for _, p := range base {
+		t := p.typ
+		// Skip runtime layout aliases and other runtime package types: their
+		// Wasm shapes ($go.hmap, $go.semaEntry, …) are owned by lower/rtlink
+		// and are not part of the user-visible reflect universe U.
+		if n, ok := types.Unalias(t).(*types.Named); ok {
+			if runtimeStructAliasName(n) != "" {
+				continue
+			}
+			if obj := n.Obj(); obj != nil && obj.Pkg() != nil &&
+				(obj.Pkg().Path() == "runtime" || obj.Pkg().Name() == "runtime") {
+				continue
+			}
+		}
+		// *T
+		ptr := types.NewPointer(t)
+		pk := TypeKey(ptr)
+		g.needTypeKey(pk)
+		if tr := g.types[pk]; tr != nil && tr.goType == nil {
+			tr.goType = ptr
+		}
+		// []T
+		sl := types.NewSlice(t)
+		sk := TypeKey(sl)
+		g.needTypeKey(sk)
+		if tr := g.types[sk]; tr != nil && tr.goType == nil {
+			tr.goType = sl
+		}
+		// map[T]struct{} when T is comparable
+		if types.Comparable(t) {
+			m := types.NewMap(t, empty)
+			mk := TypeKey(m)
+			g.needTypeKey(mk)
+			if tr := g.types[mk]; tr != nil && tr.goType == nil {
+				tr.goType = m
+			}
 		}
 	}
 }
@@ -1082,18 +1152,28 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	} else if isStruct(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 	} else {
-		// Scalar concrete types are stored as $go.box.{i32,i64,f32,f64}.
+		// Numeric scalars are stored as $go.box.{i32,i64,f32,f64}.
+		// Strings / named strings / slices / other refs are stored directly
+		// as the value ref (boxKind "ref"), optionally via $go.box.string.
 		boxName, elem := scalarBoxOf(wantIR)
 		if boxName == "" {
 			boxName, elem = scalarBoxOf(baseIR)
 		}
-		if boxName == "" {
+		if boxName != "" {
+			boxTy := &ir.Ref{Named: boxName}
+			boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
+			expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
+			_ = elem
+			return stmts, expr, nil
+		}
+		recvIR := wantIR
+		if _, ok := recvIR.(*ir.Ref); !ok {
+			recvIR = baseIR
+		}
+		if _, ok := recvIR.(*ir.Ref); !ok {
 			return nil, nil, fmt.Errorf("desc: cannot unbox scalar receiver %s", concrete)
 		}
-		boxTy := &ir.Ref{Named: boxName}
-		boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
-		expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
-		_ = elem
+		expr = &ir.Instr{Op: ir.OpRefCast, Type: recvIR, Args: []ir.Expr{expr}}
 		return stmts, expr, nil
 	}
 
@@ -1192,6 +1272,15 @@ func TypeKey(t types.Type) string {
 		return "[]" + TypeKey(t.Elem())
 	case *types.Array:
 		return fmt.Sprintf("[%d]%s", t.Len(), TypeKey(t.Elem()))
+	case *types.Map:
+		return "map[" + TypeKey(t.Key()) + "]" + TypeKey(t.Elem())
+	case *types.Struct:
+		if t.NumFields() == 0 {
+			return "struct{}"
+		}
+		return strings.ReplaceAll(t.String(), " ", "_")
+	case *types.Chan:
+		return strings.ReplaceAll(t.String(), " ", "_")
 	default:
 		return strings.ReplaceAll(t.String(), " ", "_")
 	}
@@ -1285,25 +1374,35 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 	case *types.Pointer:
 		elem := types.Unalias(t.Elem())
 		if n, ok := elem.(*types.Named); ok {
-			if _, ok := n.Underlying().(*types.Struct); ok {
+			switch u := n.Underlying().(type) {
+			case *types.Struct:
+				// *Struct shares the struct ref (matches lower.mapPointer).
 				return &ir.Ref{Null: true, Named: structName(n)}, nil
+			case *types.Array:
+				// *[N]T / *byteReplacer → same array ref as [N]T.
+				return mapArrayApprox(u)
 			}
 		}
 		if _, ok := elem.(*types.Struct); ok {
 			return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 		}
+		if a, ok := elem.(*types.Array); ok {
+			return mapArrayApprox(a)
+		}
 		// *string / *int / *[]T → fat pointer ($go.ptr.ref / .i32 / …).
 		return &ir.Ref{Null: true, Named: "$go.ptr." + fatPtrKindApprox(elem)}, nil
 	case *types.Named:
-		if _, ok := t.Underlying().(*types.Struct); ok {
+		switch u := t.Underlying().(type) {
+		case *types.Struct:
 			return &ir.Ref{Null: true, Named: structName(t)}, nil
+		case *types.Array:
+			return mapArrayApprox(u)
 		}
 		return mapTypeApprox(t.Underlying())
 	case *types.Slice:
 		return sliceIRApprox(t.Elem()), nil
 	case *types.Array:
-		// Rare as a method param; treat like a ref.
-		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+		return mapArrayApprox(t)
 	case *types.Map, *types.Chan:
 		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 	case *types.Signature:
@@ -1340,6 +1439,21 @@ func fatPtrKindApprox(elem types.Type) string {
 	return "ref"
 }
 
+// mapArrayApprox mirrors lower.mapArray / ensureArrayType for descriptor wrappers.
+func mapArrayApprox(t *types.Array) (ir.Type, error) {
+	elem := types.Unalias(t.Elem())
+	if b, ok := elem.Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Int8, types.Uint8, types.Bool:
+			return &ir.Ref{Null: true, Named: "$go.bytes"}, nil
+		case types.Int16, types.Uint16:
+			return &ir.Ref{Null: true, Named: "$go.i16s"}, nil
+		}
+	}
+	// Other element arrays: approximate as any (rare as method receivers).
+	return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+}
+
 // sliceIRApprox maps []T to the WasmGC slice header name used by the lowerer.
 func sliceIRApprox(elem types.Type) ir.Type {
 	elem = types.Unalias(elem)
@@ -1371,9 +1485,12 @@ func structName(t *types.Named) string {
 	if alias := runtimeStructAliasName(t); alias != "" {
 		return alias
 	}
+	// Must match lower.structTypeName / pkgIRPrefix (full import path), not
+	// pkg.Name() alone — else iface method params get $go.struct.jsontext.T
+	// while values are $go.struct.encoding.json.jsontext.T and call_ref fails.
 	pkg := "main"
 	if t.Obj().Pkg() != nil {
-		pkg = t.Obj().Pkg().Name()
+		pkg = pkgIRPrefix(t.Obj().Pkg())
 	}
 	suffix := ""
 	if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
@@ -1438,7 +1555,9 @@ func runtimeStructAliasName(t *types.Named) string {
 	}
 }
 
-func sanitize(s string) string {
+// Sanitize turns a TypeKey into a Wasm-safe type/global name fragment.
+// Lower and desc must use the same rules so itabtype / ifacefn names match.
+func Sanitize(s string) string {
 	s = strings.ReplaceAll(s, "*", "ptr_")
 	s = strings.ReplaceAll(s, "[", "arr_")
 	s = strings.ReplaceAll(s, "]", "")
@@ -1448,6 +1567,8 @@ func sanitize(s string) string {
 	s = strings.ReplaceAll(s, "{}", "empty")
 	return s
 }
+
+func sanitize(s string) string { return Sanitize(s) }
 
 func kindOf(t types.Type) int {
 	t = types.Unalias(t)
@@ -1552,6 +1673,20 @@ func kindFromKey(key string) (kind int, name string, comparable bool) {
 	if strings.HasPrefix(key, "[]") {
 		return KindSlice, key, false
 	}
+	if strings.HasPrefix(key, "map[") {
+		return KindMap, key, false
+	}
+	if strings.HasPrefix(key, "chan ") || strings.HasPrefix(key, "chan_") ||
+		strings.HasPrefix(key, "<-chan") || strings.HasPrefix(key, "chan<-") {
+		return KindChan, key, true
+	}
+	if strings.HasPrefix(key, "[") {
+		// [N]T array
+		return KindArray, key, true
+	}
+	if key == "struct{}" || strings.HasPrefix(key, "struct{") {
+		return KindStruct, key, true
+	}
 	return KindStruct, key, true
 }
 
@@ -1612,7 +1747,7 @@ func builtinType(key string) types.Type {
 
 func findTypeByKey(pkg *types.Package, key string) types.Type {
 	want := key
-	pkgPrefix := pkg.Name() + "."
+	pkgPrefix := pkgIRPrefix(pkg) + "."
 	if strings.HasPrefix(key, "*") {
 		elemKey := strings.TrimPrefix(key, "*")
 		if t := findTypeByKey(pkg, elemKey); t != nil {
@@ -1622,8 +1757,11 @@ func findTypeByKey(pkg *types.Package, key string) types.Type {
 	}
 	if strings.HasPrefix(key, pkgPrefix) {
 		want = strings.TrimPrefix(key, pkgPrefix)
-	} else if strings.Contains(key, ".") && !strings.HasPrefix(key, pkg.Name()) {
+	} else if strings.Contains(key, ".") && !strings.HasPrefix(key, pkgPrefix) && !strings.HasPrefix(key, pkg.Name()+".") {
 		return nil
+	} else if strings.HasPrefix(key, pkg.Name()+".") && pkgIRPrefix(pkg) != pkg.Name() {
+		// Legacy short keys (pkg.Name only) still resolve.
+		want = strings.TrimPrefix(key, pkg.Name()+".")
 	}
 	if obj := pkg.Scope().Lookup(want); obj != nil {
 		if tn, ok := obj.(*types.TypeName); ok {

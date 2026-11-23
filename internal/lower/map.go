@@ -257,8 +257,51 @@ func (fl *funcLower) builtinClear(e *ast.CallExpr) ([]ir.Stmt, error) {
 		return stmts, nil
 	}
 	if isSlice(argTy) {
-		// clear(slice) zeros elements; lower as a runtime helper later.
-		return nil, fl.errorf(e, "clear of slice not yet supported")
+		// clear(s) zeros s[0:len(s)]; keep len/cap (Go 1.21+).
+		sl, ok := types.Unalias(argTy).Underlying().(*types.Slice)
+		if !ok {
+			return nil, fl.errorf(e, "clear of slice: bad type")
+		}
+		sIR, err := fl.mapType(argTy)
+		if err != nil {
+			return nil, fl.errorf(e.Args[0], "%v", err)
+		}
+		sEx, stmts, err := fl.expr(e.Args[0], sIR)
+		if err != nil {
+			return nil, err
+		}
+		elemIR, err := fl.mapType(sl.Elem())
+		if err != nil {
+			return nil, fl.errorf(e, "%v", err)
+		}
+		zero, err := fl.zeroValue(elemIR)
+		if err != nil {
+			return nil, fl.errorf(e, "clear: zero elem: %v", err)
+		}
+		sv := fl.newVar("clrs", sIR)
+		iV := fl.newVar("clri", ir.TypeI32)
+		stmts = append(stmts, fl.assignVar(sv, sEx), fl.assignVar(iV, fl.i32const(0)))
+		done := fl.freshLabel("clrdone")
+		cont := fl.freshLabel("clrcont")
+		stmts = append(stmts, &ir.Block{
+			Name: done,
+			Body: &ir.Loop{
+				Name: cont,
+				Body: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.If{
+						Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{
+							fl.useVar(iV),
+							&ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(sv)}},
+						}},
+						Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Br{Label: done}}},
+					},
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{fl.useVar(sv), fl.useVar(iV), zero}}},
+					fl.assignVar(iV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(iV), fl.i32const(1)}}),
+					&ir.Br{Label: cont},
+				}},
+			},
+		})
+		return stmts, nil
 	}
 	return nil, fl.errorf(e.Args[0], "clear of type %s not supported", argTy)
 }

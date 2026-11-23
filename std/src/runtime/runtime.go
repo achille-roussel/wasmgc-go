@@ -77,10 +77,6 @@ type Error interface {
 
 func memhash(p unsafe.Pointer, seed, s uintptr) uintptr { return seed }
 
-func nanotime() int64 { return 0 }
-
-func walltime() (sec int64, nsec int32) { return 0, 0 }
-
 func write(fd uintptr, p unsafe.Pointer, n int32) int32 { return n }
 
 func randn(n uint32) uint32 { return fastrandn(n) }

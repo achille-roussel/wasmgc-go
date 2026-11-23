@@ -562,6 +562,9 @@ func (v *verifier) instrTypes(e *Instr) []Type {
 		}
 	case OpRefNull:
 		if e.Type != nil {
+			if _, ok := e.Type.(*Extern); ok {
+				return []Type{TypeExtern}
+			}
 			if r, ok := e.Type.(*Ref); ok {
 				return []Type{&Ref{Null: true, Named: r.Named, Heap: r.Heap, Func: r.Func}}
 			}

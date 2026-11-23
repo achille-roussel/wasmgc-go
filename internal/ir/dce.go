@@ -60,6 +60,7 @@ func PruneUnreachable(m *Module) {
 		"runtime.printstring", "runtime.printint", "runtime.printnl", "runtime.printuint",
 	}
 	seedPrint := false
+	seedGetArg := false
 	for _, n := range printCluster {
 		if byName[n] != nil {
 			// Only force the cluster once one member is already reached.
@@ -99,6 +100,19 @@ func PruneUnreachable(m *Module) {
 					markFn(n)
 				}
 			}
+		}
+		// getArgString's body is filled by codegen and calls getArg; keep the
+		// body-less host import alive when the fill target is reachable.
+		if !seedGetArg && liveFn["runtime.getArgString"] {
+			seedGetArg = true
+			markFn("runtime.getArg")
+		}
+		// JS string bridge fills call host imports that empty IR bodies omit.
+		if liveFn["syscall.js.valueOfString"] {
+			markFn("syscall.js.jsValue")
+		}
+		if liveFn["syscall.js.valueToString"] {
+			markFn("syscall.js.jsStringCopy")
 		}
 	}
 

@@ -15,3 +15,16 @@ func Is(err, target error) bool {
 func As(err error, target any) bool {
 	return false
 }
+
+// AsType finds the first error in err's tree that matches type E.
+// wasmgc: no Unwrap walk yet; only direct type assertion (enough for json inject).
+func AsType[E error](err error) (E, bool) {
+	var zero E
+	if err == nil {
+		return zero, false
+	}
+	if e, ok := err.(E); ok {
+		return e, true
+	}
+	return zero, false
+}

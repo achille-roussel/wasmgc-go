@@ -226,6 +226,13 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignVar(v, ex))
+				// Plain local write (bypasses writeVar/cell); capture sync needs this.
+				fl.markPlainDirty(obj)
+			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
+				// Arrays / named structs: Wasm refnull default is null, but
+				// Go zero is an allocated empty value (e.g. var arr [32]byte).
+				out = append(out, fl.assignVar(v, z))
+				fl.markPlainDirty(obj)
 			}
 			// else: defineLocal already zero-inits non-defaultable refs.
 		}
@@ -270,6 +277,17 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			out = append(out, defs...)
 		}
 	}
+	// Parallel assignment (a, b = b, a): evaluate every RHS before any LHS
+	// write. Pairwise assign would corrupt swaps used by slices.Sort*.
+	parallel := len(s.Lhs) > 1
+	type rhsSlot struct {
+		expr ir.Expr
+		tmp  *ir.Temp
+	}
+	var slots []rhsSlot
+	if parallel {
+		slots = make([]rhsSlot, len(s.Lhs))
+	}
 	for i := range s.Lhs {
 		want, err := fl.lhsType(s.Lhs[i])
 		if err != nil {
@@ -287,15 +305,20 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				return nil, err
 			}
 			out = append(out, rs...)
-			op, err := fl.binaryOpFromAssign(s.Tok, fl.typeOf(s.Lhs[i]))
-			if err != nil {
-				return nil, fl.errorf(s, "%v", err)
+			// s += t for strings is concatenation, not i32.add.
+			if s.Tok == token.ADD_ASSIGN && isString(fl.typeOf(s.Lhs[i])) {
+				rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{lhsEx, rhsEx}}
+			} else {
+				op, err := fl.binaryOpFromAssign(s.Tok, fl.typeOf(s.Lhs[i]))
+				if err != nil {
+					return nil, fl.errorf(s, "%v", err)
+				}
+				rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
 			}
-			rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
 		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {
 			// x = f(...) → single assign from call (no extra temp).
 			if sig := fl.funcValueSig(call.Fun); sig != nil {
-				ex, astmts, err := fl.callFuncValue(call.Fun, call.Args, sig)
+				ex, astmts, err := fl.callFuncValue(call, sig)
 				if err != nil {
 					return nil, err
 				}
@@ -361,11 +384,26 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			}
 			out = append(out, stmts...)
 		}
+		if parallel {
+			tmp := fl.newTemp(want)
+			out = append(out, fl.assignTemp(tmp, rhs))
+			slots[i] = rhsSlot{expr: fl.useTemp(tmp), tmp: tmp}
+			continue
+		}
 		as, err := fl.assignTo(s.Lhs[i], rhs)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, as...)
+	}
+	if parallel {
+		for i := range s.Lhs {
+			as, err := fl.assignTo(s.Lhs[i], slots[i].expr)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, as...)
+		}
 	}
 	return out, nil
 }
@@ -484,24 +522,81 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			}
 		}
 		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
+			fl.markPlainDirty(obj)
 			return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 		}
 		v, err := fl.lookupVar(lhs)
 		if err != nil {
 			return nil, err
 		}
+		fl.markPlainDirty(obj)
 		return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 	case *ast.StarExpr:
 		ptr, stmts, err := fl.expr(lhs.X, nil)
 		if err != nil {
 			return nil, err
 		}
+		// Object pointer (*Struct): *p and p share the same ref; copy fields
+		// into the existing object (docs/design/03). Fat-pointer stores use OpStore.
+		if xt := fl.typeOf(lhs.X); xt != nil && isObjectPointer(xt) {
+			elem := types.Unalias(xt).Underlying().(*types.Pointer).Elem()
+			name, err := fl.mapType(elem)
+			if err != nil {
+				return nil, err
+			}
+			r, ok := name.(*ir.Ref)
+			if !ok || r.Named == "" {
+				return nil, fl.errorf(lhs, "star assign: bad struct type")
+			}
+			td := fl.mod.LookupType(r.Named)
+			if td == nil {
+				return nil, fl.errorf(lhs, "star assign: unknown type %s", r.Named)
+			}
+			rhsT := fl.newTemp(name)
+			stmts = append(stmts, fl.assignTemp(rhsT, rhs))
+			for _, f := range td.Fields {
+				get := &ir.Instr{
+					Op: ir.OpStructGet, Type: name, Field: f.Name,
+					Args: []ir.Expr{fl.useTemp(rhsT)},
+				}
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpStructSet, Type: name, Field: f.Name,
+					Args: []ir.Expr{ptr, get},
+				}})
+			}
+			return stmts, nil
+		}
 		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{ptr, rhs}}})
 		return stmts, nil
 	case *ast.SelectorExpr:
 		sel := fl.info.Selections[lhs]
-		if sel == nil || sel.Kind() != types.FieldVal {
-			return nil, fl.errorf(lhs, "assignment to non-field selector")
+		if sel == nil {
+			// package.Var = ... (cross-package global assignment).
+			if obj := fl.info.Uses[lhs.Sel]; obj != nil {
+				if v, ok := obj.(*types.Var); ok {
+					fl.markAssigned(v)
+					if g := fl.lookupGlobal(lhs.Sel); g != nil {
+						return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+							Op: ir.OpGlobalSet, Global: g.Name, Args: []ir.Expr{rhs},
+						}}}, nil
+					}
+					if id, ok := lhs.X.(*ast.Ident); ok {
+						if pn, ok := fl.info.Uses[id].(*types.PkgName); ok && pn.Imported() != nil {
+							gname := pn.Imported().Name() + "." + lhs.Sel.Name
+							if g := fl.pkg.mod.LookupGlobal(gname); g != nil {
+								gname = g.Name
+							}
+							return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+								Op: ir.OpGlobalSet, Global: gname, Args: []ir.Expr{rhs},
+							}}}, nil
+						}
+					}
+				}
+			}
+			return nil, fl.errorf(lhs, "assignment to non-field selector %s (kind=nil)", lhs.Sel.Name)
+		}
+		if sel.Kind() != types.FieldVal {
+			return nil, fl.errorf(lhs, "assignment to non-field selector %s (kind=%d)", lhs.Sel.Name, int(sel.Kind()))
 		}
 		base, stmts, err := fl.expr(lhs.X, nil)
 		if err != nil {
@@ -630,13 +725,35 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 		if !ok {
 			return nil, fl.errorf(s, "expected multi-value call in return")
 		}
-		temps, stmts, err := fl.callMaterialize(call, fl.results)
+		// Materialize with the callee's concrete result types, then coerce
+		// into this function's result types (e.g. map[string]any → any).
+		temps, stmts, err := fl.callMaterialize(call, nil)
 		if err != nil {
 			return nil, err
 		}
+		srcGos := fl.callResultGoTypes(call)
 		var results []ir.Expr
-		for _, t := range temps {
-			results = append(results, fl.useTemp(t))
+		for i, t := range temps {
+			ex := fl.useTemp(t)
+			var dstGo types.Type
+			if fl.sig != nil && i < fl.sig.Results().Len() {
+				dstGo = fl.sig.Results().At(i).Type()
+			}
+			if dstGo != nil && isIface(dstGo) && i < len(srcGos) && srcGos[i] != nil && !isIface(srcGos[i]) {
+				boxed := fl.boxIRToIface(ex, srcGos[i], dstGo)
+				nt := fl.newTemp(typeIface)
+				stmts = append(stmts, fl.assignTemp(nt, boxed))
+				ex = fl.useTemp(nt)
+			} else if i < len(fl.results) && fl.results[i] != nil {
+				// Keep a typed temp matching the declared result when possible.
+				want := fl.results[i]
+				if t.Typ == nil || !ir.TypesEqual(t.Typ, want) {
+					nt := fl.newTemp(want)
+					stmts = append(stmts, fl.assignTemp(nt, ex))
+					ex = fl.useTemp(nt)
+				}
+			}
+			results = append(results, ex)
 		}
 		stmts = append(stmts, &ir.Return{Results: results})
 		return stmts, nil
@@ -895,7 +1012,40 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		Cond:  &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
 	})
 	if valVar != nil {
-		elem := &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		var elem ir.Expr
+		if isArray(xType) || isPtrToArray(xType) {
+			// Match indexExpr: array.get / array.get_u for [N]byte etc.
+			arrName := ""
+			elemT := xType
+			if isPtrToArray(xType) {
+				if p, ok := types.Unalias(xType).Underlying().(*types.Pointer); ok {
+					elemT = p.Elem()
+				}
+			}
+			if irt, err := fl.mapType(elemT); err == nil {
+				if r, ok := irt.(*ir.Ref); ok {
+					arrName = r.Named
+				}
+			}
+			at := valVar.Typ
+			if arrName != "" {
+				at = &ir.Ref{Named: arrName}
+			}
+			op := ir.OpArrayGet
+			switch arrName {
+			case "$go.bytes":
+				op = ir.OpArrayGetU
+			case "$go.i16s":
+				if et := arrayElemType(elemT); et != nil && isUnsigned(et) {
+					op = ir.OpArrayGetU
+				} else {
+					op = ir.OpArrayGetS
+				}
+			}
+			elem = &ir.Instr{Op: op, Type: at, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		} else {
+			elem = &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		}
 		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
 	}
 	inner, err := fl.stmtBlock(s.Body)
@@ -1685,7 +1835,8 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 				case isIface(tagType):
 					return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{tag, v}}
 				case isString(tagType):
-					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Type: ir.TypeI32, Args: []ir.Expr{tag, v}}
+					// No Type on OpCall: Format omits it and Equal would fail round-trip.
+					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{tag, v}}
 				case irNumWidth(want) == ir.I64:
 					return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{tag, v}}
 				case want != nil && isRefIR(want):
@@ -1818,15 +1969,19 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 	ifaceV := fl.newVar("ts", typeIface)
 	out = append(out, fl.assignVar(ifaceV, ifaceEx))
 
-	// If-else chain implements case exclusivity; no outer break block needed
-	// (a trailing br after return left functions with results failing validation).
+	// If-else chain implements case exclusivity. Break block still needed for
+	// explicit break; trailing br after return/unreachable is skipped (same as
+	// value switches) so multi-result functions validate.
 	breakL := fl.freshLabel("tsbreak")
 	fl.breakStack = append(fl.breakStack, breakL)
 	defer func() { fl.breakStack = fl.breakStack[:len(fl.breakStack)-1] }()
 
+	allTerm := len(s.Body.List) > 0
 	var build func(i int) (ir.Region, error)
 	build = func(i int) (ir.Region, error) {
 		if i >= len(s.Body.List) {
+			// No default: falling off the type switch is a valid exit.
+			allTerm = false
 			return &ir.Seq{}, nil
 		}
 		cc := s.Body.List[i].(*ast.CaseClause)
@@ -1834,12 +1989,17 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 		// Bind variable for this case when present.
 		if bind != nil && bind.Name != "_" {
 			var caseTy types.Type
+			nilCase := false
 			if len(cc.List) == 1 {
 				caseTy = fl.typeOf(cc.List[0])
+				if caseTy == types.Typ[types.UntypedNil] || isNilIdent(cc.List[0]) {
+					nilCase = true
+					caseTy = fl.typeOf(tagExpr) // nil case binds as the interface
+				}
 			} else if len(cc.List) == 0 {
 				caseTy = fl.typeOf(tagExpr) // default: interface type
 			}
-			if caseTy != nil {
+			if caseTy != nil && caseTy != types.Typ[types.UntypedNil] {
 				irTy, err := fl.mapType(caseTy)
 				if err != nil {
 					return nil, err
@@ -1856,7 +2016,7 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 				if obj != nil {
 					fl.vars[obj] = v
 				}
-				if len(cc.List) == 1 {
+				if len(cc.List) == 1 && !nilCase {
 					assert := &ir.Instr{
 						Op:     ir.OpIfaceAssert,
 						Type:   irTy,
@@ -1885,25 +2045,31 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 			}
 			bodySeq.Stmts = append(bodySeq.Stmts, ss...)
 		}
-		if !regionEndsWithReturn(bodySeq) {
-			bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: breakL})
+		if !regionTerminates(bodySeq) {
+			allTerm = false
 		}
+		bodyR := appendBr(bodySeq, breakL)
 
 		if len(cc.List) == 0 {
 			// default
-			return bodySeq, nil
+			return bodyR, nil
 		}
-		// Match: any of the listed types.
+		// Match: any of the listed types (or nil interface).
 		var cond ir.Expr
 		for j, texpr := range cc.List {
-			ct := fl.typeOf(texpr)
-			key := desc.TypeKey(ct)
-			cmp := &ir.Instr{
-				Op:     ir.OpIfaceAssert,
-				Type:   ir.TypeI32,
-				Global: key,
-				Str:    "test",
-				Args:   []ir.Expr{fl.useVar(ifaceV)},
+			var cmp ir.Expr
+			if isNilIdent(texpr) || fl.typeOf(texpr) == types.Typ[types.UntypedNil] {
+				cmp = &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(ifaceV)}}
+			} else {
+				ct := fl.typeOf(texpr)
+				key := desc.TypeKey(ct)
+				cmp = &ir.Instr{
+					Op:     ir.OpIfaceAssert,
+					Type:   ir.TypeI32,
+					Global: key,
+					Str:    "test",
+					Args:   []ir.Expr{fl.useVar(ifaceV)},
+				}
 			}
 			if j == 0 {
 				cond = cmp
@@ -1915,7 +2081,7 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodySeq, Else: elseR}}}, nil
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodyR, Else: elseR}}}, nil
 	}
 	// Find default and non-default order: Go evaluates in order; default last in chain.
 	var cases []*ast.CaseClause
@@ -1943,14 +2109,10 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 		return nil, err
 	}
 	out = append(out, &ir.Block{Name: breakL, Body: r})
-	return out, nil
-}
-
-func regionEndsWithReturn(r ir.Region) bool {
-	seq, ok := r.(*ir.Seq)
-	if !ok || len(seq.Stmts) == 0 {
-		return false
+	// When every case returns/unreachable, fallthru after the break block
+	// leaves no result; Wasm still expects the function results.
+	if len(fl.results) > 0 && allTerm {
+		out = append(out, &ir.Unreachable{})
 	}
-	_, ok = seq.Stmts[len(seq.Stmts)-1].(*ir.Return)
-	return ok
+	return out, nil
 }

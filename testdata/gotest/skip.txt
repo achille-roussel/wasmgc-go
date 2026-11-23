@@ -1,0 +1,8 @@
+# skip.txt — tests that must not be compiled/run by wasmgc-go test.
+# Format: <name> — <reason>
+# A skip without a reason fails CI. See docs/design/08-testing.md and 05-unsafe-and-reflect.md.
+
+BenchmarkTypeFieldsCache — reflect.StructOf (encoding/json/bench_test.go; field list not a constant struct in B)
+TestBenchmarkUnmarshalUnknown — reflect.StructOf (encoding/json/v2/fold_test.go; Name0… field list not constant)
+Structs/OmitEmpty/PathologicalBreadth — reflect.StructOf (encoding/json/v2/arshal_test.go; X0…X99 field list not constant)
+gobencdec StructOf/ArrayOf — reflect.StructOf/ArrayOf (encoding/gob/gobencdec_test.go; nested type not in B)

@@ -110,14 +110,113 @@ type StructField struct {
 	Anonymous bool
 }
 
+// IsExported reports whether the field is exported.
+func (f StructField) IsExported() bool {
+	if f.Name == "" {
+		return false
+	}
+	c := f.Name[0]
+	return 'A' <= c && c <= 'Z'
+}
+
 type StructTag string
 
-func (tag StructTag) Get(key string) string { return "" }
+func (tag StructTag) Get(key string) string {
+	v, _ := tag.Lookup(key)
+	return v
+}
+
+// Lookup returns the value associated with key in the tag string.
+// Copied from upstream reflect/type.go (strconv-free unquote).
+func (tag StructTag) Lookup(key string) (value string, ok bool) {
+	for tag != "" {
+		i := 0
+		for i < len(tag) && tag[i] == ' ' {
+			i++
+		}
+		tag = tag[i:]
+		if tag == "" {
+			break
+		}
+		i = 0
+		for i < len(tag) && tag[i] > ' ' && tag[i] != ':' && tag[i] != '"' && tag[i] != 0x7f {
+			i++
+		}
+		if i == 0 || i+1 >= len(tag) || tag[i] != ':' || tag[i+1] != '"' {
+			break
+		}
+		name := string(tag[:i])
+		tag = tag[i+1:]
+		i = 1
+		for i < len(tag) && tag[i] != '"' {
+			if tag[i] == '\\' {
+				i++
+			}
+			i++
+		}
+		if i >= len(tag) {
+			break
+		}
+		qvalue := string(tag[:i+1])
+		tag = tag[i+1:]
+		if key == name {
+			value, ok = unquoteTag(qvalue)
+			return value, ok
+		}
+	}
+	return "", false
+}
+
+func unquoteTag(q string) (string, bool) {
+	if len(q) < 2 || q[0] != '"' || q[len(q)-1] != '"' {
+		return "", false
+	}
+	s := q[1 : len(q)-1]
+	if !containsByte(s, '\\') && !containsByte(s, '"') {
+		return s, true
+	}
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' {
+			i++
+			if i >= len(s) {
+				return "", false
+			}
+			c = s[i]
+			switch c {
+			case '"', '\\', '\'':
+				b = append(b, c)
+			case 'n':
+				b = append(b, '\n')
+			case 't':
+				b = append(b, '\t')
+			default:
+				b = append(b, c)
+			}
+			continue
+		}
+		b = append(b, c)
+	}
+	return string(b), true
+}
+
+func containsByte(s string, c byte) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return true
+		}
+	}
+	return false
+}
 
 type Value struct {
-	typ  *rtype
-	data unsafe.Pointer
-	flag flag
+	typ     *rtype
+	data    unsafe.Pointer
+	flag    flag
+	base    unsafe.Pointer // parent struct/slice when flagField/flagIndex
+	baseTyp *rtype
+	slot    int
 }
 
 type flag uintptr
@@ -126,6 +225,10 @@ const (
 	flagRO flag = 1 << iota
 	flagIndir
 	flagAddr
+	flagField  // Set via setField(base, slot, …)
+	flagIndex  // Set via setIndex(base, slot, …)
+	flagRefBox // data is $go.box.ref holding a map/slice/iface/chan/func/pointer
+	flagFatPtr // data is $go.ptr.ref; load/store through class get/set (*map, *slice, …)
 )
 
 func (v Value) Kind() Kind {
@@ -149,8 +252,13 @@ func (v Value) IsNil() bool {
 		return false
 	}
 	switch v.Kind() {
-	case Pointer, Interface, Slice, Map, Chan, Func, UnsafePointer:
+	case Pointer:
+		if v.flag&flagRefBox != 0 {
+			return false // box pointer is always non-nil
+		}
 		return v.data == nil
+	case Interface, Slice, Map, Chan, Func, UnsafePointer:
+		return v.dataWord() == nil
 	}
 	return false
 }
@@ -163,7 +271,42 @@ func (v Value) Interface() any {
 	if !v.IsValid() {
 		panic("reflect: call of reflect.Value.Interface on zero Value")
 	}
-	return runtime.ReflectIface(v.typ.rt, v.data)
+	// Scalars/strings may live in mutable boxes (New().Elem(), fields).
+	// Interface must return a snapshot so map storage / any assignment
+	// does not alias the box (json SetMapIndex, MapIndex round-trips).
+	switch v.Kind() {
+	case String:
+		return runtime.ReflectString(v.dataWord())
+	case Bool:
+		return v.Bool()
+	case Int:
+		return int(v.Int())
+	case Int8:
+		return int8(v.Int())
+	case Int16:
+		return int16(v.Int())
+	case Int32:
+		return int32(v.Int())
+	case Int64:
+		return v.Int()
+	case Uint:
+		return uint(v.Uint())
+	case Uint8:
+		return uint8(v.Uint())
+	case Uint16:
+		return uint16(v.Uint())
+	case Uint32:
+		return uint32(v.Uint())
+	case Uint64:
+		return v.Uint()
+	case Uintptr:
+		return uintptr(v.Uint())
+	case Float32:
+		return float32(v.Float())
+	case Float64:
+		return v.Float()
+	}
+	return runtime.ReflectIface(v.typ.rt, v.dataWord())
 }
 
 func (v Value) Elem() Value {
@@ -176,7 +319,22 @@ func (v Value) Elem() Value {
 			return Value{}
 		}
 		et := runtime.ReflectPtrElem(runtime.ReflectExtra(v.typ.rt))
-		return Value{typ: wrap(et), data: v.data}
+		elem := wrap(et)
+		// Pointee of New(t) / *T is always addressable.
+		fl := flagAddr
+		if v.flag&flagRefBox != 0 {
+			// reflect.New(map/slice/…) boxes the null ref.
+			fl |= flagRefBox
+		} else {
+			// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
+			// Only these kinds use flagRefBox in New; scalars use typed boxes
+			// and structs/arrays use the object ref itself as *T.
+			switch elem.Kind() {
+			case Map, Slice, Interface, Chan, Func:
+				fl |= flagFatPtr
+			}
+		}
+		return Value{typ: elem, data: v.data, flag: fl}
 	case Interface:
 		if v.data == nil {
 			return Value{}
@@ -200,17 +358,25 @@ func (v Value) Field(i int) Value {
 	extra := runtime.ReflectExtra(v.typ.rt)
 	ft := runtime.ReflectStructFieldType(extra, i)
 	fd := runtime.ReflectCallGetField(extra, v.data, i)
-	return Value{typ: wrap(ft), data: fd}
+	fl := v.flag & (flagAddr | flagRO)
+	out := Value{typ: wrap(ft), data: fd, flag: fl}
+	if fl&flagAddr != 0 {
+		out.flag |= flagField
+		out.base = v.data
+		out.baseTyp = v.typ
+		out.slot = i
+	}
+	return out
 }
 
 func (v Value) Len() int {
 	switch v.Kind() {
 	case String:
-		return len(runtime.ReflectString(v.data))
+		return len(runtime.ReflectString(v.dataWord()))
 	case Slice, Array:
-		return runtime.ReflectCallLen(runtime.ReflectExtra(v.typ.rt), v.data)
+		return runtime.ReflectCallLen(runtime.ReflectExtra(v.typ.rt), v.dataWord())
 	case Map:
-		return runtime.ReflectMapLen(v.data)
+		return runtime.ReflectMapLen(v.dataWord())
 	case Chan:
 		return 0
 	}
@@ -224,28 +390,54 @@ func (v Value) Index(i int) Value {
 	case Slice, Array:
 		extra := runtime.ReflectExtra(v.typ.rt)
 		et := runtime.ReflectSliceElem(extra)
-		ed := runtime.ReflectCallIndex(extra, v.data, i)
-		return Value{typ: wrap(et), data: ed}
+		ed := runtime.ReflectCallIndex(extra, v.dataWord(), i)
+		// Indexed elements are always addressable.
+		return Value{
+			typ:     wrap(et),
+			data:    ed,
+			flag:    flagAddr | flagIndex,
+			base:    v.dataWord(),
+			baseTyp: v.typ,
+			slot:    i,
+		}
 	case String:
-		s := runtime.ReflectString(v.data)
+		s := runtime.ReflectString(v.dataWord())
 		return ValueOf(s[i])
 	}
 	panic("reflect: call of Index on " + v.Kind().String())
+}
+
+// dataWord returns the current data pointer, re-fetching from a parent
+// container when this Value is an addressable field/index slot.
+func (v Value) dataWord() unsafe.Pointer {
+	if v.flag&flagField != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
+		return runtime.ReflectCallGetField(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot)
+	}
+	if v.flag&flagIndex != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
+		return runtime.ReflectCallIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot)
+	}
+	if v.flag&flagFatPtr != 0 && v.Kind() != Pointer {
+		return runtime.ReflectFatPtrGet(v.data)
+	}
+	if v.flag&flagRefBox != 0 && v.Kind() != Pointer {
+		return runtime.ReflectUnboxRef(v.data)
+	}
+	return v.data
 }
 
 func (v Value) Bool() bool {
 	if v.Kind() != Bool {
 		panic("reflect: call of Bool on " + v.Kind().String())
 	}
-	return runtime.ReflectUnboxI32(v.data) != 0
+	return runtime.ReflectUnboxI32(v.dataWord()) != 0
 }
 
 func (v Value) Int() int64 {
 	switch v.Kind() {
 	case Int, Int8, Int16, Int32:
-		return int64(runtime.ReflectUnboxI32(v.data))
+		return int64(runtime.ReflectUnboxI32(v.dataWord()))
 	case Int64:
-		return runtime.ReflectUnboxI64(v.data)
+		return runtime.ReflectUnboxI64(v.dataWord())
 	}
 	panic("reflect: call of Int on " + v.Kind().String())
 }
@@ -253,9 +445,9 @@ func (v Value) Int() int64 {
 func (v Value) Uint() uint64 {
 	switch v.Kind() {
 	case Uint, Uint8, Uint16, Uint32, Uintptr:
-		return uint64(uint32(runtime.ReflectUnboxI32(v.data)))
+		return uint64(uint32(runtime.ReflectUnboxI32(v.dataWord())))
 	case Uint64:
-		return uint64(runtime.ReflectUnboxI64(v.data))
+		return uint64(runtime.ReflectUnboxI64(v.dataWord()))
 	}
 	panic("reflect: call of Uint on " + v.Kind().String())
 }
@@ -263,9 +455,9 @@ func (v Value) Uint() uint64 {
 func (v Value) Float() float64 {
 	switch v.Kind() {
 	case Float32:
-		return float64(runtime.ReflectUnboxF32(v.data))
+		return float64(runtime.ReflectUnboxF32(v.dataWord()))
 	case Float64:
-		return runtime.ReflectUnboxF64(v.data)
+		return runtime.ReflectUnboxF64(v.dataWord())
 	}
 	panic("reflect: call of Float on " + v.Kind().String())
 }
@@ -279,7 +471,7 @@ func (v Value) String() string {
 	case Invalid:
 		return "<invalid Value>"
 	case String:
-		return runtime.ReflectString(v.data)
+		return runtime.ReflectString(v.dataWord())
 	}
 	return "<" + v.Kind().String() + " Value>"
 }
@@ -304,12 +496,18 @@ func (v Value) Bytes() []byte {
 
 func (v Value) CanAddr() bool { return v.flag&flagAddr != 0 }
 
-func (v Value) Addr() Value { return Value{} }
+func (v Value) Addr() Value {
+	if !v.CanAddr() {
+		panic("reflect: call of Addr on unaddressable Value")
+	}
+	pt := PointerTo(v.Type())
+	return Value{typ: asRtype(pt), data: v.dataWord()}
+}
 
 func (v Value) UnsafePointer() unsafe.Pointer {
 	switch v.Kind() {
 	case Pointer, Map, Chan, Func, Slice, UnsafePointer:
-		return v.data
+		return v.dataWord()
 	}
 	panic("reflect: call of UnsafePointer on " + v.Kind().String() + " (no integer address on wasmgc)")
 }
@@ -322,7 +520,7 @@ func (v Value) MapRange() *MapIter {
 	if v.Kind() != Map {
 		panic("reflect: MapRange of non-map type")
 	}
-	keys, vals := runtime.ReflectMapPairs(v.data)
+	keys, vals := runtime.ReflectMapPairs(v.dataWord())
 	extra := runtime.ReflectExtra(v.typ.rt)
 	return &MapIter{
 		keys: keys,
@@ -342,33 +540,190 @@ func (v Value) MapKeys() []Value {
 	return out
 }
 
-func (v Value) MapIndex(key Value) Value { return Value{} }
+func (v Value) MapIndex(key Value) Value {
+	if v.Kind() != Map {
+		panic("reflect: MapIndex of non-map type")
+	}
+	d := v.dataWord()
+	if d == nil {
+		return Value{}
+	}
+	val, ok := runtime.ReflectMapAccess(d, key.Interface())
+	if !ok {
+		return Value{}
+	}
+	extra := runtime.ReflectExtra(v.typ.rt)
+	et := wrap(runtime.ReflectMapElem(extra))
+	return Value{typ: et, data: runtime.ReflectData(val)}
+}
 
-func (v Value) NumMethod() int        { return 0 }
-func (v Value) Method(int) Value      { return Value{} }
-func (v Value) CanSet() bool          { return false }
-func (v Value) Set(x Value)           {}
-func (v Value) SetBool(x bool)           {}
-func (v Value) SetInt(x int64)           {}
-func (v Value) SetUint(x uint64)         {}
-func (v Value) SetFloat(x float64)       {}
-func (v Value) SetComplex(x complex128)  {}
-func (v Value) SetString(x string)       {}
-func (v Value) SetBytes(x []byte)        {}
-func (v Value) SetCap(n int)             {}
-func (v Value) SetLen(n int)             {}
+func (v Value) NumMethod() int   { return 0 }
+func (v Value) Method(int) Value { return Value{} }
+
+func (v Value) CanSet() bool {
+	return v.flag&(flagAddr|flagRO) == flagAddr
+}
+
+func (v Value) mustBeSettable() {
+	if !v.CanSet() {
+		panic("reflect: call of Set on unaddressable or read-only Value")
+	}
+}
+
+func (v Value) setSlot(boxed unsafe.Pointer) {
+	if v.flag&flagField != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
+		runtime.ReflectCallSetField(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot, boxed)
+		return
+	}
+	if v.flag&flagIndex != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
+		runtime.ReflectCallSetIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot, boxed)
+		return
+	}
+	// Whole addressable scalar from New().Elem(): mutate the box in place.
+	switch v.Kind() {
+	case Bool:
+		runtime.ReflectSetBoxI32(v.data, runtime.ReflectUnboxI32(boxed))
+	case Int, Int8, Int16, Int32:
+		runtime.ReflectSetBoxI32(v.data, runtime.ReflectUnboxI32(boxed))
+	case Int64:
+		runtime.ReflectSetBoxI64(v.data, runtime.ReflectUnboxI64(boxed))
+	case Uint, Uint8, Uint16, Uint32, Uintptr:
+		runtime.ReflectSetBoxI32(v.data, runtime.ReflectUnboxI32(boxed))
+	case Uint64:
+		runtime.ReflectSetBoxI64(v.data, runtime.ReflectUnboxI64(boxed))
+	case Float32:
+		runtime.ReflectSetBoxF32(v.data, runtime.ReflectUnboxF32(boxed))
+	case Float64:
+		runtime.ReflectSetBoxF64(v.data, runtime.ReflectUnboxF64(boxed))
+	case String:
+		if v.flag&(flagField|flagIndex) == 0 {
+			runtime.ReflectSetBoxString(v.data, runtime.ReflectString(boxed))
+		}
+	case Struct:
+		// Whole addressable struct from New().Elem(): shallow-copy fields
+		// into the existing object (encoding/json Marshal needs this).
+		src := Value{typ: v.typ, data: boxed}
+		n := v.NumField()
+		for i := 0; i < n; i++ {
+			df := v.Field(i)
+			if !df.CanSet() {
+				continue
+			}
+			df.Set(src.Field(i))
+		}
+	case Map, Slice, Pointer, Interface, Chan, Func:
+		if v.flag&flagRefBox != 0 {
+			runtime.ReflectSetBoxRef(v.data, boxed)
+			return
+		}
+		if v.flag&flagFatPtr != 0 {
+			runtime.ReflectFatPtrSet(v.data, boxed)
+			return
+		}
+		// Composites without a box: Set through flagField/flagIndex parents.
+	case Array:
+		// Whole array Set from New().Elem() is not yet wired.
+	}
+}
+
+func (v Value) Set(x Value) {
+	v.mustBeSettable()
+	if !x.IsValid() {
+		return
+	}
+	v.setSlot(x.dataWord())
+}
+
+func (v Value) SetBool(x bool) {
+	v.mustBeSettable()
+	if v.Kind() != Bool {
+		panic("reflect: SetBool of non-bool Value")
+	}
+	var i any = x
+	v.setSlot(runtime.ReflectData(i))
+}
+
+func (v Value) SetInt(x int64) {
+	v.mustBeSettable()
+	switch v.Kind() {
+	case Int, Int8, Int16, Int32:
+		var i any = int32(x)
+		v.setSlot(runtime.ReflectData(i))
+	case Int64:
+		var i any = x
+		v.setSlot(runtime.ReflectData(i))
+	default:
+		panic("reflect: SetInt of non-int Value")
+	}
+}
+
+func (v Value) SetUint(x uint64) {
+	v.mustBeSettable()
+	switch v.Kind() {
+	case Uint, Uint8, Uint16, Uint32, Uintptr:
+		var i any = uint32(x)
+		v.setSlot(runtime.ReflectData(i))
+	case Uint64:
+		var i any = x
+		v.setSlot(runtime.ReflectData(i))
+	default:
+		panic("reflect: SetUint of non-uint Value")
+	}
+}
+
+func (v Value) SetFloat(x float64) {
+	v.mustBeSettable()
+	switch v.Kind() {
+	case Float32:
+		var i any = float32(x)
+		v.setSlot(runtime.ReflectData(i))
+	case Float64:
+		var i any = x
+		v.setSlot(runtime.ReflectData(i))
+	default:
+		panic("reflect: SetFloat of non-float Value")
+	}
+}
+
+func (v Value) SetComplex(x complex128) {}
+func (v Value) SetString(x string) {
+	v.mustBeSettable()
+	if v.Kind() != String {
+		panic("reflect: SetString of non-string Value")
+	}
+	var i any = x
+	v.setSlot(runtime.ReflectData(i))
+}
+func (v Value) SetBytes(x []byte)           {}
+func (v Value) SetCap(n int)                {}
+func (v Value) SetLen(n int)                {}
 func (v Value) SetPointer(x unsafe.Pointer) {}
-func (v Value) CanComplex() bool         { return false }
-func (v Value) CanFloat() bool           { return false }
-func (v Value) CanInt() bool             { return false }
-func (v Value) CanUint() bool            { return false }
+func (v Value) CanComplex() bool            { return false }
+func (v Value) CanFloat() bool {
+	k := v.Kind()
+	return k == Float32 || k == Float64
+}
+func (v Value) CanInt() bool {
+	switch v.Kind() {
+	case Int, Int8, Int16, Int32, Int64:
+		return true
+	}
+	return false
+}
+func (v Value) CanUint() bool {
+	switch v.Kind() {
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return true
+	}
+	return false
+}
 func (v Value) OverflowComplex(x complex128) bool { return false }
 func (v Value) OverflowFloat(x float64) bool      { return false }
 func (v Value) OverflowInt(x int64) bool          { return false }
 func (v Value) OverflowUint(x uint64) bool        { return false }
-func (v Value) Convert(t Type) Value     { return Value{} }
-func (v Value) Slice(i, j int) Value     { return Value{} }
-func (v Value) Slice3(i, j, k int) Value { return Value{} }
+func (v Value) Convert(t Type) Value              { return Value{} }
+func (v Value) Slice(i, j int) Value              { return Value{} }
+func (v Value) Slice3(i, j, k int) Value          { return Value{} }
 func (v Value) FieldByIndex(index []int) Value {
 	v2 := v
 	for _, i := range index {
@@ -379,10 +734,27 @@ func (v Value) FieldByIndex(index []int) Value {
 func (v Value) FieldByName(name string) Value { return Value{} }
 func (v Value) Call(in []Value) []Value       { return nil }
 func (v Value) CallSlice(in []Value) []Value  { return nil }
-func (v Value) SetMapIndex(key, elem Value)   {}
-func (v Value) Grow(n int)                    {}
-func (v Value) Clear()                        {}
-func (v Value) IsZero() bool                  { return !v.IsValid() }
+
+func (v Value) SetMapIndex(key, elem Value) {
+	if v.Kind() != Map {
+		panic("reflect: SetMapIndex of non-map type")
+	}
+	if !elem.IsValid() {
+		// delete — not required for json exit; no-op for now
+		return
+	}
+	runtime.ReflectMapAssign(v.dataWord(), key.Interface(), elem.Interface())
+}
+
+func (v Value) Grow(n int)   {}
+func (v Value) Clear()       {}
+func (v Value) IsZero() bool { return !v.IsValid() }
+func (v Value) SetZero() {
+	if !v.CanSet() {
+		return
+	}
+	v.Set(Zero(v.Type()))
+}
 
 type MapIter struct {
 	keys []any
@@ -403,6 +775,39 @@ func (it *MapIter) Next() bool {
 func (it *MapIter) Key() Value   { return ValueOf(it.keys[it.i]) }
 func (it *MapIter) Value() Value { return ValueOf(it.vals[it.i]) }
 
+// SetIterKey assigns to v the key of iter's current map entry.
+// Equivalent to v.Set(iter.Key()) for the wasmgc MapIter snapshot.
+func (v Value) SetIterKey(iter *MapIter) {
+	v.Set(iter.Key())
+}
+
+// SetIterValue assigns to v the value of iter's current map entry.
+func (v Value) SetIterValue(iter *MapIter) {
+	v.Set(iter.Value())
+}
+
+// Indirect returns the value that v points to when v is a pointer; otherwise v.
+func Indirect(v Value) Value {
+	if v.Kind() != Pointer {
+		return v
+	}
+	return v.Elem()
+}
+
+// TypeAssert asserts that v's concrete value has type T.
+func TypeAssert[T any](v Value) (T, bool) {
+	var zero T
+	if !v.IsValid() {
+		return zero, false
+	}
+	i := v.Interface()
+	if i == nil {
+		return zero, false
+	}
+	t, ok := i.(T)
+	return t, ok
+}
+
 func TypeOf(i any) Type {
 	if i == nil {
 		return nil
@@ -417,11 +822,30 @@ func ValueOf(i any) Value {
 	return Value{typ: wrap(runtime.ReflectType(i)), data: runtime.ReflectData(i)}
 }
 
-func PointerTo(t Type) Type           { return t }
-func PtrTo(t Type) Type               { return PointerTo(t) }
-func SliceOf(t Type) Type             { return t }
-func ArrayOf(n int, t Type) Type      { return t }
-func MapOf(key, elem Type) Type       { return &rtype{kind: uint8(Map), str: "map"} }
+func PointerTo(t Type) Type {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return t
+	}
+	return wrap(runtime.ReflectPointerTo(r.rt))
+}
+func PtrTo(t Type) Type { return PointerTo(t) }
+func SliceOf(t Type) Type {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return t
+	}
+	return wrap(runtime.ReflectSliceOf(r.rt))
+}
+func ArrayOf(n int, t Type) Type { return t }
+func MapOf(key, elem Type) Type {
+	k := asRtype(key)
+	e := asRtype(elem)
+	if k != nil && k.rt != nil && e != nil && e.Kind() == Struct && e.NumField() == 0 {
+		return wrap(runtime.ReflectMapOfEmpty(k.rt))
+	}
+	return &rtype{kind: uint8(Map), str: "map"}
+}
 func ChanOf(dir ChanDir, t Type) Type { return t }
 func StructOf(fields []StructField) Type {
 	return &rtype{kind: uint8(Struct), str: "struct"}
@@ -431,14 +855,74 @@ func FuncOf(in, out []Type, variadic bool) Type {
 }
 func TypeFor[T any]() Type { return TypeOf((*T)(nil)).Elem() }
 
-func Zero(t Type) Value                   { return Value{typ: asRtype(t)} }
-func New(t Type) Value                    { return Value{} }
-func MakeSlice(typ Type, len, cap int) Value { return Value{} }
-func MakeMap(typ Type) Value              { return Value{} }
-func MakeMapWithSize(typ Type, n int) Value { return Value{} }
-func Append(s Value, x ...Value) Value    { return s }
-func Copy(dst, src Value) int             { return 0 }
-func DeepEqual(a, b any) bool             { return a == b }
+func Zero(t Type) Value {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return Value{typ: r}
+	}
+	return Value{typ: r, data: runtime.ReflectNew(r.rt)}
+}
+
+func New(t Type) Value {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return Value{}
+	}
+	data := runtime.ReflectNew(r.rt)
+	pt := asRtype(PointerTo(t))
+	fl := flag(0)
+	switch t.Kind() {
+	case Map, Slice, Interface, Chan, Func:
+		// Zero is a null ref; box it so New(t).Elem() is addressable and Set works.
+		data = runtime.ReflectNewRefBox(data)
+		fl = flagRefBox
+	}
+	return Value{typ: pt, data: data, flag: fl}
+}
+
+func MakeSlice(typ Type, len, cap int) Value {
+	r := asRtype(typ)
+	if r == nil || r.rt == nil || typ.Kind() != Slice {
+		panic("reflect: MakeSlice of non-slice type")
+	}
+	if len < 0 || cap < 0 || len > cap {
+		panic("reflect: MakeSlice of negative length or capacity less than length")
+	}
+	data := runtime.ReflectMakeSlice(r.rt, len, cap)
+	return Value{typ: r, data: data, flag: flagAddr}
+}
+
+func MakeMap(typ Type) Value {
+	return MakeMapWithSize(typ, 0)
+}
+
+func MakeMapWithSize(typ Type, n int) Value {
+	r := asRtype(typ)
+	if r == nil || typ.Kind() != Map {
+		panic("reflect: MakeMap of non-map type")
+	}
+	_ = n
+	return Value{typ: r, data: runtime.ReflectMakeMap(), flag: flagAddr}
+}
+
+func Append(s Value, x ...Value) Value {
+	if s.Kind() != Slice {
+		panic("reflect: Append of non-slice Value")
+	}
+	// Minimal grow: allocate len+n with MakeSlice and copy via Set/Index.
+	n := len(x)
+	oldLen := s.Len()
+	out := MakeSlice(s.Type(), oldLen+n, oldLen+n)
+	for i := 0; i < oldLen; i++ {
+		out.Index(i).Set(s.Index(i))
+	}
+	for i, e := range x {
+		out.Index(oldLen + i).Set(e)
+	}
+	return out
+}
+func Copy(dst, src Value) int { return 0 }
+func DeepEqual(a, b any) bool { return a == b }
 
 // rtype implements Type. When rt != nil it is backed by $go.type.
 type rtype struct {
@@ -578,15 +1062,16 @@ func (t *rtype) Field(i int) StructField {
 	return StructField{
 		Name:  runtime.ReflectStructFieldName(extra, i),
 		Type:  wrap(runtime.ReflectStructFieldType(extra, i)),
+		Tag:   StructTag(runtime.ReflectStructFieldTag(extra, i)),
 		Index: []int{i},
 	}
 }
 
-func (t *rtype) NumIn() int                  { return 0 }
-func (t *rtype) NumOut() int                 { return 0 }
-func (t *rtype) In(i int) Type               { return nil }
-func (t *rtype) Out(i int) Type              { return nil }
-func (t *rtype) Implements(Type) bool        { return false }
+func (t *rtype) NumIn() int           { return 0 }
+func (t *rtype) NumOut() int          { return 0 }
+func (t *rtype) In(i int) Type        { return nil }
+func (t *rtype) Out(i int) Type       { return nil }
+func (t *rtype) Implements(Type) bool { return false }
 func (t *rtype) AssignableTo(u Type) bool {
 	return t != nil && u != nil && t.Kind() == u.Kind()
 }

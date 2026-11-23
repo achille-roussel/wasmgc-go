@@ -31,7 +31,8 @@ import { writeSync } from "node:fs";
 const SUSPENDING_IMPORTS = new Set([
   "runtime.park",
   "runtime.gosched",
-  // js.Await (later) is suspending; js.call is not wrapped by default (07).
+  "js.await", // suspending; js.call returns Promises as externref (07)
+  "js.httpGet",
 ]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -299,18 +300,154 @@ function buildImports(module, opts) {
         fn = () => (opts.programArgs?.length ?? 0) | 0;
         break;
       case "runtime.getArg":
+        // Copy argv[i] UTF-8 into linear memory at ptr (up to max bytes).
+        // Returns the full byte length so max=0 queries length (07).
+        fn = (i, ptr, max) => {
+          const args = opts.programArgs ?? [];
+          const idx = i | 0;
+          const s = idx >= 0 && idx < args.length ? String(args[idx]) : "";
+          const bytes = new TextEncoder().encode(s);
+          const cap = max >>> 0;
+          const n = bytes.length < cap ? bytes.length : cap;
+          if (n > 0) {
+            const mem = getMemory();
+            new Uint8Array(mem.buffer, ptr >>> 0, n).set(bytes.subarray(0, n));
+          }
+          return bytes.length | 0;
+        };
+        break;
       case "runtime.getEnv":
-        // Linear-memory copies land with os.Args (M9). Length-only stubs for now.
+        // Environ linear-memory copies land with a later os.Environ wire-up.
         fn = () => 0;
         break;
+      case "js.get":
+        fn = (obj, prop) => obj[prop];
+        break;
+      case "js.set":
+        fn = (obj, prop, val) => {
+          obj[prop] = val;
+        };
+        break;
+      case "js.call":
+        // name null/undefined → invoke obj as a function; else obj[name](...).
+        // argc selects the first 0..3 of a0,a1,a2 (fixed-arity ABI).
+        fn = (obj, name, a0, a1, a2, argc) => {
+          const n = argc | 0;
+          const args = [];
+          if (n > 0) args.push(a0);
+          if (n > 1) args.push(a1);
+          if (n > 2) args.push(a2);
+          if (name == null) {
+            return obj(...args);
+          }
+          return obj[name](...args);
+        };
+        break;
+      case "js.new":
+        fn = (ctor, a0, a1, a2, argc) => {
+          const n = argc | 0;
+          const args = [];
+          if (n > 0) args.push(a0);
+          if (n > 1) args.push(a1);
+          if (n > 2) args.push(a2);
+          return new ctor(...args);
+        };
+        break;
+      case "js.value":
+        // kind: 0=undefined 1=null 2=bool 3=number 4=string(ptr,len) 5=globalThis
+        fn = (kind, num, ptr, len) => {
+          switch (kind | 0) {
+            case 0:
+              return undefined;
+            case 1:
+              return null;
+            case 2:
+              return !!num;
+            case 3:
+              return num;
+            case 4: {
+              const mem = getMemory();
+              const bytes = new Uint8Array(mem.buffer, ptr >>> 0, len >>> 0);
+              return new TextDecoder().decode(bytes);
+            }
+            case 5:
+              return globalThis;
+            default:
+              return undefined;
+          }
+        };
+        break;
+      case "js.await":
+        // Suspending: settle Promise.resolve(p). Returns [ok, result];
+        // ok=0 and result=error string on rejection.
+        fn = async (p) => {
+          try {
+            return [1, await Promise.resolve(p)];
+          } catch (e) {
+            return [0, e == null ? "error" : String(e)];
+          }
+        };
+        break;
+      case "js.stringCopy":
+        // Copy JS string (or String(v)) UTF-8 into linear memory at ptr up to
+        // max bytes; return full byte length (max=0 queries length).
+        fn = (v, ptr, max) => {
+          const s = v == null ? "" : String(v);
+          const bytes = new TextEncoder().encode(s);
+          const cap = max >>> 0;
+          const n = bytes.length < cap ? bytes.length : cap;
+          if (n > 0) {
+            const mem = getMemory();
+            new Uint8Array(mem.buffer, ptr >>> 0, n).set(bytes.subarray(0, n));
+          }
+          return bytes.length | 0;
+        };
+        break;
+      case "js.number":
+        fn = (v) => Number(v);
+        break;
+      case "js.truthy":
+        fn = (v) => (v ? 1 : 0);
+        break;
+      case "js.typeof":
+        // Match syscall/js.Type constants.
+        fn = (v) => {
+          if (v === undefined) return 0;
+          if (v === null) return 1;
+          switch (typeof v) {
+            case "boolean":
+              return 2;
+            case "number":
+              return 3;
+            case "string":
+              return 4;
+            case "symbol":
+              return 5;
+            case "function":
+              return 7;
+            default:
+              return 6; // object
+          }
+        };
+        break;
+      case "js.equal":
+        fn = (a, b) => (a === b ? 1 : 0);
+        break;
+      case "js.httpGet":
+        // Suspending helper: perform fetch entirely on the host so undici
+        // is not started from inside a non-suspending Wasm import (JSPI).
+        fn = async (url) => {
+          try {
+            const res = await fetch(String(url));
+            const text = await res.text();
+            return [1, res.status | 0, text];
+          } catch (e) {
+            return [0, 0, e == null ? "error" : String(e)];
+          }
+        };
+        break;
       default:
-        if (name.startsWith("js.")) {
-          fn = () => {
-            throw new Error(`wasmgc.js: unimplemented import go.${name}`);
-          };
-        } else {
-          throw new Error(`wasmgc.js: unknown import go.${name}`);
-        }
+        throw new Error(`wasmgc.js: unknown import go.${name}`);
     }
 
     if (SUSPENDING_IMPORTS.has(name)) {

@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"strings"
@@ -82,24 +83,59 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 		}
 		return &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{fl.useVar(v)}, Type: ptrTy}, nil, nil
 	case *ast.SelectorExpr:
-		// &s.f or &p.f
+		// &s.f or &p.f (including promoted embedded fields).
 		if sel := fl.info.Selections[x]; sel != nil && sel.Kind() == types.FieldVal {
 			base, stmts, err := fl.expr(x.X, nil)
 			if err != nil {
 				return nil, nil, err
 			}
-			// If X is a pointer to struct, deref first for object base.
 			xt := fl.typeOf(x.X)
 			if isPointer(xt) && !isObjectPointer(xt) {
 				return nil, nil, fl.errorf(x, "cannot take address of field through fat pointer")
 			}
-			if isPointer(xt) {
-				// Object pointer: base is already the struct ref.
+			idx := sel.Index()
+			if len(idx) == 0 {
+				return nil, nil, fl.errorf(x, "empty field selection for addr")
+			}
+			cur := base
+			ty := xt
+			// Walk embedding path except the leaf field.
+			for i := 0; i < len(idx)-1; i++ {
+				st := structOf(ty)
+				if st == nil || idx[i] < 0 || idx[i] >= st.NumFields() {
+					return nil, nil, fl.errorf(x, "addr embedding index out of range")
+				}
+				fld := st.Field(idx[i])
+				stName := ""
+				if irt, err := fl.mapType(ty); err == nil {
+					stName = refTypeName(irt)
+				}
+				if stName == "" {
+					return nil, nil, fl.errorf(x, "no IR type for %s", ty)
+				}
+				cur = &ir.Instr{
+					Op:    ir.OpStructGet,
+					Type:  &ir.Ref{Named: stName},
+					Field: fld.Name(),
+					Args:  []ir.Expr{cur},
+				}
+				ty = fld.Type()
+				if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+					ty = p.Elem()
+				}
+			}
+			st := structOf(ty)
+			leaf := x.Sel.Name
+			if st != nil {
+				fi := idx[len(idx)-1]
+				if fi >= 0 && fi < st.NumFields() {
+					leaf = st.Field(fi).Name()
+				}
 			}
 			return &ir.Instr{
 				Op:    ir.OpAddr,
-				Args:  []ir.Expr{base},
-				Field: x.Sel.Name,
+				Args:  []ir.Expr{cur},
+				Field: leaf,
 				Type:  ptrTy,
 			}, stmts, nil
 		}
@@ -140,7 +176,8 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 }
 
 func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	ptrTy, _ := fl.mapType(fl.typeOf(e.X))
+	xt := fl.typeOf(e.X)
+	ptrTy, _ := fl.mapType(xt)
 	ptr, stmts, err := fl.expr(e.X, ptrTy)
 	if err != nil {
 		return nil, nil, err
@@ -148,6 +185,10 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	ty := want
 	if ty == nil {
 		ty, _ = fl.mapType(fl.typeOf(e))
+	}
+	// *Struct / *[N]T: pointer and value share the same object ref.
+	if xt != nil && isObjectPointer(xt) {
+		return ptr, stmts, nil
 	}
 	// Materialize pointer into a typed local so RuntimeOps expandDeref sees
 	// $go.ptr.* (struct.get Type is the container, not the field type).
@@ -260,7 +301,7 @@ func structOf(t types.Type) *types.Struct {
 func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	sel := fl.info.Selections[e]
 	if sel == nil {
-		// package.Name constant or var — handled via Uses on Sel
+		// package.Name constant, var, or top-level func value — via Uses on Sel
 		if obj := fl.info.Uses[e.Sel]; obj != nil {
 			if c, ok := obj.(*types.Const); ok {
 				ty, err := fl.mapType(c.Type())
@@ -291,6 +332,10 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 						return &ir.Instr{Op: ir.OpGlobalGet, Global: gname}, nil, nil
 					}
 				}
+			}
+			// package.Func as a func value (e.g. unicode.IsSpace passed to FieldsFunc).
+			if fn, ok := obj.(*types.Func); ok {
+				return fl.topLevelFuncValue(fn)
 			}
 		}
 		return nil, nil, fl.errorf(e, "unsupported selector")
@@ -383,6 +428,8 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	}
 	if isArray(xt) || isPtrToArray(xt) {
 		// Value read: array.get (structs/refs included). Address-of uses OpAddr elsewhere.
+		// Instr.Type is the ARRAY type (codegen typeIndexOf); lenCapArgType
+		// resolves ArrayGet to the element type for len/cap.
 		arrName := ""
 		elemT := xt
 		if isPtrToArray(xt) {
@@ -488,6 +535,11 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	}
 	ut := types.Unalias(ty)
 	if n, ok := ut.(*types.Named); ok {
+		if isJSValue(n) {
+			// Value{} is JS null (externref null), not an empty struct.
+			z, err := fl.zeroValue(ir.TypeExtern)
+			return z, nil, err
+		}
 		ut = n.Underlying()
 	}
 	switch ut := ut.(type) {
@@ -510,21 +562,7 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	case *types.Struct:
 		return fl.structLit(e, ut, irt)
 	case *types.Array:
-		var args []ir.Expr
-		var stmts []ir.Stmt
-		elemWant, _ := fl.mapType(ut.Elem())
-		for _, el := range e.Elts {
-			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				el = kv.Value
-			}
-			ex, st, err := fl.expr(el, elemWant)
-			if err != nil {
-				return nil, nil, err
-			}
-			stmts = append(stmts, st...)
-			args = append(args, ex)
-		}
-		return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+		return fl.arrayLit(e, ut, irt)
 	case *types.Map:
 		return fl.mapLiteral(e, irt)
 	default:
@@ -534,6 +572,71 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 
 // structLitField lowers a composite-literal field value, boxing into an
 // interface when the field type is an interface.
+// arrayLit lowers [N]T{...}, including keyed indices (e.g. [256]Kind{'{': '{'}).
+// Missing slots are zero so const packing / array.new_fixed have length N.
+func (fl *funcLower) arrayLit(e *ast.CompositeLit, at *types.Array, irt ir.Type) (ir.Expr, []ir.Stmt, error) {
+	n := int(at.Len())
+	if n < 0 {
+		n = 0
+	}
+	elemWant, err := fl.mapType(at.Elem())
+	if err != nil {
+		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	args := make([]ir.Expr, n)
+	for i := 0; i < n; i++ {
+		z, err := fl.zeroValue(elemWant)
+		if err != nil {
+			return nil, nil, err
+		}
+		args[i] = z
+	}
+	var stmts []ir.Stmt
+	next := 0
+	for _, el := range e.Elts {
+		idx := next
+		val := el
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			val = kv.Value
+			c, ok := fl.constInt(kv.Key)
+			if !ok {
+				return nil, nil, fl.errorf(kv.Key, "array literal key must be a constant integer")
+			}
+			if c < 0 || int(c) >= n {
+				return nil, nil, fl.errorf(kv.Key, "array literal index %d out of bounds [0:%d]", c, n)
+			}
+			idx = int(c)
+		} else if next >= n {
+			return nil, nil, fl.errorf(el, "array literal has too many elements")
+		}
+		ex, st, err := fl.expr(val, elemWant)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+		args[idx] = ex
+		next = idx + 1
+	}
+	return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+}
+
+func (fl *funcLower) constInt(e ast.Expr) (int64, bool) {
+	if e == nil {
+		return 0, false
+	}
+	tv, ok := fl.info.Types[e]
+	if !ok || tv.Value == nil {
+		return 0, false
+	}
+	if v, exact := constant.Int64Val(tv.Value); exact {
+		return v, true
+	}
+	if v, exact := constant.Uint64Val(tv.Value); exact && v <= uint64(^uint64(0)>>1) {
+		return int64(v), true
+	}
+	return 0, false
+}
+
 func (fl *funcLower) structLitField(val ast.Expr, fieldTy types.Type) (ir.Expr, []ir.Stmt, error) {
 	if isIface(fieldTy) && !isIface(fl.typeOf(val)) && !isNilIdent(val) {
 		return fl.convertToIface(val, fl.typeOf(val), fieldTy, typeIface)
@@ -548,9 +651,19 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 	var stmts []ir.Stmt
 	// Zero defaults.
 	for i := 0; i < n; i++ {
-		ft, err := fl.mapType(st.Field(i).Type())
+		ftGo := st.Field(i).Type()
+		ft, err := fl.mapType(ftGo)
 		if err != nil {
 			return nil, nil, err
+		}
+		// *NamedStruct fields share IR with T; zero is null, not empty T.
+		if p, ok := types.Unalias(ftGo).(*types.Pointer); ok {
+			if _, ok := types.Unalias(p.Elem()).(*types.Named); ok {
+				if _, ok := types.Unalias(p.Elem()).Underlying().(*types.Struct); ok {
+					vals[i] = &ir.Instr{Op: ir.OpRefNull, Type: ft}
+					continue
+				}
+			}
 		}
 		z, err := fl.zeroValue(ft)
 		if err != nil {
@@ -634,28 +747,106 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			})
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
-		// User named structs ($go.struct.*) are values: zero is an empty heap
-		// object. Nested struct fields are filled by structZero (non-null).
-		// Runtime / iface / chan / slice / clos zeros stay null refs.
+		// Named structs ($go.struct.*): T and *T share the same IR ref
+		// (Null:true). Value zero is an empty heap object; pointer zero is
+		// null and must be decided from the Go type at the call site
+		// (structLit). Here we always build a value zero.
 		if strings.HasPrefix(t.Named, "$go.struct.") {
 			if td := fl.mod.LookupType(t.Named); td != nil && td.Kind == ir.TypeStruct {
 				return fl.structZero(td, t, map[string]bool{})
 			}
 		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
+	case *ir.Extern:
+		return &ir.Instr{Op: ir.OpRefNull, Type: ir.TypeExtern}, nil
 	default:
 		return nil, fmt.Errorf("no zero value for %s", t)
 	}
 }
 
+// goZeroValue builds the Go zero for a local/global when Wasm's null default
+// is wrong. ok is false when null/0 is already correct (pointers, slices, …).
+func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) {
+	if goTy == nil || irTy == nil {
+		return nil, false
+	}
+	goTy = types.Unalias(goTy)
+	switch u := goTy.Underlying().(type) {
+	case *types.Array:
+		r, ok := irTy.(*ir.Ref)
+		if !ok || r.Named == "" {
+			return nil, false
+		}
+		n := u.Len()
+		if n < 0 {
+			n = 0
+		}
+		// (ref $go.string) elems are non-defaultable.
+		if r.Named == "$go.array.go.string" {
+			return &ir.Instr{
+				Op:   ir.OpArrayNew,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpStringLit, Str: ""},
+					&ir.Const{Op: ir.OpI32Const, I64: n},
+				},
+			}, true
+		}
+		return &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: &ir.Ref{Named: r.Named},
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: n}},
+		}, true
+	case *types.Struct:
+		z, err := fl.zeroValue(irTy)
+		if err != nil {
+			return nil, false
+		}
+		// Only emit when zeroValue allocates (named struct), not bare null.
+		if in, ok := z.(*ir.Instr); ok && in.Op == ir.OpRefNull {
+			return nil, false
+		}
+		return z, true
+	case *types.Basic:
+		if u.Kind() == types.String {
+			return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
+		}
+		if u.Kind() == types.Complex64 || u.Kind() == types.Complex128 {
+			z, err := fl.zeroValue(irTy)
+			return z, err == nil
+		}
+	}
+	// Named struct defined type.
+	if _, ok := goTy.(*types.Named); ok {
+		if _, ok := goTy.Underlying().(*types.Struct); ok {
+			z, err := fl.zeroValue(irTy)
+			if err != nil {
+				return nil, false
+			}
+			if in, ok := z.(*ir.Instr); ok && in.Op == ir.OpRefNull {
+				return nil, false
+			}
+			return z, true
+		}
+	}
+	return nil, false
+}
+
 func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
 	if seen[td.Name] {
-		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+		// Avoid struct.new_default (non-defaultable string fields).
+		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	}
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
+		// Nested $go.struct refs: pointer fields (Ptr) and same-type fields
+		// are *T (null); other named structs are nested values.
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			if f.Ptr || r.Named == td.Name {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
+				continue
+			}
 			ntd := fl.mod.LookupType(r.Named)
 			if ntd != nil && ntd.Kind == ir.TypeStruct {
 				z, err := fl.structZero(ntd, r, seen)
@@ -666,12 +857,30 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 				continue
 			}
 		}
+		if f.Ptr {
+			if r, ok := f.Type.(*ir.Ref); ok {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
+				continue
+			}
+		}
 		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
 			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
-			args[i] = &ir.Instr{
-				Op:   ir.OpArrayNewDefault,
-				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			// (ref $go.string) is non-defaultable — use array.new of "".
+			if r.Named == "$go.array.go.string" {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNew,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStringLit, Str: ""},
+						&ir.Const{Op: ir.OpI32Const, I64: f.Len},
+					},
+				}
+			} else {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNewDefault,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+				}
 			}
 			continue
 		}

@@ -277,35 +277,39 @@ func collectGlobalGetsExpr(e Expr, read map[string]bool) {
 }
 
 func scrubRegion(r Region, read map[string]bool) Region {
+	return scrubRegionMode(r, read, false)
+}
+
+func scrubRegionMode(r Region, read map[string]bool, localsOnlyWithParentLive bool) Region {
 	if r == nil {
 		return nil
 	}
 	switch r := r.(type) {
 	case *Seq:
-		return scrubSeq(r, read)
+		return scrubSeq(r, read, localsOnlyWithParentLive)
 	case *Block:
-		r.Body = scrubRegion(r.Body, read)
+		r.Body = scrubRegionMode(r.Body, read, localsOnlyWithParentLive)
 		return r
 	case *Loop:
-		r.Body = scrubRegion(r.Body, read)
+		r.Body = scrubRegionMode(r.Body, read, localsOnlyWithParentLive)
 		return r
 	case *If:
-		r.Then = scrubRegion(r.Then, read)
-		r.Else = scrubRegion(r.Else, read)
+		r.Then = scrubRegionMode(r.Then, read, localsOnlyWithParentLive)
+		r.Else = scrubRegionMode(r.Else, read, localsOnlyWithParentLive)
 		return r
 	case *Switch:
 		for i := range r.Cases {
-			r.Cases[i].Body = scrubRegion(r.Cases[i].Body, read)
+			r.Cases[i].Body = scrubRegionMode(r.Cases[i].Body, read, localsOnlyWithParentLive)
 		}
-		r.Default = scrubRegion(r.Default, read)
+		r.Default = scrubRegionMode(r.Default, read, localsOnlyWithParentLive)
 		return r
 	case *Try:
-		r.Body = scrubRegion(r.Body, read)
-		r.Handler = scrubRegion(r.Handler, read)
+		r.Body = scrubRegionMode(r.Body, read, localsOnlyWithParentLive)
+		r.Handler = scrubRegionMode(r.Handler, read, localsOnlyWithParentLive)
 		return r
 	case *Dispatch:
 		for i := range r.Arms {
-			r.Arms[i] = scrubRegion(r.Arms[i], read)
+			r.Arms[i] = scrubRegionMode(r.Arms[i], read, localsOnlyWithParentLive)
 		}
 		return r
 	}
@@ -313,30 +317,35 @@ func scrubRegion(r Region, read map[string]bool) Region {
 }
 
 // scrubSeq removes dead global.set and pure assigns whose results are unused.
-// Uses a backward liveness pass over the flat statement list, then recurses
-// into nested regions.
-func scrubSeq(seq *Seq, read map[string]bool) *Seq {
-	// First scrub nested regions inside statements.
+// Uses a backward liveness pass over the flat statement list.
+//
+// Nested If/Block bodies are scrubbed for dead *globals* only when visited
+// from a parent: local-assign DCE inside a branch must see live-outs from
+// after the If (e.g. append's ncap assigned in Then, used after). Running
+// full local DCE on Then/Else in isolation deleted those assigns and broke
+// []string append (M9 os.Args).
+func scrubSeq(seq *Seq, read map[string]bool, keepLocalAssigns bool) *Seq {
+	// Scrub nested regions for dead global.sets only (keep local assigns).
 	for i, s := range seq.Stmts {
 		switch s := s.(type) {
 		case *Block:
-			s.Body = scrubRegion(s.Body, read)
+			s.Body = scrubRegionMode(s.Body, read, true)
 		case *Loop:
-			s.Body = scrubRegion(s.Body, read)
+			s.Body = scrubRegionMode(s.Body, read, true)
 		case *If:
-			s.Then = scrubRegion(s.Then, read)
-			s.Else = scrubRegion(s.Else, read)
+			s.Then = scrubRegionMode(s.Then, read, true)
+			s.Else = scrubRegionMode(s.Else, read, true)
 		case *Switch:
 			for j := range s.Cases {
-				s.Cases[j].Body = scrubRegion(s.Cases[j].Body, read)
+				s.Cases[j].Body = scrubRegionMode(s.Cases[j].Body, read, true)
 			}
-			s.Default = scrubRegion(s.Default, read)
+			s.Default = scrubRegionMode(s.Default, read, true)
 		case *Try:
-			s.Body = scrubRegion(s.Body, read)
-			s.Handler = scrubRegion(s.Handler, read)
+			s.Body = scrubRegionMode(s.Body, read, true)
+			s.Handler = scrubRegionMode(s.Handler, read, true)
 		case *Dispatch:
 			for j := range s.Arms {
-				s.Arms[j] = scrubRegion(s.Arms[j], read)
+				s.Arms[j] = scrubRegionMode(s.Arms[j], read, true)
 			}
 		}
 		seq.Stmts[i] = s
@@ -365,6 +374,9 @@ func scrubSeq(seq *Seq, read map[string]bool) *Seq {
 			keep := false
 			if len(s.Lhs) == 0 {
 				// Side-effecting statement (call, store, …).
+				keep = true
+			} else if keepLocalAssigns {
+				// Nested branch: parent live-out not visible; keep local stores.
 				keep = true
 			} else {
 				for _, d := range s.Lhs {

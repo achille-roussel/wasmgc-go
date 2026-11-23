@@ -32,7 +32,16 @@ func (l *pkgLower) lower() error {
 		l.globals = map[types.Object]*ir.Global{}
 	}
 
-	var initStmts []ir.Stmt
+	// Pass 1: declare every package var as a global so forward refs
+	// (e.g. unicode.TurkishCase = _TurkishCase) resolve via lookupGlobal.
+	type varInit struct {
+		name  *ast.Ident
+		obj   types.Object
+		ty    ir.Type
+		gname string
+		val   ast.Expr // nil → emit Go zero value (needed for struct refs)
+	}
+	var pending []varInit
 	for _, f := range l.files {
 		for _, d := range f.Decls {
 			gd, ok := d.(*ast.GenDecl)
@@ -58,27 +67,46 @@ func (l *pkgLower) lower() error {
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
 					if vs.Values != nil && i < len(vs.Values) {
-						// One shared init lowerer so temp/var names stay unique
-						// across all package-level var initializers (they become
-						// a single init.N function).
-						if l.initLower == nil {
-							l.initLower = l.newInitLower()
-						}
-						fl := l.initLower
-						ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
-						if err != nil {
-							return err
-						}
-						initStmts = append(initStmts, stmts...)
-						initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
-							Op:     ir.OpGlobalSet,
-							Global: gname,
-							Args:   []ir.Expr{ex},
-						}})
+						pending = append(pending, varInit{
+							name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
+						})
+					} else if needsHeapZero(obj.Type(), ty) {
+						// Wasm defaults refnull globals to null, but Go's zero
+						// for a struct value is a usable empty object (e.g.
+						// sync.Map / sync.Mutex package vars).
+						pending = append(pending, varInit{
+							name: name, obj: obj, ty: ty, gname: gname,
+						})
 					}
 				}
 			}
 		}
+	}
+
+	// Pass 2: lower initializers with all globals already registered.
+	var initStmts []ir.Stmt
+	for _, vi := range pending {
+		if l.initLower == nil {
+			l.initLower = l.newInitLower()
+		}
+		fl := l.initLower
+		var ex ir.Expr
+		var stmts []ir.Stmt
+		var err error
+		if vi.val != nil {
+			ex, stmts, err = fl.coerceExpr(vi.val, vi.obj.Type(), vi.ty)
+		} else {
+			ex, err = fl.zeroValue(vi.ty)
+		}
+		if err != nil {
+			return err
+		}
+		initStmts = append(initStmts, stmts...)
+		initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
+			Op:     ir.OpGlobalSet,
+			Global: vi.gname,
+			Args:   []ir.Expr{ex},
+		}})
 	}
 
 	type fnDecl struct {
@@ -174,10 +202,42 @@ func (l *pkgLower) newInitLower() *funcLower {
 	}
 }
 
+// needsHeapZero reports whether a package var with no explicit initializer
+// still needs an init that writes the Go zero value. Wasm leaves refnull
+// globals as null, which matches pointer/slice/map/chan/iface/func zeros,
+// but not named-struct or string values.
+func needsHeapZero(goTy types.Type, irTy ir.Type) bool {
+	if goTy == nil || irTy == nil {
+		return false
+	}
+	goTy = types.Unalias(goTy)
+	switch goTy.Underlying().(type) {
+	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
+		return false
+	}
+	switch t := irTy.(type) {
+	case *ir.Ref:
+		if t.Named == "$go.string" || t.Named == "$go.complex64" || t.Named == "$go.complex128" {
+			return true
+		}
+		if strings.HasPrefix(t.Named, "$go.struct.") {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *pkgLower) initName() string {
-	n := l.initCount
-	l.initCount++
-	return pkgIRPrefix(l.pkg) + ".init." + strconv.Itoa(n)
+	// Continue past any inits already in the module (AppendFiles / Ensure*
+	// may lower runtime pieces in several passes).
+	prefix := pkgIRPrefix(l.pkg) + ".init."
+	for {
+		name := prefix + strconv.Itoa(l.initCount)
+		l.initCount++
+		if l.mod.LookupFunc(name) == nil {
+			return name
+		}
+	}
 }
 
 func (l *pkgLower) funcName(name string) string {
@@ -237,8 +297,23 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		seq = &ir.Seq{Stmts: []ir.Stmt{body}}
 	}
 	// Ensure void functions end with return when falling off the end.
-	if len(fl.results) == 0 && !endsWithReturn(seq) {
+	// Switch/type-switch may already append unreachable; do not add a second.
+	if len(fl.results) == 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
+	}
+	// Non-void: falling off the end after an infinite loop (for { return })
+	// needs unreachable so Wasm validation sees a result on every path.
+	// Named results: implicit return of the result locals.
+	if len(fl.results) > 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
+		if len(fl.namedResults) > 0 {
+			args := make([]ir.Expr, len(fl.namedResults))
+			for i, v := range fl.namedResults {
+				args[i] = fl.useVar(v)
+			}
+			seq.Stmts = append(seq.Stmts, &ir.Return{Results: args})
+		} else {
+			seq.Stmts = append(seq.Stmts, &ir.Unreachable{})
+		}
 	}
 
 	// Clone by-value struct params/receivers when the callee assigns a field
@@ -275,12 +350,23 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
-	// Zero-init non-defaultable locals (e.g. $go.string named results) and
-	// user named structs ($go.struct.*): Wasm GC rejects uninitialized (ref T)
-	// locals; named struct values are heap objects even when typed refnull.
-	// Capture cells are initialized via cellInits (struct.new), not null.
+	// Zero-init non-defaultable locals and Go value zeros that Wasm leaves
+	// null (named struct values, strings). *T shares $go.struct.* IR with T —
+	// use the Go type so pointer locals stay null (e.g. var errInit *SemanticError).
 	for _, v := range append(fl.namedResults, fl.extraLocals...) {
 		if r, ok := v.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.cell.") {
+			continue
+		}
+		if goTy := fl.goTypeOfLocal(v); goTy != nil {
+			if z, ok := fl.goZeroValue(goTy, v.Typ); ok {
+				preamble = append(preamble, fl.assignVar(v, z))
+			} else if needsZeroInit(v.Typ) {
+				z, err := fl.zeroValue(v.Typ)
+				if err != nil {
+					return nil, err
+				}
+				preamble = append(preamble, fl.assignVar(v, z))
+			}
 			continue
 		}
 		if !needsZeroInit(v.Typ) && !isNamedStructRef(v.Typ) {

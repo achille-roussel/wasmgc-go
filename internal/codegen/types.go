@@ -596,6 +596,8 @@ func (g *gen) heapTypeOf(t ir.Type) (wasm.HeapType, error) {
 	switch t := t.(type) {
 	case *ir.Ref:
 		return g.heapType(t)
+	case *ir.Extern:
+		return wasm.HeapTypeExtern(), nil
 	case *ir.TypeDef:
 		idx, ok := g.types.ByName[t.Name]
 		if !ok {

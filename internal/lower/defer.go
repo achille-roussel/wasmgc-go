@@ -213,21 +213,22 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 	case *ast.SelectorExpr:
 		if sel := fl.info.Selections[fun]; sel != nil && sel.Kind() == types.MethodVal {
 			// defer x.M(args) — capture receiver + args, call method.
+			// Use the method's declared receiver type (e.g. *objectNamespaceStack
+			// fat ptr), not typeOf(x) (the slice value), and walk embedding.
 			fn := sel.Obj().(*types.Func)
-			recvTy := fl.typeOf(fun.X)
-			recvIR, err := fl.mapType(recvTy)
+			msig := fn.Type().(*types.Signature)
+			recvWant, err := fl.mapType(msig.Recv().Type())
 			if err != nil {
 				return nil, nil, err
 			}
-			rex, astmts, err := fl.expr(fun.X, recvIR)
+			rex, astmts, err := fl.methodRecvSel(fun.X, sel, msig.Recv().Type(), recvWant)
 			if err != nil {
 				return nil, nil, err
 			}
 			stmts = append(stmts, astmts...)
-			rt := fl.newTemp(recvIR)
+			rt := fl.newTemp(recvWant)
 			stmts = append(stmts, fl.assignTemp(rt, rex))
-			addCap("recv", recvIR, fl.useTemp(rt))
-			msig := fn.Type().(*types.Signature)
+			addCap("recv", recvWant, fl.useTemp(rt))
 			for i, a := range call.Args {
 				want, err := fl.mapType(msig.Params().At(i).Type())
 				if err != nil {
