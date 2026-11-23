@@ -33,7 +33,12 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	needPanic := mod.LookupFunc("runtime.panicUncomparable") == nil &&
 		mod.LookupFunc("runtime.deferRun") == nil
 	needPanicIndex := mod.LookupFunc("runtime.panicIndex") == nil
-	if needPanic {
+	// panic_index.go calls throwPanic from panic.go — include panic.go in the
+	// isolated typecheck set whenever the index file is linked (mirror EnsurePanic).
+	// If panic symbols are already in the module, keep panic.go for typecheck only
+	// and drop its funcs after AppendFiles so we do not duplicate them.
+	panicTypecheckOnly := needPanicIndex && !needPanic
+	if needPanic || needPanicIndex {
 		files = append(files, "panic.go")
 	}
 	if needPanicIndex {
@@ -63,8 +68,31 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	stripMapRand(mod)
 	stripPrintFuncs(mod)
 	stripMapSupport(mod)
+	prior := append([]*ir.Func(nil), mod.Funcs...)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower map runtime: %w", err)
+	}
+	if panicTypecheckOnly {
+		// panic.go was typecheck-only: drop its re-linked symbols, restore the
+		// prior copies, and keep panic_index helpers from the append.
+		index := map[string]*ir.Func{}
+		for _, f := range mod.Funcs {
+			switch f.Name {
+			case "runtime.panicIndex", "runtime.itoa", "runtime.digit":
+				index[f.Name] = f
+			}
+		}
+		stripPanicFuncs(mod)
+		for _, f := range prior {
+			if mod.LookupFunc(f.Name) == nil {
+				mod.Funcs = append(mod.Funcs, f)
+			}
+		}
+		for _, name := range []string{"runtime.panicIndex", "runtime.itoa", "runtime.digit"} {
+			if f := index[name]; f != nil && mod.LookupFunc(name) == nil {
+				mod.Funcs = append(mod.Funcs, f)
+			}
+		}
 	}
 	fillFloatBits(mod)
 	specializeMapHashes(mod)

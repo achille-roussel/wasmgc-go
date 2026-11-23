@@ -68,6 +68,7 @@ type Type interface {
 	Bits() int
 	NumField() int
 	Field(i int) StructField
+	FieldByName(name string) (StructField, bool)
 	NumIn() int
 	NumOut() int
 	In(i int) Type
@@ -81,8 +82,23 @@ type Type interface {
 	FieldAlign() int
 	NumMethod() int
 	Method(int) Method
+	MethodByName(name string) (Method, bool)
 	IsVariadic() bool
 	ChanDir() ChanDir
+}
+
+// SliceHeader is a deprecated runtime representation of a slice (still used by
+// language tests). On wasmgc, Data is not a linear address — keep the shape.
+type SliceHeader struct {
+	Data uintptr
+	Len  int
+	Cap  int
+}
+
+// StringHeader is a deprecated runtime representation of a string.
+type StringHeader struct {
+	Data uintptr
+	Len  int
 }
 
 type ChanDir int
@@ -559,6 +575,26 @@ func (v Value) MapIndex(key Value) Value {
 
 func (v Value) NumMethod() int   { return 0 }
 func (v Value) Method(int) Value { return Value{} }
+
+func (v Value) MethodByName(name string) Value {
+	if v.typ == nil {
+		return Value{}
+	}
+	m, ok := v.typ.MethodByName(name)
+	if !ok {
+		return Value{}
+	}
+	return m.Func
+}
+
+// UnsafeAddr returns a uintptr for addressable values. On wasmgc there is no
+// linear object address; return 0 (same limitation as Pointer/UnsafePointer).
+func (v Value) UnsafeAddr() uintptr {
+	if !v.CanAddr() {
+		panic("reflect: call of reflect.Value.UnsafeAddr on unaddressable Value")
+	}
+	return 0
+}
 
 func (v Value) CanSet() bool {
 	return v.flag&(flagAddr|flagRO) == flagAddr
@@ -1183,6 +1219,28 @@ func (t *rtype) Field(i int) StructField {
 		Tag:   StructTag(runtime.ReflectStructFieldTag(extra, i)),
 		Index: []int{i},
 	}
+}
+
+func (t *rtype) FieldByName(name string) (StructField, bool) {
+	n := t.NumField()
+	for i := 0; i < n; i++ {
+		f := t.Field(i)
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return StructField{}, false
+}
+
+func (t *rtype) MethodByName(name string) (Method, bool) {
+	n := t.NumMethod()
+	for i := 0; i < n; i++ {
+		m := t.Method(i)
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return Method{}, false
 }
 
 func (t *rtype) NumIn() int           { return 0 }
