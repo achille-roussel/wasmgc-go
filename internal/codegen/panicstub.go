@@ -9,14 +9,18 @@ import (
 // With EH enabled they throw; otherwise unreachable (pre-M5 behavior).
 
 func (g *gen) ensurePanicStubs() {
-	needIndex, needSliceB := g.scanPanicCalls()
-	for _, name := range []string{"runtime.panicIndex", "runtime.panicSliceB"} {
+	needIndex, needSliceB, needRange, needNil := g.scanPanicCalls()
+	for _, name := range []string{"runtime.panicIndex", "runtime.panicSliceB", "runtime.panicrangestate", "runtime.panicNil"} {
 		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {
 			switch name {
 			case "runtime.panicIndex":
 				needIndex = true
 			case "runtime.panicSliceB":
 				needSliceB = true
+			case "runtime.panicrangestate":
+				needRange = true
+			case "runtime.panicNil":
+				needNil = true
 			}
 		}
 	}
@@ -44,9 +48,33 @@ func (g *gen) ensurePanicStubs() {
 			g.fillPanicSliceB = true
 		}
 	}
+	if needRange {
+		if _, ok := g.funcs["runtime.panicrangestate"]; !ok {
+			g.panicRangeIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{wasm.I32()}, nil))
+			g.funcs["runtime.panicrangestate"] = g.panicRangeIdx
+		}
+		if g.m.LookupFunc("runtime.panicrangestate") == nil {
+			g.stubNeedPanicRange = true
+			g.hasPanicStubs = true
+		} else if emptyPrintBody(g.m.LookupFunc("runtime.panicrangestate")) {
+			g.fillPanicRange = true
+		}
+	}
+	if needNil {
+		if _, ok := g.funcs["runtime.panicNil"]; !ok {
+			g.panicNilIdx = g.wm.AddFunc(g.internFuncType(nil, nil))
+			g.funcs["runtime.panicNil"] = g.panicNilIdx
+		}
+		if g.m.LookupFunc("runtime.panicNil") == nil {
+			g.stubNeedPanicNil = true
+			g.hasPanicStubs = true
+		} else if emptyPrintBody(g.m.LookupFunc("runtime.panicNil")) {
+			g.fillPanicNil = true
+		}
+	}
 }
 
-func (g *gen) scanPanicCalls() (needIndex, needSliceB bool) {
+func (g *gen) scanPanicCalls() (needIndex, needSliceB, needRange, needNil bool) {
 	for _, f := range g.m.Funcs {
 		walkExprs(f.Body, func(e ir.Expr) {
 			in, ok := e.(*ir.Instr)
@@ -58,6 +86,10 @@ func (g *gen) scanPanicCalls() (needIndex, needSliceB bool) {
 				needIndex = true
 			case "runtime.panicSliceB":
 				needSliceB = true
+			case "runtime.panicrangestate":
+				needRange = true
+			case "runtime.panicNil":
+				needNil = true
 			}
 		})
 	}
@@ -73,6 +105,20 @@ func (g *gen) emitPanicStubBodies() {
 		}
 	}
 	if g.stubNeedPanicSliceB {
+		if g.hasEH {
+			g.wm.AddCode(g.bodyThrowNullPanic())
+		} else {
+			g.wm.AddCode(bodyUnreachable())
+		}
+	}
+	if g.stubNeedPanicRange {
+		if g.hasEH {
+			g.wm.AddCode(g.bodyThrowNullPanic())
+		} else {
+			g.wm.AddCode(bodyUnreachable())
+		}
+	}
+	if g.stubNeedPanicNil {
 		if g.hasEH {
 			g.wm.AddCode(g.bodyThrowNullPanic())
 		} else {

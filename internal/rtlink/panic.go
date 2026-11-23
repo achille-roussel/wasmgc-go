@@ -185,6 +185,7 @@ var panicSyms = []string{
 	"runtime.panicDivide",
 	"runtime.panicUncomparable",
 	"runtime.panicTypeAssert",
+	"runtime.panicrangestate",
 }
 
 func scanPanicNeeds(mod *ir.Module) bool {
@@ -254,6 +255,7 @@ func stripUnreferencedPanicHelpers(mod *ir.Module) {
 		"runtime.panicUncomparable",
 		"runtime.panicTypeAssert",
 		"runtime.panicNil",
+		"runtime.panicrangestate",
 		"runtime.goexit",
 	}
 	refs := map[string]bool{}

@@ -710,6 +710,11 @@ func (fl *funcLower) exprStmt(s *ast.ExprStmt) ([]ir.Stmt, error) {
 }
 
 func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
+	// Inside a range-over-func yield: early-exit the iterator, then return
+	// from the enclosing function after the iterator call returns.
+	if fl.rangeYield && len(fl.rangeFrames) > 0 {
+		return fl.rangeYieldReturn(s)
+	}
 	if len(s.Results) == 0 {
 		if len(fl.namedResults) > 0 {
 			var results []ir.Expr
@@ -933,6 +938,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		return fl.rangeMapStmt(s, goLabel)
 	case *types.Chan:
 		return fl.rangeChanStmt(s, goLabel)
+	case *types.Signature:
+		return fl.rangeFuncStmt(s, goLabel)
 	case *types.Basic:
 		if u.Info()&types.IsInteger != 0 {
 			return fl.rangeIntStmt(s, goLabel)

@@ -33,3 +33,20 @@ func panicUncomparable() {
 func panicTypeAssert() {
 	throwPanic("interface conversion: type assertion failed")
 }
+
+// panicrangestate reports iterator misuse for range-over-func (Go 1.22+).
+// state matches internal/abi.RF_*: DONE=0, READY=1, PANIC=2, EXHAUSTED=3,
+// MISSING_PANIC=4.
+func panicrangestate(state int32) {
+	switch state {
+	case 0: // RF_DONE
+		throwPanic("range function continued iteration after function for loop body returned false")
+	case 2: // RF_PANIC
+		throwPanic("range function continued iteration after loop body panic")
+	case 3: // RF_EXHAUSTED
+		throwPanic("range function continued iteration after whole loop exit")
+	case 4: // RF_MISSING_PANIC
+		throwPanic("range function recovered a loop body panic and did not resume panicking")
+	}
+	throwPanic("unexpected state passed to panicrangestate")
+}

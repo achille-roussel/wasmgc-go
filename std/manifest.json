@@ -52,6 +52,13 @@
       ],
       "notes": "overlaps without uintptr"
     },
+    "maps": {
+      "tier": "overlay",
+      "overlays": [
+        "maps.go"
+      ],
+      "notes": "M10: Clone without runtime maps.clone linkname; Keys/Values/All/Collect via iter + range-over-func"
+    },
     "sync": {
       "tier": "rewrite",
       "notes": "M7: Mutex/WaitGroup/Once via runtime.Semacquire; M8: Pool (single-local)"
