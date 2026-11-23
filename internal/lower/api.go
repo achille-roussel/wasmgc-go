@@ -153,6 +153,9 @@ type meta struct {
 	initOrder []string
 	hasMain   bool
 	finished  bool
+	closSeq   int
+	cellVars  map[types.Object]bool
+	needsEH   bool // set when any function uses defer/panic/recover
 }
 
 var moduleMeta = map[*ir.Module]*meta{}

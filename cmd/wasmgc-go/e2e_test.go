@@ -214,3 +214,117 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("version: %s", out)
 	}
 }
+
+// --- M5: closures, defer, panic, recover (docs/design/08, 09) ---
+
+func TestM5DeferPrintE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "defer_print", "hi\nbye\n", 8192)
+}
+
+func TestM5RecoverPanicE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "recover_panic", "boom\n", 8192)
+}
+
+func TestM5RePanicE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "re_panic", "again\n", 8192)
+}
+
+func TestM5IndexRecoverE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "index_recover", "runtime error: index out of range [5] with length 3\n", 8192)
+}
+
+func TestM5UnrecoveredPanicE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM5Exit(t, "unrecovered_panic", 2, "", "panic: x\n\n", 8192)
+}
+
+func TestM5ClosureMutE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "closure_mut", "2\n", 8192)
+}
+
+func TestM5StrConcatE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "strcat", "ab\n", 8192)
+}
+
+func TestM5MethodValE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "method_val", "7\n", 8192)
+}
+
+func runM5Exit(t *testing.T, name string, wantExit int, wantStdout, wantStderr string, maxSize int) {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := buildDriver(t)
+	if maxSize > 0 {
+		wasmPath := filepath.Join(dir, name+".wasm")
+		cmd := exec.Command(exe, "build", "-skip-stdlib", "-o", wasmPath, ".")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("build: %v\n%s", err, out)
+		}
+		wasm, err := os.ReadFile(wasmPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wasm) > maxSize {
+			t.Fatalf("wasm size %d > %d", len(wasm), maxSize)
+		}
+		t.Logf("%s.wasm size = %d", name, len(wasm))
+	}
+	cmd := exec.Command(exe, "run", "-skip-stdlib", ".")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	ec := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			ec = ee.ExitCode()
+		} else {
+			t.Fatalf("run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
+	}
+	if ec != wantExit {
+		t.Fatalf("exit %d, want %d\nstdout=%q stderr=%q", ec, wantExit, stdout.String(), stderr.String())
+	}
+	if stdout.String() != wantStdout {
+		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
+	}
+	if stderr.String() != wantStderr {
+		t.Fatalf("stderr %q, want %q", stderr.String(), wantStderr)
+	}
+}

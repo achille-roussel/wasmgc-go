@@ -240,8 +240,17 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	if dstTy == nil {
 		dstTy = &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
+	// Use a nullable local so the var is defaultable; non-null dstTy is
+	// restored with ref.as_non_null when reading (Wasm GC rejects
+	// branch-initialized (ref T) locals on some engines).
+	valTy := dstTy
+	if r, ok := dstTy.(*ir.Ref); ok && !r.Null && r.Named != "" {
+		rc := *r
+		rc.Null = true
+		valTy = &rc
+	}
 	dataV := rt.newVar("d", &ir.Ref{Null: true, Heap: ir.HeapAny})
-	valV := rt.newVar("v", dstTy)
+	valV := rt.newVar("v", valTy)
 	pre = append(pre, &ir.VarDef{Var: dataV}, &ir.VarDef{Var: valV})
 	pre = append(pre, assignV(dataV, &ir.Instr{
 		Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(ifaceV)},
@@ -254,23 +263,27 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 
 	elseSeq := &ir.Seq{}
 	if commaOK {
-		z, _ := zeroIR(dstTy)
+		z, _ := zeroIR(valTy)
 		elseSeq.Stmts = append(elseSeq.Stmts, assignV(valV, z))
 	} else {
 		elseSeq.Stmts = append(elseSeq.Stmts,
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex"}},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
 			&ir.Unreachable{},
 		)
 	}
 	pre = append(pre, &ir.If{Cond: useV(okV), Then: thenSeq, Else: elseSeq})
 
+	readVal := ir.Expr(useV(valV))
+	if r, ok := dstTy.(*ir.Ref); ok && !r.Null {
+		readVal = &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{readVal}}
+	}
 	if commaOK && len(s.Lhs) == 2 {
 		pre = append(pre,
-			&ir.Assign{Lhs: []ir.Dest{s.Lhs[0]}, Rhs: useV(valV)},
+			&ir.Assign{Lhs: []ir.Dest{s.Lhs[0]}, Rhs: readVal},
 			&ir.Assign{Lhs: []ir.Dest{s.Lhs[1]}, Rhs: useV(okV)},
 		)
 	} else {
-		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(valV)})
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: readVal})
 	}
 	return pre, nil
 }

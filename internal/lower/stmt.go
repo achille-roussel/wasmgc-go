@@ -61,7 +61,7 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 	case *ast.GoStmt:
 		return nil, fl.errorf(s, "go not supported in M1/M2")
 	case *ast.DeferStmt:
-		return nil, fl.errorf(s, "defer not supported in M1/M2")
+		return fl.deferStmt(s)
 	case *ast.SelectStmt:
 		return nil, fl.errorf(s, "select not supported in M1/M2")
 	default:
@@ -295,10 +295,17 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		if lhs.Name == "_" {
 			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{rhs}}}}, nil
 		}
-		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
-			return []ir.Stmt{fl.assignVar(v, rhs)}, nil
+		obj := fl.info.Uses[lhs]
+		if obj == nil {
+			obj = fl.info.Defs[lhs]
 		}
-		if obj := fl.info.Uses[lhs]; obj != nil {
+		if obj != nil {
+			fl.markAssigned(obj)
+			if fl.cells != nil {
+				if _, ok := fl.cells[obj]; ok {
+					return fl.writeVar(obj, rhs)
+				}
+			}
 			if g, ok := fl.pkg.globals[obj]; ok {
 				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 					Op:     ir.OpGlobalSet,
@@ -306,6 +313,9 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 					Args:   []ir.Expr{rhs},
 				}}}, nil
 			}
+		}
+		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
+			return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 		}
 		v, err := fl.lookupVar(lhs)
 		if err != nil {
@@ -497,12 +507,15 @@ func (fl *funcLower) forStmt(s *ast.ForStmt, goLabel string) ([]ir.Stmt, error) 
 
 	fl.breakStack = append(fl.breakStack, breakL)
 	fl.continueStack = append(fl.continueStack, contL)
+	prevDeferLoop := fl.deferInLoop
+	fl.deferInLoop = true
 	if goLabel != "" {
 		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
 	}
 	defer func() {
 		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
 		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
+		fl.deferInLoop = prevDeferLoop
 		if goLabel != "" {
 			delete(fl.labels, goLabel)
 		}
@@ -569,6 +582,9 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 // rangeStmt lowers for-range over slices (and arrays) to an index loop.
 // Maps/chans/strings wait for later milestones.
 func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
+	prevDeferLoop := fl.deferInLoop
+	fl.deferInLoop = true
+	defer func() { fl.deferInLoop = prevDeferLoop }()
 	xType := fl.typeOf(s.X)
 	if xType == nil {
 		return nil, fl.errorf(s.X, "range: no type")

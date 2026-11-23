@@ -10,8 +10,8 @@ import (
 // RuntimeOps rewrites high-level ops into the low form codegen accepts and
 // sets mod.Low.
 //
-// Bounds failures call runtime.panicIndex; growslice overflow calls
-// runtime.panicSliceB. Until M5 EH, those symbols trap (unreachable).
+// Bounds failures call runtime.panicIndex(x, y); growslice overflow calls
+// runtime.panicSliceB. After M5 those throw recoverable panics via EH.
 func RuntimeOps(mod *ir.Module) error {
 	if mod == nil {
 		return fmt.Errorf("lower.RuntimeOps: nil module")
@@ -55,15 +55,15 @@ func (rt *runtimeLower) useVar(v *ir.Var) *ir.Name {
 	return &ir.Name{Raw: v.Name, Var: v}
 }
 
-// panicIndex emits call runtime.panicIndex (trap until M5).
-func (rt *runtimeLower) panicIndex() []ir.Stmt {
+// panicIndex emits call runtime.panicIndex(idx, len) then unreachable.
+func (rt *runtimeLower) panicIndex(idx, length ir.Expr) []ir.Stmt {
 	return []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex"}},
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, length}}},
 		&ir.Unreachable{},
 	}
 }
 
-// panicSliceB emits call runtime.panicSliceB (trap until M5).
+// panicSliceB emits call runtime.panicSliceB then unreachable.
 func (rt *runtimeLower) panicSliceB() []ir.Stmt {
 	return []ir.Stmt{
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicSliceB"}},
@@ -160,6 +160,19 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 			return &rr, nil
 		}
 		return &ir.Seq{Stmts: append(pre, &rr)}, nil
+	case *ir.Try:
+		body, err := rt.lowerRegion(r.Body, n)
+		if err != nil {
+			return nil, err
+		}
+		handler, err := rt.lowerRegion(r.Handler, n)
+		if err != nil {
+			return nil, err
+		}
+		rr := *r
+		rr.Body = body
+		rr.Handler = handler
+		return &rr, nil
 	default:
 		return r, nil
 	}
@@ -816,7 +829,7 @@ func (rt *runtimeLower) expandSliceGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	)
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
-		Then: &ir.Seq{Stmts: rt.panicIndex()},
+		Then: &ir.Seq{Stmts: rt.panicIndex(idx, &ir.Name{Temp: lenT, Raw: lenT.Name})},
 	})
 	at := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, idx}}
 	getOp := ir.OpArrayGet
@@ -867,7 +880,7 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
-			Then: &ir.Seq{Stmts: rt.panicIndex()},
+			Then: &ir.Seq{Stmts: rt.panicIndex(idx, &ir.Name{Temp: lenT, Raw: lenT.Name})},
 		},
 		&ir.ExprStmt{X: &ir.Instr{
 			Op:   ir.OpArraySet,

@@ -118,6 +118,76 @@ func walkCalls(r ir.Region, fn func(string)) {
 	case *ir.If:
 		walkCalls(r.Then, fn)
 		walkCalls(r.Else, fn)
+	case *ir.Try:
+		walkCalls(r.Body, fn)
+		walkCalls(r.Handler, fn)
+	case *ir.Switch:
+		for _, c := range r.Cases {
+			walkCalls(c.Body, fn)
+		}
+		walkCalls(r.Default, fn)
+	}
+}
+
+func walkHighOps(r ir.Region, fn func(ir.Op)) {
+	if r == nil {
+		return
+	}
+	switch r := r.(type) {
+	case *ir.Seq:
+		for _, s := range r.Stmts {
+			walkStmtOps(s, fn)
+		}
+	case *ir.Block:
+		walkHighOps(r.Body, fn)
+	case *ir.Loop:
+		walkHighOps(r.Body, fn)
+	case *ir.If:
+		walkExprOps(r.Cond, fn)
+		walkHighOps(r.Then, fn)
+		walkHighOps(r.Else, fn)
+	case *ir.Switch:
+		walkExprOps(r.Tag, fn)
+		for _, c := range r.Cases {
+			walkHighOps(c.Body, fn)
+		}
+		walkHighOps(r.Default, fn)
+	case *ir.Try:
+		walkHighOps(r.Body, fn)
+		walkHighOps(r.Handler, fn)
+	}
+}
+
+func walkStmtOps(s ir.Stmt, fn func(ir.Op)) {
+	switch s := s.(type) {
+	case *ir.ExprStmt:
+		walkExprOps(s.X, fn)
+	case *ir.Assign:
+		walkExprOps(s.Rhs, fn)
+	case *ir.Return:
+		for _, e := range s.Results {
+			walkExprOps(e, fn)
+		}
+	case *ir.Br:
+		if s.Cond != nil {
+			walkExprOps(s.Cond, fn)
+		}
+	case ir.Region:
+		walkHighOps(s, fn)
+	}
+}
+
+func walkExprOps(e ir.Expr, fn func(ir.Op)) {
+	if e == nil {
+		return
+	}
+	in, ok := e.(*ir.Instr)
+	if !ok {
+		return
+	}
+	fn(in.Op)
+	for _, a := range in.Args {
+		walkExprOps(a, fn)
 	}
 }
 

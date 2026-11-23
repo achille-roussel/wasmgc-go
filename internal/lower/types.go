@@ -44,9 +44,7 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Interface:
 		return typeIface, nil
 	case *types.Signature:
-		// Opaque funcref — enough for reflectlite.Swapper's result type; calling
-		// through an arbitrary func value is not supported until closures land.
-		return &ir.Ref{Null: true, Heap: ir.HeapFunc}, nil
+		return l.mapSignature(t)
 	case *types.Tuple:
 		return nil, fmt.Errorf("tuple type not a single value: %s", t)
 	case *types.Map:

@@ -66,17 +66,88 @@ func (g *gen) emitPrelude() {
 }
 
 func (g *gen) emitProgramTypes() error {
-	// Emit IR TypeDefs in module order (deterministic). Skip names already
-	// in the prelude so goldens may redeclare $go.string etc. for verify.
-	for _, td := range g.m.Types {
+	// Emit IR TypeDefs with dependency-first ordering so field/super lookups
+	// succeed (e.g. $go.clos.method.* fields may reference $go.struct.*).
+	// inProgress breaks cycles for self-ref types ($go.defer) handled via RecGroup.
+	inProgress := map[string]bool{}
+	var emitOne func(td *ir.TypeDef) error
+	emitNamed := func(name string) error {
+		if name == "" {
+			return nil
+		}
+		if _, ok := g.types.ByName[name]; ok {
+			return nil
+		}
+		if inProgress[name] {
+			return nil // cycle; self-ref resolved inside addTypeDef RecGroup
+		}
+		td := g.m.LookupType(name)
+		if td == nil {
+			return nil // prelude / abstract
+		}
+		return emitOne(td)
+	}
+	emitOne = func(td *ir.TypeDef) error {
 		if _, ok := g.types.ByName[td.Name]; ok {
-			continue
+			return nil
+		}
+		if inProgress[td.Name] {
+			return nil
+		}
+		inProgress[td.Name] = true
+		if td.Super != "" {
+			if err := emitNamed(td.Super); err != nil {
+				return err
+			}
+		}
+		for _, f := range td.Fields {
+			if r, ok := f.Type.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
+				if err := emitNamed(r.Named); err != nil {
+					return err
+				}
+			}
+		}
+		for _, p := range td.Params {
+			if r, ok := p.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
+				if err := emitNamed(r.Named); err != nil {
+					return err
+				}
+			}
+		}
+		for _, r := range td.Results {
+			if ref, ok := r.(*ir.Ref); ok && ref.Named != "" && ref.Named != td.Name {
+				if err := emitNamed(ref.Named); err != nil {
+					return err
+				}
+			}
+		}
+		if td.Elem != nil {
+			if r, ok := td.Elem.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
+				if err := emitNamed(r.Named); err != nil {
+					return err
+				}
+			}
 		}
 		idx, err := g.addTypeDef(td)
 		if err != nil {
 			return err
 		}
 		g.types.ByName[td.Name] = idx
+		delete(inProgress, td.Name)
+		return nil
+	}
+	// Prefer $go.clos / cells early (open base before subtypes).
+	for _, td := range g.m.Types {
+		if td.Name == "$go.clos" || strings.HasPrefix(td.Name, "$go.cell.") {
+			if err := emitOne(td); err != nil {
+				return err
+			}
+		}
+	}
+	for _, td := range g.m.Types {
+		if err := emitOne(td); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -92,6 +163,20 @@ func (g *gen) addTypeDef(td *ir.TypeDef) (uint32, error) {
 	}
 	switch td.Kind {
 	case ir.TypeStruct:
+		// $go.defer is self-referential via link; emit as a rec group.
+		if td.Name == "$go.defer" {
+			obj := g.types.ByName["$go.object"]
+			clos, ok := g.types.ByName["$go.clos"]
+			if !ok {
+				return 0, fmt.Errorf("codegen: type $go.defer: $go.clos not emitted yet")
+			}
+			deferIdx := g.wm.NumTypes()
+			comp := wasm.StructType(
+				wasm.Field(wasm.StorageVal(wasm.Ref(wasm.TypeIndexHeap(clos))), false),
+				wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(deferIdx))), true),
+			)
+			return g.wm.AddRecGroup(wasm.Rec(wasm.SubFinal([]uint32{obj}, comp))), nil
+		}
 		fields := make([]wasm.FieldType, 0, len(td.Fields))
 		for _, f := range td.Fields {
 			st, err := g.storageType(f.Type)
@@ -102,8 +187,10 @@ func (g *gen) addTypeDef(td *ir.TypeDef) (uint32, error) {
 		}
 		comp := wasm.StructType(fields...)
 		if len(supers) > 0 {
-			// Match prelude: open for bases that may be further subtyped;
-			// program structs that declare a super are final unless empty name convention.
+			// $go.clos is an open base for concrete closures (M5).
+			if td.Name == "$go.clos" {
+				return g.wm.AddType(wasm.SubOpen(supers, comp)), nil
+			}
 			return g.wm.AddType(wasm.SubFinal(supers, comp)), nil
 		}
 		return g.wm.AddType(wasm.FinalType(comp)), nil
@@ -367,6 +454,24 @@ func (g *gen) fieldIndex(typeName, field string) (uint32, error) {
 				return 1, nil
 			case "next", "2":
 				return 2, nil
+			}
+		case "$go.defer":
+			switch field {
+			case "fn", "0":
+				return 0, nil
+			case "link", "1":
+				return 1, nil
+			}
+		case "$go.g":
+			switch field {
+			case "atomicstatus", "0":
+				return 0, nil
+			case "throwsplit", "1":
+				return 1, nil
+			case "_panic", "2":
+				return 2, nil
+			case "racing", "3":
+				return 3, nil
 			}
 		}
 		if strings.HasPrefix(typeName, "$go.slice.") {

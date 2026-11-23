@@ -176,6 +176,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsureSlice(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	if err := rtlink.EnsurePanic(mod, rewriteDir); err != nil {
+		return nil, err
+	}
 	// Stream G: descriptors and itables before RuntimeOps expands iface ops.
 	if err := desc.Populate(mod, prog); err != nil {
 		return nil, err

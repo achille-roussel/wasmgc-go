@@ -110,7 +110,7 @@ type gen struct {
 	fillPrintInt    bool
 	fillPrintNL     bool
 
-	// Slice/index panic stubs (rtlink body-less until M5).
+	// Slice/index panic stubs (legacy trap fill; M5 uses EH fills).
 	panicIndexIdx       uint32
 	panicSliceBIdx      uint32
 	hasPanicStubs       bool
@@ -118,10 +118,22 @@ type gen struct {
 	stubNeedPanicSliceB bool
 	fillPanicIndex      bool
 	fillPanicSliceB     bool
+
+	// M5 exception handling.
+	hasEH            bool
+	ehNeeded         bool
+	panicTagIdx      uint32
+	panicTagDeclared bool
+	hasEHStubs       bool
+	ehFill           map[string]bool
+	hasExit          bool
+	exitIdx          uint32
 }
 
 func (g *gen) build() error {
+	g.ehFill = map[string]bool{}
 	g.scanNeeds()
+	g.scanEHNeeds() // before imports so exit can be imported
 	g.emitPrelude()
 	if err := g.emitProgramTypes(); err != nil {
 		return err
@@ -134,6 +146,11 @@ func (g *gen) build() error {
 	}
 	// Declare funcs before globals so class singletons can use ref.func in init.
 	if err := g.declareFuncs(); err != nil {
+		return err
+	}
+	// EH synth AddFunc's must land before print/panic stubs so code-section
+	// order matches: emitFuncBodies (IR + EH fills) then print then panic.
+	if err := g.ensureEH(); err != nil {
 		return err
 	}
 	// Always consider print intrinsics: rtlink body-less decls, or synth when missing.
