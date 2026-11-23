@@ -75,13 +75,8 @@
       "notes": "AnyOverlap shared-backing test"
     },
     "errors": {
-      "tier": "overlay",
-      "overlays": [
-        "errors.go",
-        "wrap.go",
-        "join.go"
-      ],
-      "notes": "M4: New/Is/Unwrap without reflectlite walk; Join stub"
+      "tier": "vendor",
+      "notes": "Upstream Is/Unwrap/Join; iface→iface assert itabs from desc"
     },
     "strconv": {
       "tier": "vendor"

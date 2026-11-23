@@ -95,6 +95,13 @@ func (fe *funcEmitter) emit() error {
 			return err
 		}
 	}
+	// Infinite `for { }` / only-return loops leave an empty stack at function
+	// end after the break block. Wasm still type-checks that fallthrough, so
+	// result-typed funcs need an explicit unreachable (Go treats the code as
+	// unreachable when every exit is return).
+	if len(fe.fn.Results) > 0 {
+		fe.enc.Unreachable()
+	}
 	return nil
 }
 

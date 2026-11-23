@@ -2,10 +2,24 @@ package desc
 
 import (
 	"go/types"
+	"strings"
 	"testing"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
+
+func TestSanitizeAnonIface(t *testing.T) {
+	in := "iface.interface{Unwrap() error}"
+	got := Sanitize(in)
+	for _, bad := range []string{"{", "}", "(", ")", " ", "."} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("Sanitize(%q)=%q still contains %q", in, got, bad)
+		}
+	}
+	if !strings.Contains(got, "Unwrap") {
+		t.Fatalf("Sanitize dropped method name: %q", got)
+	}
+}
 
 func TestKindFromKeyMap(t *testing.T) {
 	kind, name, comparable := kindFromKey("map[int]struct{}")

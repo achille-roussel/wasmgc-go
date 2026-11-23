@@ -1,8 +1,6 @@
 # errors — wasmgc-go test skips
-TestIs — Is/Unwrap walk needs iface assert to interface{Unwrap() error} (itable gap)
-TestAs — As stub / reflectlite Set; iface method itables
-TestAsValidation — As panics / validation path
-TestAsType — AsType no Unwrap walk; generics edge cases
-TestUnwrap — Unwrap stub (no iface{Unwrap() error} itable)
-TestJoin — Join result .(interface{Unwrap() []error}) itable gap
-TestJoinErrorMethod — Join Error() multi-error formatting
+TestAs — As needs reflectlite Value.Set / Implements
+TestAsValidation — As panics / validation path (reflectlite)
+TestAsType — AsType generics / As method edge cases
+TestIs — t.Run closures capture range vars (needs Go 1.22 per-iter); Is/Unwrap itabs work
+TestJoin — Join+Unwrap[] work; reflect.DeepEqual([]error) fails (distinct type descriptors)

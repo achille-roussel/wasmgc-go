@@ -199,8 +199,15 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	pre = append(pre, &ir.VarDef{Var: ifaceV}, assignV(ifaceV, recv))
 
 	if str == "test" {
-		// Returns i32 ok only.
+		// Returns i32 ok only (concrete type identity).
 		ok := rt.assertTest(ifaceV, typeGlobal)
+		pre = append(pre, ok.pre...)
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ok.ok})
+		return pre, nil
+	}
+	if str == "iface,test" {
+		// Interface type-switch guard: true when some itab for J matches.
+		ok := rt.assertIfaceTest(ifaceV, typeKey)
 		pre = append(pre, ok.pre...)
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ok.ok})
 		return pre, nil
@@ -427,6 +434,60 @@ func (rt *runtimeLower) assertTest(ifaceV *ir.Var, typeGlobal string) testResult
 		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
 		Then: &ir.Seq{},
 		Else: match,
+	})
+	return testResult{pre: pre, ok: useV(okV)}
+}
+
+// assertIfaceTest reports whether ifaceV's dynamic concrete implements J
+// (has a live $go.itab.<J>.@.<C> whose type matches).
+func (rt *runtimeLower) assertIfaceTest(ifaceV *ir.Var, typeKey string) testResult {
+	ifaceTy := typeIface
+	key := strings.TrimPrefix(typeKey, "$go.type.")
+	okV := rt.newVar("ok", ir.TypeI32)
+	pre := []ir.Stmt{
+		&ir.VarDef{Var: okV},
+		assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+	}
+	if key == "any" || key == "interface{}" {
+		// Everything implements the empty interface (nil iface is not a match).
+		pre = append(pre, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 1})}},
+		})
+		return testResult{pre: pre, ok: useV(okV)}
+	}
+	prefix := "$go.itab." + key + ".@."
+	var itabs []string
+	for _, g := range rt.mod.Globals {
+		if strings.HasPrefix(g.Name, prefix) {
+			itabs = append(itabs, g.Name)
+		}
+	}
+	itabV := rt.newVar("it", &ir.Ref{Named: "$go.itab"})
+	typV := rt.newVar("ty", &ir.Ref{Named: "$go.type"})
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: itabV}, &ir.VarDef{Var: typV},
+		assignV(itabV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(ifaceV)}}),
+		assignV(typV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itabV)}}),
+	}}
+	for _, ig := range itabs {
+		body.Stmts = append(body.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+				useV(typV),
+				&ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: "$go.itab"}, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpGlobalGet, Global: ig},
+					}},
+				}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 1})}},
+		})
+	}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+		Then: &ir.Seq{},
+		Else: body,
 	})
 	return testResult{pre: pre, ok: useV(okV)}
 }

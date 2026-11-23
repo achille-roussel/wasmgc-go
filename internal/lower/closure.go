@@ -444,8 +444,12 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			return err
 		}
 		child.results = append(child.results, ty)
-		if r.Name() != "" && r.Name() != "_" {
-			v := &ir.Var{Name: r.Name(), Typ: ty}
+		name := r.Name()
+		if name == "_" {
+			name = "_" + strconv.Itoa(i)
+		}
+		if name != "" {
+			v := &ir.Var{Name: name, Typ: ty}
 			child.namedResults = append(child.namedResults, v)
 			key := r
 			if i < origSig.Results().Len() {

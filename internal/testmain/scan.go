@@ -255,11 +255,49 @@ func countTestFuncs(f *ast.File) int {
 }
 
 func stripVarAndInit(f *ast.File) {
+	// Names still referenced by remaining funcs/methods/types must be kept
+	// (e.g. poserPathErr used by (*poser).As after TestAs is skipped).
+	used := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.GenDecl:
+			if n.Tok == token.VAR || n.Tok == token.IMPORT {
+				return false // do not mark LHS idents of vars as uses
+			}
+		case *ast.FuncDecl:
+			if n.Recv == nil && n.Name != nil && n.Name.Name == "init" {
+				return false // init bodies are stripped; ignore their refs
+			}
+		case *ast.Ident:
+			used[n.Name] = true
+		}
+		return true
+	})
+
 	var keep []ast.Decl
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *ast.GenDecl:
 			if d.Tok == token.VAR {
+				var specs []ast.Spec
+				for _, s := range d.Specs {
+					vs := s.(*ast.ValueSpec)
+					needed := false
+					for _, name := range vs.Names {
+						if used[name.Name] {
+							needed = true
+							break
+						}
+					}
+					if needed {
+						specs = append(specs, vs)
+					}
+				}
+				if len(specs) == 0 {
+					continue
+				}
+				d.Specs = specs
+				keep = append(keep, d)
 				continue
 			}
 			keep = append(keep, d)

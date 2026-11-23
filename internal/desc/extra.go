@@ -828,11 +828,10 @@ func arrayNameFor(elemIR ir.Type) string {
 		}
 		return "$go.array." + t.Kind.String()
 	case *ir.Ref:
-		if t.Named == "$go.string" {
-			return "$go.array.go.string"
-		}
 		if t.Named != "" {
-			return "$go.array." + sanitize(t.Named)
+			// Match lower.arrayTypeName: strip leading $, keep dots
+			// ($go.iface → $go.array.go.iface, not sanitize → go_iface).
+			return "$go.array." + strings.TrimPrefix(t.Named, "$")
 		}
 	}
 	return "$go.array.any"
@@ -845,10 +844,10 @@ func sliceNameFor(arrName string) string {
 	case "$go.i16s":
 		return "$go.slice.i16"
 	}
-	if len(arrName) > 10 && arrName[:10] == "$go.array." {
-		return "$go.slice." + arrName[10:]
+	if strings.HasPrefix(arrName, "$go.array.") {
+		return "$go.slice." + strings.TrimPrefix(arrName, "$go.array.")
 	}
-	return "$go.slice." + sanitize(arrName)
+	return "$go.slice." + strings.TrimPrefix(arrName, "$")
 }
 
 func storageElemApprox(t ir.Type) ir.Type {
