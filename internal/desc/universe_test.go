@@ -69,3 +69,44 @@ func keysOf(m map[string]*typeRec) []string {
 	}
 	return out
 }
+
+func TestFieldTagEmission(t *testing.T) {
+	mod := &ir.Module{}
+	g := &gen{
+		mod:    mod,
+		types:  map[string]*typeRec{},
+		itabs:  map[string]*itabRec{},
+		ifaces: map[string]bool{},
+	}
+	g.ensurePreludeShapes()
+	g.ensureExtraShapes()
+
+	fields := []*types.Var{
+		types.NewField(0, nil, "Name", types.Typ[types.String], false),
+	}
+	tags := []string{`json:"name"`}
+	st := types.NewStruct(fields, tags)
+	tr := &typeRec{key: "struct{Name string}", kind: KindStruct, goType: st, global: "$go.type.struct_Name_string"}
+	g.types[tr.key] = tr
+	g.needTypeKey("string")
+	if g.types["string"] != nil {
+		g.types["string"].goType = types.Typ[types.String]
+	}
+
+	fn := g.emitFieldTagFunc(tr, st, fields)
+	f := mod.LookupFunc(fn)
+	if f == nil {
+		t.Fatalf("missing fieldTag func %s", fn)
+	}
+	// Body must mention the tag bytes somehow via data segment.
+	found := false
+	for _, d := range mod.Data {
+		if string(d.Bytes) == `json:"name"` {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("tag string not in data segments; data=%v", mod.Data)
+	}
+}

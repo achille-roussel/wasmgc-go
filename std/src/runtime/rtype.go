@@ -49,8 +49,14 @@ func ReflectExtra(t *Rtype) unsafe.Pointer
 // Body-less: desc fills when struct extras exist.
 func ReflectCallGetField(extra unsafe.Pointer, data unsafe.Pointer, i int) unsafe.Pointer
 
+// ReflectCallSetField calls $go.extra.struct.setField(data, i, v).
+func ReflectCallSetField(extra unsafe.Pointer, data unsafe.Pointer, i int, v unsafe.Pointer)
+
 // ReflectCallIndex calls $go.extra.slice.index(data, i) → anyref.
 func ReflectCallIndex(extra unsafe.Pointer, data unsafe.Pointer, i int) unsafe.Pointer
+
+// ReflectCallSetIndex calls $go.extra.slice.setIndex(data, i, v).
+func ReflectCallSetIndex(extra unsafe.Pointer, data unsafe.Pointer, i int, v unsafe.Pointer)
 
 // ReflectCallLen calls $go.extra.slice.len(data) → i32.
 func ReflectCallLen(extra unsafe.Pointer, data unsafe.Pointer) int
@@ -118,6 +124,9 @@ func ReflectStructFieldType(extra unsafe.Pointer, i int) *Rtype
 // ReflectStructFieldName calls extra.fieldName(i).
 func ReflectStructFieldName(extra unsafe.Pointer, i int) string
 
+// ReflectStructFieldTag calls extra.fieldTag(i) → (*types.Struct).Tag(i).
+func ReflectStructFieldTag(extra unsafe.Pointer, i int) string
+
 // ReflectSliceElem reads $go.extra.slice.elem.
 func ReflectSliceElem(extra unsafe.Pointer) *Rtype
 
@@ -141,3 +150,47 @@ func ReflectPointerTo(t *Rtype) *Rtype
 // ReflectMapOfEmpty returns the descriptor for map[K]struct{} given K's descriptor.
 // Body-less: desc fills an id→global.get table over the closed universe.
 func ReflectMapOfEmpty(key *Rtype) *Rtype
+
+// ReflectNew allocates a zero value of t (data word for New(t).Elem()).
+// Body-less: desc fills an id→alloc table over the closed universe.
+func ReflectNew(t *Rtype) unsafe.Pointer
+
+// ReflectMakeSlice allocates a slice header for typ with the given len/cap.
+// Body-less: desc fills an id→make.slice table.
+func ReflectMakeSlice(t *Rtype, len, cap int) unsafe.Pointer
+
+// ReflectSetBoxI32 writes v into a $go.box.i32 data word (New().Elem() scalars).
+func ReflectSetBoxI32(data unsafe.Pointer, v int32)
+
+// ReflectSetBoxI64 writes v into a $go.box.i64 data word.
+func ReflectSetBoxI64(data unsafe.Pointer, v int64)
+
+// ReflectSetBoxF32 writes v into a $go.box.f32 data word.
+func ReflectSetBoxF32(data unsafe.Pointer, v float32)
+
+// ReflectSetBoxF64 writes v into a $go.box.f64 data word.
+func ReflectSetBoxF64(data unsafe.Pointer, v float64)
+
+// ReflectSetBoxString writes v into a $go.box.string data word.
+func ReflectSetBoxString(data unsafe.Pointer, v string)
+
+// ReflectMakeMap allocates an empty hmap (all map types share one layout).
+func ReflectMakeMap() unsafe.Pointer {
+	return unsafe.Pointer(makemap(0))
+}
+
+// ReflectMapAssign inserts or updates key→val in the map data word.
+func ReflectMapAssign(data unsafe.Pointer, key, val any) {
+	if data == nil {
+		throw("assignment to entry in nil map")
+	}
+	mapAssign((*hmap)(data), key, val)
+}
+
+// ReflectMapAccess looks up key in the map data word.
+func ReflectMapAccess(data unsafe.Pointer, key any) (any, bool) {
+	if data == nil {
+		return nil, false
+	}
+	return mapAccess((*hmap)(data), key)
+}

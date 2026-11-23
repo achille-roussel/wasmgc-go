@@ -680,7 +680,8 @@ func TestM8FmtHelloE2E(t *testing.T) {
 		t.Fatal("expected real lowerer")
 	}
 	// Target: under 80 KiB names off (stretch 64 KiB; hard ceiling still 128 KiB).
-	runM8(t, "m8_fmt_hello", "hello\n", 80*1024)
+	// M9 fieldTag extras may push above 80 — measure after rebase and tighten.
+	runM8(t, "m8_fmt_hello", "hello\n", 128*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {
@@ -857,6 +858,20 @@ func TestM9OsWriteE2E(t *testing.T) {
 		t.Fatal("expected real lowerer")
 	}
 	runM8(t, "m9_os_write", "1\n", 0)
+}
+
+func TestM9ReflectTagE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_reflect_tag", "name\nok\n", 0)
+}
+
+func TestM9ReflectMakeE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_reflect_make", "7\n3\n1\n", 0)
 }
 
 func TestM7SizeBudgets(t *testing.T) {

@@ -19,10 +19,20 @@ func (g *gen) ensureExtraShapes() {
 		Results: []ir.Type{anyT},
 	})
 	g.mod.InternType(&ir.TypeDef{
+		Name:   "$go.fn.setField",
+		Kind:   ir.TypeFunc,
+		Params: []ir.Type{anyT, ir.TypeI32, anyT},
+	})
+	g.mod.InternType(&ir.TypeDef{
 		Name:    "$go.fn.index",
 		Kind:    ir.TypeFunc,
 		Params:  []ir.Type{anyT, ir.TypeI32},
 		Results: []ir.Type{anyT},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:   "$go.fn.setIndex",
+		Kind:   ir.TypeFunc,
+		Params: []ir.Type{anyT, ir.TypeI32, anyT},
 	})
 	g.mod.InternType(&ir.TypeDef{
 		Name:    "$go.fn.len",
@@ -43,26 +53,41 @@ func (g *gen) ensureExtraShapes() {
 		Results: []ir.Type{&ir.Ref{Named: "$go.string"}},
 	})
 	g.mod.InternType(&ir.TypeDef{
-		Name:  "$go.extra.struct",
-		Kind:  ir.TypeStruct,
-		Super: "$go.object",
-		Fields: []ir.Field{
-			{Name: "numField", Type: ir.TypeI32},
-			{Name: "getField", Type: &ir.Ref{Named: "$go.fn.getField"}},
-			{Name: "fieldType", Type: &ir.Ref{Named: "$go.fn.fieldType"}},
-			{Name: "fieldName", Type: &ir.Ref{Named: "$go.fn.fieldName"}},
-		},
+		Name:    "$go.fn.fieldTag",
+		Kind:    ir.TypeFunc,
+		Params:  []ir.Type{ir.TypeI32},
+		Results: []ir.Type{&ir.Ref{Named: "$go.string"}},
 	})
-	g.mod.InternType(&ir.TypeDef{
-		Name:  "$go.extra.slice",
-		Kind:  ir.TypeStruct,
-		Super: "$go.object",
-		Fields: []ir.Field{
-			{Name: "elem", Type: &ir.Ref{Named: "$go.type"}},
-			{Name: "index", Type: &ir.Ref{Named: "$go.fn.index"}},
-			{Name: "len", Type: &ir.Ref{Named: "$go.fn.len"}},
-		},
-	})
+	structExtraFields := []ir.Field{
+		{Name: "numField", Type: ir.TypeI32},
+		{Name: "getField", Type: &ir.Ref{Named: "$go.fn.getField"}},
+		{Name: "setField", Type: &ir.Ref{Named: "$go.fn.setField"}},
+		{Name: "fieldType", Type: &ir.Ref{Named: "$go.fn.fieldType"}},
+		{Name: "fieldName", Type: &ir.Ref{Named: "$go.fn.fieldName"}},
+		{Name: "fieldTag", Type: &ir.Ref{Named: "$go.fn.fieldTag"}},
+	}
+	if td := g.mod.LookupType("$go.extra.struct"); td != nil {
+		td.Fields = structExtraFields
+	} else {
+		g.mod.InternType(&ir.TypeDef{
+			Name: "$go.extra.struct", Kind: ir.TypeStruct, Super: "$go.object",
+			Fields: structExtraFields,
+		})
+	}
+	sliceExtraFields := []ir.Field{
+		{Name: "elem", Type: &ir.Ref{Named: "$go.type"}},
+		{Name: "index", Type: &ir.Ref{Named: "$go.fn.index"}},
+		{Name: "setIndex", Type: &ir.Ref{Named: "$go.fn.setIndex"}},
+		{Name: "len", Type: &ir.Ref{Named: "$go.fn.len"}},
+	}
+	if td := g.mod.LookupType("$go.extra.slice"); td != nil {
+		td.Fields = sliceExtraFields
+	} else {
+		g.mod.InternType(&ir.TypeDef{
+			Name: "$go.extra.slice", Kind: ir.TypeStruct, Super: "$go.object",
+			Fields: sliceExtraFields,
+		})
+	}
 	g.mod.InternType(&ir.TypeDef{
 		Name:  "$go.extra.ptr",
 		Kind:  ir.TypeStruct,
@@ -80,6 +105,8 @@ func (g *gen) ensureExtraShapes() {
 			{Name: "elem", Type: &ir.Ref{Named: "$go.type"}},
 		},
 	})
+	// Reflect Set* on New().Elem() scalars mutates the interface box in place.
+	g.ensureMutableBoxes()
 }
 
 // emitTypeExtra builds $extra for tr and returns an IR expr for the extra
@@ -126,16 +153,20 @@ func (g *gen) emitStructExtra(tr *typeRec) ir.Expr {
 		}
 	}
 	getFn := g.emitGetFieldFunc(tr, st, wasmName)
+	setFn := g.emitSetFieldFunc(tr, st, wasmName)
 	ftFn := g.emitFieldTypeFunc(tr, fields)
 	fnFn := g.emitFieldNameFunc(tr, fields)
+	tagFn := g.emitFieldTagFunc(tr, st, fields)
 	return &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.extra.struct"},
 		Args: []ir.Expr{
 			&ir.Const{Op: ir.OpI32Const, I64: int64(len(fields))},
 			&ir.Instr{Op: ir.OpRefFunc, Func: getFn},
+			&ir.Instr{Op: ir.OpRefFunc, Func: setFn},
 			&ir.Instr{Op: ir.OpRefFunc, Func: ftFn},
 			&ir.Instr{Op: ir.OpRefFunc, Func: fnFn},
+			&ir.Instr{Op: ir.OpRefFunc, Func: tagFn},
 		},
 	}
 }
@@ -181,11 +212,16 @@ func (g *gen) ensureStructWasmType(wasmName string, st *types.Struct) {
 		if err != nil {
 			ft = &ir.Ref{Null: true, Heap: ir.HeapAny}
 		}
-		fields = append(fields, ir.Field{Name: f.Name(), Type: ft})
+		fields = append(fields, ir.Field{Name: f.Name(), Type: ft, Mut: true})
 	}
 	if td := g.mod.LookupType(wasmName); td != nil {
 		if len(td.Fields) == 0 {
 			td.Fields = fields
+		} else {
+			// Ensure fields are mutable so setField can struct.set.
+			for i := range td.Fields {
+				td.Fields[i].Mut = true
+			}
 		}
 		return
 	}
@@ -195,6 +231,21 @@ func (g *gen) ensureStructWasmType(wasmName string, st *types.Struct) {
 		Super:  "$go.object",
 		Fields: fields,
 	})
+}
+
+// ensureMutableBoxes marks $go.box.*.v mutable for Reflect Set* on New().Elem().
+func (g *gen) ensureMutableBoxes() {
+	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64"} {
+		td := g.mod.LookupType(name)
+		if td == nil {
+			continue
+		}
+		for i := range td.Fields {
+			if td.Fields[i].Name == "v" {
+				td.Fields[i].Mut = true
+			}
+		}
+	}
 }
 
 func (g *gen) emitGetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) string {
@@ -250,6 +301,68 @@ func (g *gen) emitGetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) s
 	return name
 }
 
+func (g *gen) emitSetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) string {
+	name := "$go.setField." + sanitize(tr.key)
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	g.ensureStructWasmType(wasmName, st)
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	val := &ir.Var{Name: "v", Typ: anyT}
+	sty := &ir.Ref{Named: wasmName}
+	sv := &ir.Var{Name: "s", Typ: sty}
+
+	var logical []int
+	for i := 0; i < st.NumFields(); i++ {
+		if !isZeroSizeType(st.Field(i).Type()) {
+			logical = append(logical, i)
+		}
+	}
+	// Prefer the Wasm field type from the TypeDef so struct.set validates.
+	var wasmFields []ir.Field
+	if td := g.mod.LookupType(wasmName); td != nil {
+		wasmFields = td.Fields
+	}
+	var chain ir.Stmt = &ir.Return{}
+	for li := len(logical) - 1; li >= 0; li-- {
+		fi := logical[li]
+		f := st.Field(fi)
+		var fieldIR ir.Type
+		if li < len(wasmFields) {
+			fieldIR = wasmFields[li].Type
+		}
+		unboxed := g.unboxAnyToField(f.Type(), &ir.Name{Raw: "v", Var: val}, fieldIR)
+		set := &ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpStructSet, Type: sty, Field: f.Name(),
+			Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}, unboxed},
+		}}
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "i", Var: idx},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{set, &ir.Return{}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: sv},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: sv}}, Rhs: &ir.Instr{
+			Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+		}},
+		chain,
+		&ir.Return{},
+	}}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:   name,
+		Params: []*ir.Var{data, idx, val},
+		Body:   body,
+	})
+	return name
+}
+
 func (g *gen) boxFieldToAny(ft types.Type, val ir.Expr) ir.Expr {
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	asAny := func(ex ir.Expr) ir.Expr {
@@ -275,6 +388,78 @@ func (g *gen) boxFieldToAny(ft types.Type, val ir.Expr) ir.Expr {
 	return asAny(val)
 }
 
+// unboxAnyToField converts a boxed anyref (from reflect.Value.data) into the
+// Wasm storage type stored in a struct/array field. fieldIR is the concrete
+// Wasm field type when known (preferred for struct.set validation).
+func (g *gen) unboxAnyToField(ft types.Type, val ir.Expr, fieldIR ir.Type) ir.Expr {
+	if ft != nil {
+		ft = types.Unalias(ft)
+	}
+	if ft != nil {
+		switch u := ft.Underlying().(type) {
+		case *types.Basic:
+			switch u.Kind() {
+			case types.Bool, types.Int, types.Int8, types.Int16, types.Int32,
+				types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uintptr:
+				box := &ir.Ref{Named: "$go.box.i32"}
+				cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+				return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+			case types.Int64, types.Uint64:
+				box := &ir.Ref{Named: "$go.box.i64"}
+				cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+				return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+			case types.Float32:
+				box := &ir.Ref{Named: "$go.box.f32"}
+				cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+				return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+			case types.Float64:
+				box := &ir.Ref{Named: "$go.box.f64"}
+				cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+				return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+			case types.String:
+				want := fieldIR
+				if want == nil {
+					want = &ir.Ref{Named: "$go.string"}
+				}
+				return &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{val}}
+			}
+		}
+	}
+	want := fieldIR
+	if want == nil && ft != nil {
+		var err error
+		want, err = mapTypeApprox(ft)
+		if err != nil || want == nil {
+			want = &ir.Ref{Null: true, Heap: ir.HeapAny}
+		}
+	}
+	if want == nil {
+		want = &ir.Ref{Null: true, Heap: ir.HeapAny}
+	}
+	// Numeric Wasm fields still need unboxing when Go type was not *Basic
+	// (e.g. defined int types already handled). If fieldIR is a num type,
+	// unbox from the matching box.
+	switch want {
+	case ir.TypeI32:
+		box := &ir.Ref{Named: "$go.box.i32"}
+		cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+		return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+	case ir.TypeI64:
+		box := &ir.Ref{Named: "$go.box.i64"}
+		cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+		return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+	case ir.TypeF32:
+		box := &ir.Ref{Named: "$go.box.f32"}
+		cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+		return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+	case ir.TypeF64:
+		box := &ir.Ref{Named: "$go.box.f64"}
+		cast := &ir.Instr{Op: ir.OpRefCast, Type: box, Args: []ir.Expr{val}}
+		return &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "v", Args: []ir.Expr{cast}}
+	}
+	return &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{val}}
+}
+
 func (g *gen) emitSliceExtra(tr *typeRec) ir.Expr {
 	g.ensureExtraShapes()
 	elemKey, elemT := g.elemOf(tr)
@@ -286,6 +471,7 @@ func (g *gen) emitSliceExtra(tr *typeRec) ir.Expr {
 		et.goType = elemT
 	}
 	indexFn := g.emitIndexFunc(tr)
+	setIdxFn := g.emitSetIndexFunc(tr)
 	lenFn := g.emitLenFunc(tr)
 	return &ir.Instr{
 		Op:   ir.OpStructNew,
@@ -293,6 +479,7 @@ func (g *gen) emitSliceExtra(tr *typeRec) ir.Expr {
 		Args: []ir.Expr{
 			&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.type." + elemKey},
 			&ir.Instr{Op: ir.OpRefFunc, Func: indexFn},
+			&ir.Instr{Op: ir.OpRefFunc, Func: setIdxFn},
 			&ir.Instr{Op: ir.OpRefFunc, Func: lenFn},
 		},
 	}
@@ -381,6 +568,65 @@ func (g *gen) emitIndexFunc(tr *typeRec) string {
 	return name
 }
 
+func (g *gen) emitSetIndexFunc(tr *typeRec) string {
+	name := "$go.setIndex." + sanitize(tr.key)
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	val := &ir.Var{Name: "v", Typ: anyT}
+	elemIR, sliceName := g.sliceElemIR(tr)
+	if sliceName == "" {
+		g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+			Name: name, Params: []*ir.Var{data, idx, val},
+			Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+		})
+		return name
+	}
+	g.ensureSliceHeaderMutable(sliceName)
+	sty := &ir.Ref{Named: sliceName}
+	sv := &ir.Var{Name: "s", Typ: sty}
+	var elemGo types.Type
+	if tr.goType != nil {
+		switch u := tr.goType.Underlying().(type) {
+		case *types.Slice:
+			elemGo = u.Elem()
+		case *types.Array:
+			elemGo = u.Elem()
+		}
+	}
+	var store ir.Expr = &ir.Name{Raw: "v", Var: val}
+	if elemGo != nil {
+		store = g.unboxAnyToField(elemGo, store, elemIR)
+	} else if elemIR != nil {
+		store = g.unboxAnyToField(nil, store, elemIR)
+	}
+	// Prefer high-level slice.set; RuntimeOps expands to array.set.
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:   name,
+		Params: []*ir.Var{data, idx, val},
+		Body: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.VarDef{Var: sv},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: sv}}, Rhs: &ir.Instr{
+				Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+			}},
+			&ir.ExprStmt{X: &ir.Instr{
+				Op:   ir.OpSliceSet,
+				Type: sty,
+				Args: []ir.Expr{
+					&ir.Name{Raw: "s", Var: sv},
+					&ir.Name{Raw: "i", Var: idx},
+					store,
+				},
+			}},
+			&ir.Return{},
+		}},
+	})
+	return name
+}
+
 func (g *gen) emitLenFunc(tr *typeRec) string {
 	name := "$go.len." + sanitize(tr.key)
 	if g.mod.LookupFunc(name) != nil {
@@ -418,6 +664,19 @@ func (g *gen) emitLenFunc(tr *typeRec) string {
 	return name
 }
 
+func (g *gen) ensureSliceHeaderMutable(sliceName string) {
+	td := g.mod.LookupType(sliceName)
+	if td == nil {
+		return
+	}
+	for i := range td.Fields {
+		switch td.Fields[i].Name {
+		case "data", "off", "len", "cap":
+			td.Fields[i].Mut = true
+		}
+	}
+}
+
 func (g *gen) sliceElemIR(tr *typeRec) (ir.Type, string) {
 	if tr.goType == nil {
 		return nil, ""
@@ -446,12 +705,13 @@ func (g *gen) sliceElemIR(tr *typeRec) (ir.Type, string) {
 		Kind:  ir.TypeStruct,
 		Super: "$go.object",
 		Fields: []ir.Field{
-			{Name: "data", Type: &ir.Ref{Named: arrName}},
-			{Name: "off", Type: ir.TypeI32},
-			{Name: "len", Type: ir.TypeI32},
-			{Name: "cap", Type: ir.TypeI32},
+			{Name: "data", Type: &ir.Ref{Named: arrName}, Mut: true},
+			{Name: "off", Type: ir.TypeI32, Mut: true},
+			{Name: "len", Type: ir.TypeI32, Mut: true},
+			{Name: "cap", Type: ir.TypeI32, Mut: true},
 		},
 	})
+	g.ensureSliceHeaderMutable(sliceName)
 	return elemIR, sliceName
 }
 
@@ -592,6 +852,44 @@ func (g *gen) emitFieldNameFunc(tr *typeRec, fields []*types.Var) string {
 				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
 			}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{g.stringConstExpr(n)}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{idx},
+		Results: []ir.Type{strTy},
+		Body:    &ir.Seq{Stmts: []ir.Stmt{chain, &ir.Unreachable{}}},
+	})
+	return name
+}
+
+func (g *gen) emitFieldTagFunc(tr *typeRec, st *types.Struct, fields []*types.Var) string {
+	name := "$go.fieldTag." + sanitize(tr.key)
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	strTy := &ir.Ref{Named: "$go.string"}
+	// Map logical (non-zero-size) index → go/types field index for Tag(i).
+	var goIdx []int
+	for i := 0; i < st.NumFields(); i++ {
+		if !isZeroSizeType(st.Field(i).Type()) {
+			goIdx = append(goIdx, i)
+		}
+	}
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{g.stringConstExpr("")}}
+	for li := len(fields) - 1; li >= 0; li-- {
+		tag := ""
+		if li < len(goIdx) {
+			tag = st.Tag(goIdx[li])
+		}
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "i", Var: idx},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{g.stringConstExpr(tag)}}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
 		}
 	}
