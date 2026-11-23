@@ -27,19 +27,19 @@ type $go.iface sub $go.object struct {
 }
 
 type $go.box.i32 sub $go.object struct {
-  v i32
+  mut v i32
 }
 
 type $go.box.i64 sub $go.object struct {
-  v i64
+  mut v i64
 }
 
 type $go.box.f32 sub $go.object struct {
-  v f32
+  mut v f32
 }
 
 type $go.box.f64 sub $go.object struct {
-  v f64
+  mut v f64
 }
 
 func export "run" main.run() {

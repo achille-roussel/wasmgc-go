@@ -58,9 +58,10 @@ func TestSizeCorpus(t *testing.T) {
 		report.WriteByte('\t')
 		report.WriteString(name)
 		report.WriteByte('\n')
-		// Type/global emission order is not fully stable across runs (~tens of
-		// bytes). Enforce budgets hard; require sizes.txt within a small band.
-		const slack = 64
+		// Type/global emission order is not fully stable across runs (tens of
+		// bytes; M9 fieldTag / closed-universe growth pushes variance higher).
+		// Enforce budgets hard; require sizes.txt within a small band.
+		const slack = 128
 		if got < want-slack || got > want+slack {
 			t.Errorf("%s.wasm size %d, recorded %d (±%d) — update testdata/size/sizes.txt", name, got, want, slack)
 		} else if got != want {

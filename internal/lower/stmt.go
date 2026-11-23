@@ -226,10 +226,13 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignVar(v, ex))
+				// Plain local write (bypasses writeVar/cell); capture sync needs this.
+				fl.markPlainDirty(obj)
 			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
 				// Arrays / named structs: Wasm refnull default is null, but
 				// Go zero is an allocated empty value (e.g. var arr [32]byte).
 				out = append(out, fl.assignVar(v, z))
+				fl.markPlainDirty(obj)
 			}
 			// else: defineLocal already zero-inits non-defaultable refs.
 		}
@@ -1832,7 +1835,8 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 				case isIface(tagType):
 					return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{tag, v}}
 				case isString(tagType):
-					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Type: ir.TypeI32, Args: []ir.Expr{tag, v}}
+					// No Type on OpCall: Format omits it and Equal would fail round-trip.
+					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{tag, v}}
 				case irNumWidth(want) == ir.I64:
 					return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{tag, v}}
 				case want != nil && isRefIR(want):
