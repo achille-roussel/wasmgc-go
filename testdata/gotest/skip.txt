@@ -42,8 +42,7 @@ closure.go — compile error: build: load: typecheck
 closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
-complit.go — compile error: lower: composite literal of type *gotestcase.R not supported
-complit2.go — compile error: lower: unknown field b
+complit2.go — runtime error: stack overflow in fmt equality of nested structs with any
 const.go — compile error: lower: untyped nil needs a typed context
 const3.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
 const4.go — compile error: lower: untyped nil needs a typed context
@@ -297,7 +296,7 @@ fixedbugs/issue4618.go — could not import testing
 fixedbugs/issue4620.go — output mismatch
 fixedbugs/issue46304.go — runtime error
 fixedbugs/issue4667.go — could not import testing
-fixedbugs/issue46725.go — compile error: lower: composite literal of type *gotestcase.T not supported
+fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
 fixedbugs/issue47771.go — compile error: codegen
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
@@ -387,7 +386,6 @@ fixedbugs/issue7690.go — compile error: lower: unsupported binary op &^ for wi
 fixedbugs/issue7740.go — compile error: build: load: typecheck
 fixedbugs/issue77779.go — runtime error
 fixedbugs/issue78081.go — failed: build: pipeline: IR verify: cannot assign refnull $go.slice.i32 to var sl10 of type refnull any in m…
-fixedbugs/issue78262.go — compile error: lower: unknown field b
 fixedbugs/issue78295.go — compile error: lower: field index 0 out of range for gotestcase.B
 fixedbugs/issue78404.go — failed: build: mono: pending main.Iface$int.Foo missing package/info mono: pending main.Iface$int.Foo missin…
 fixedbugs/issue7863.go — wasm validate/compile error
@@ -585,7 +583,6 @@ typeparam/issue50642.go — wasm validate/compile error
 typeparam/issue50690a.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue50690b.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue50690c.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
-typeparam/issue50833.go — compile error: lower: composite literal of type *gotestcase.S not supported
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
 typeparam/issue51521.go — compile error: lower: untyped nil needs a typed context
 typeparam/issue51522a.go — wasm validate/compile error

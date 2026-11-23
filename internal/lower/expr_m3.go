@@ -530,7 +530,9 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
-	if want != nil {
+	// Prefer want only when it matches the literal's Go type mapping. Blank
+	// `_ = T{…}` passes want=i32 from lhsType("_"), which must not override.
+	if want != nil && ir.TypesEqual(want, irt) {
 		irt = want
 	}
 	ut := types.Unalias(ty)
@@ -569,6 +571,23 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 		return fl.arrayLit(e, ut, irt)
 	case *types.Map:
 		return fl.mapLiteral(e, irt)
+	case *types.Pointer:
+		// Elided pointer composite lit: []*T{{…}} / [N]*T{{x}} — go/types
+		// types the element as *T. Object pointers (*NamedStruct / *[N]T) share
+		// the pointee IR ref, so lower as the element type with the *T IR type.
+		elem := types.Unalias(ut.Elem())
+		elemUT := elem
+		if n, ok := elem.(*types.Named); ok {
+			elemUT = n.Underlying()
+		}
+		switch elemUT := elemUT.(type) {
+		case *types.Struct:
+			return fl.structLit(e, elemUT, irt)
+		case *types.Array:
+			return fl.arrayLit(e, elemUT, irt)
+		default:
+			return nil, nil, fl.errorf(e, "composite literal of type %s not supported", ty)
+		}
 	default:
 		return nil, nil, fl.errorf(e, "composite literal of type %s not supported", ty)
 	}
@@ -688,22 +707,18 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 		for _, el := range e.Elts {
 			kv := el.(*ast.KeyValueExpr)
 			name := kv.Key.(*ast.Ident).Name
-			idx := -1
-			for i := 0; i < n; i++ {
-				if st.Field(i).Name() == name {
-					idx = i
-					break
-				}
-			}
-			if idx < 0 {
+			path, fieldTy, ok := fl.structLitFieldPath(st, name)
+			if !ok {
 				return nil, nil, fl.errorf(kv.Key, "unknown field %s", name)
 			}
-			ex, stmts2, err := fl.structLitField(kv.Value, st.Field(idx).Type())
+			ex, stmts2, err := fl.structLitField(kv.Value, fieldTy)
 			if err != nil {
 				return nil, nil, err
 			}
 			stmts = append(stmts, stmts2...)
-			vals[idx] = ex
+			if err := fl.structLitSetPath(vals, st, path, ex); err != nil {
+				return nil, nil, fl.errorf(kv.Key, "%v", err)
+			}
 		}
 	} else {
 		for i, el := range e.Elts {
@@ -724,6 +739,119 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 		args = append(args, vals[i])
 	}
 	return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+}
+
+// structLitFieldPath resolves a keyed composite-literal field name, including
+// promoted fields of embedded structs. path is indexes into successive structs.
+func (fl *funcLower) structLitFieldPath(st *types.Struct, name string) (path []int, fieldTy types.Type, ok bool) {
+	for i := 0; i < st.NumFields(); i++ {
+		if st.Field(i).Name() == name {
+			return []int{i}, st.Field(i).Type(), true
+		}
+	}
+	var pkg *types.Package
+	if fl.pkg != nil {
+		pkg = fl.pkg.pkg
+	}
+	obj, index, _ := types.LookupFieldOrMethod(st, false, pkg, name)
+	if obj == nil || len(index) == 0 {
+		return nil, nil, false
+	}
+	v, ok := obj.(*types.Var)
+	if !ok {
+		return nil, nil, false
+	}
+	return index, v.Type(), true
+}
+
+// structLitSetPath writes ex into vals along an embedding path, rebuilding
+// nested OpLiteral structs so A{b:1,c:2} merges into the same embedded B.
+func (fl *funcLower) structLitSetPath(vals []ir.Expr, st *types.Struct, path []int, ex ir.Expr) error {
+	if len(path) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+	if len(path) == 1 {
+		vals[path[0]] = ex
+		return nil
+	}
+	i := path[0]
+	ftGo := st.Field(i).Type()
+	nestedSt, ok := types.Unalias(ftGo).Underlying().(*types.Struct)
+	if !ok {
+		return fmt.Errorf("embedded field is not a struct")
+	}
+	ftIR, err := fl.mapType(ftGo)
+	if err != nil {
+		return err
+	}
+	nestedVals, err := fl.structLitArgs(vals[i], nestedSt, ftIR)
+	if err != nil {
+		return err
+	}
+	if err := fl.structLitSetPath(nestedVals, nestedSt, path[1:], ex); err != nil {
+		return err
+	}
+	var args []ir.Expr
+	for j := 0; j < nestedSt.NumFields(); j++ {
+		if isZeroSize(nestedSt.Field(j).Type()) {
+			continue
+		}
+		args = append(args, nestedVals[j])
+	}
+	vals[i] = &ir.Instr{Op: ir.OpLiteral, Type: ftIR, Args: args}
+	return nil
+}
+
+// structLitArgs expands a struct value expression into per-field values for
+// further keyed updates. Non-literal values are field-selected into temps.
+func (fl *funcLower) structLitArgs(ex ir.Expr, st *types.Struct, irt ir.Type) ([]ir.Expr, error) {
+	n := st.NumFields()
+	if lit, ok := ex.(*ir.Instr); ok && lit.Op == ir.OpLiteral {
+		out := make([]ir.Expr, n)
+		ai := 0
+		for i := 0; i < n; i++ {
+			if isZeroSize(st.Field(i).Type()) {
+				z, err := fl.zeroValueForStructField(st.Field(i).Type())
+				if err != nil {
+					return nil, err
+				}
+				out[i] = z
+				continue
+			}
+			if ai >= len(lit.Args) {
+				return nil, fmt.Errorf("struct literal arity mismatch")
+			}
+			out[i] = lit.Args[ai]
+			ai++
+		}
+		return out, nil
+	}
+	// Fallback: zero then StructSet would need a temp; keyed lits always start
+	// from OpLiteral zeros, so this path should be rare.
+	out := make([]ir.Expr, n)
+	for i := 0; i < n; i++ {
+		z, err := fl.zeroValueForStructField(st.Field(i).Type())
+		if err != nil {
+			return nil, err
+		}
+		out[i] = z
+	}
+	return out, nil
+}
+
+func (fl *funcLower) zeroValueForStructField(ftGo types.Type) (ir.Expr, error) {
+	ft, err := fl.mapType(ftGo)
+	if err != nil {
+		return nil, err
+	}
+	if p, ok := types.Unalias(ftGo).(*types.Pointer); ok {
+		if _, ok := types.Unalias(p.Elem()).(*types.Named); ok {
+			if _, ok := types.Unalias(p.Elem()).Underlying().(*types.Struct); ok {
+				return &ir.Instr{Op: ir.OpRefNull, Type: ft}, nil
+			}
+		}
+	}
+	return fl.zeroValue(ft)
 }
 
 func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
