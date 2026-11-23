@@ -1,0 +1,182 @@
+{
+  "pin": "go1.27.4",
+  "packages": {
+    "runtime": {
+      "tier": "rewrite",
+      "notes": "Wasm GC scheduler/heap; placeholder for std check"
+    },
+    "internal/abi": {
+      "tier": "rewrite",
+      "notes": "NoEscape identity; descriptor helpers"
+    },
+    "internal/reflectlite": {
+      "tier": "rewrite",
+      "notes": "Descriptor-based; used by errors/sort"
+    },
+    "reflect": {
+      "tier": "rewrite",
+      "notes": "Descriptor-based; placeholder API for fmt"
+    },
+    "internal/runtime/atomic": {
+      "tier": "rewrite",
+      "notes": "Plain loads/stores"
+    },
+    "internal/runtime/maps": {
+      "tier": "rewrite",
+      "notes": "Not linked; compiler owns maps"
+    },
+    "sync/atomic": {
+      "tier": "rewrite",
+      "notes": "Value stores one any"
+    },
+    "syscall": {
+      "tier": "rewrite",
+      "notes": "JS-shaped ENOSYS + stdio Write"
+    },
+    "syscall/js": {
+      "tier": "rewrite",
+      "notes": "externref rewrite"
+    },
+    "slices": {
+      "tier": "overlay",
+      "overlays": [
+        "slices.go"
+      ],
+      "notes": "overlaps without uintptr"
+    },
+    "sync": {
+      "tier": "overlay",
+      "overlays": [
+        "cond.go",
+        "pool.go"
+      ],
+      "notes": "Cond copy check removed; Pool single-local"
+    },
+    "crypto/internal/fips140/alias": {
+      "tier": "overlay",
+      "overlays": [
+        "alias.go"
+      ],
+      "notes": "AnyOverlap shared-backing test"
+    },
+    "errors": {
+      "tier": "vendor"
+    },
+    "strconv": {
+      "tier": "vendor"
+    },
+    "unicode": {
+      "tier": "vendor"
+    },
+    "unicode/utf8": {
+      "tier": "vendor"
+    },
+    "strings": {
+      "tier": "vendor"
+    },
+    "bytes": {
+      "tier": "vendor"
+    },
+    "fmt": {
+      "tier": "overlay",
+      "overlays": [
+        "print.go"
+      ],
+      "notes": "fmtPointer used uintptr(UnsafePointer); wasmgc prints placeholders (doc 05 scan missed this)"
+    },
+    "sort": {
+      "tier": "vendor"
+    },
+    "cmp": {
+      "tier": "vendor"
+    },
+    "io": {
+      "tier": "vendor"
+    },
+    "math": {
+      "tier": "vendor"
+    },
+    "math/bits": {
+      "tier": "vendor"
+    },
+    "encoding/binary": {
+      "tier": "overlay",
+      "overlays": [
+        "native_endian_little.go"
+      ],
+      "notes": "native_endian_little.go is tagged wasm; add wasmgc twin"
+    },
+    "iter": {
+      "tier": "vendor"
+    },
+    "internal/bytealg": {
+      "tier": "vendor",
+      "notes": "generic paths via re-filter"
+    },
+    "internal/stringslite": {
+      "tier": "vendor"
+    },
+    "internal/strconv": {
+      "tier": "vendor"
+    },
+    "internal/fmtsort": {
+      "tier": "vendor"
+    },
+    "internal/cpu": {
+      "tier": "overlay",
+      "overlays": [
+        "cpu_wasmgc.go"
+      ],
+      "notes": "cpu_wasm.go is dropped by *_wasm.go re-filter; add wasmgc twin"
+    },
+    "internal/goarch": {
+      "tier": "overlay",
+      "overlays": [
+        "goarch_wasmgc.go",
+        "zgoarch_wasmgc.go"
+      ],
+      "notes": "goarch_wasm.go / zgoarch_wasm.go dropped; wasmgc twins with IsWasm=0"
+    },
+    "internal/goos": {
+      "tier": "vendor"
+    },
+    "internal/goexperiment": {
+      "tier": "vendor"
+    },
+    "internal/unsafeheader": {
+      "tier": "vendor"
+    },
+    "internal/race": {
+      "tier": "vendor"
+    },
+    "internal/sync": {
+      "tier": "vendor"
+    },
+    "internal/synctest": {
+      "tier": "vendor"
+    },
+    "internal/godebug": {
+      "tier": "vendor"
+    },
+    "internal/bisect": {
+      "tier": "vendor"
+    },
+    "os": {
+      "tier": "rewrite",
+      "notes": "M9 expands; placeholder stdio so fmt type-checks under wasmgc (upstream needs js&&wasm)"
+    },
+    "plugin": {
+      "tier": "out"
+    },
+    "runtime/cgo": {
+      "tier": "out"
+    },
+    "unique": {
+      "tier": "out",
+      "notes": "clone walks by uintptr offset"
+    },
+    "C": {
+      "tier": "out"
+    }
+  }
+}

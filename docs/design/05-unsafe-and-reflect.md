@@ -77,14 +77,15 @@ The checker does not try to be a points-to analysis. If the static type of the p
 
 The packages that compile unchanged are the ones whose non-test files, after the build-tag re-filter of `01-architecture.md`, contain none of the rejected expressions. From a scan of the `go1.27.4` tree, excluding `cmd`, `runtime`, and `internal/runtime`:
 
-- `fmt`, `strconv`, `bytes`, `errors`, `sort`, `unicode`, `encoding/json`, and `encoding/binary` (non-test) do not convert `uintptr` to `unsafe.Pointer`. `strings` uses `unsafe.String`, `unsafe.SliceData`, and `abi.NoEscape(unsafe.Pointer(b))`, which are supported once `abi.NoEscape` is the identity function described in `06`.
+- `strconv`, `bytes`, `errors`, `sort`, `unicode`, `encoding/json`, and `encoding/binary` (non-test) do not convert `uintptr` to `unsafe.Pointer`. `strings` uses `unsafe.String`, `unsafe.SliceData`, and `abi.NoEscape(unsafe.Pointer(b))`, which are supported once `abi.NoEscape` is the identity function described in `06`.
+- `fmt` does convert: `fmtPointer` in `print.go` does `uintptr(value.UnsafePointer())` for `%p` / sharp `%v`. The initial scan missed this because it searched for `uintptr(unsafe.Pointer` / `unsafe.Pointer(uintptr` text, not `uintptr` of a `reflect.Value.UnsafePointer()` result. That file is an overlay (`06`).
 - `slices.overlaps` compares `uintptr(unsafe.Pointer(&a[0]))`. That file is an overlay.
 - `sync.Cond`'s copy check and `sync.Pool.indexLocal` do the same. Those functions are overlays.
 - `unique.clone` walks a value by `uintptr` offset. `unique` is not in the v1 library set.
 - `reflect` and `internal/abi` walk `abi.Type` with `unsafe.Add`. They are rewrites, not overlays: the byte layout they walk does not exist.
-- `hash/maphash` calls `runtime_memhash(unsafe.Pointer(&buf[0]), …)`. The runtime provides that function as a real hash of the bytes, which is the map hash. The call shape stays.
+- `hash/maphash` calls `runtime_memhash(unsafe.Pointer(&buf[0]), …)`. The runtime provides that function as a real hash of the bytes, which is the map hash. The call shape stays. No overlay for the conversion itself (`*T` to `unsafe.Pointer` is supported).
 
-A package the scan missed fails `wasmgc-go std check` when the pin is materialized, because the checker runs on the vendored sources. The scan is the seed of the manifest, not the guarantee. The guarantee is the checker.
+A package the scan missed fails `wasmgc-go std check` when the pin is materialized, because the checker runs on the vendored sources. The scan is the seed of the manifest, not the guarantee. The guarantee is the checker. Stream H's first `std check` run confirmed the `fmt` miss above.
 
 ## Reflect
 
