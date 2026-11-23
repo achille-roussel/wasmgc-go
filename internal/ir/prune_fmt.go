@@ -23,6 +23,9 @@ func PruneDeadFmtTypeCases(m *Module) {
 	// Always keep string/bool arms — Println paths and nil formatting use them.
 	boxed["string"] = true
 	boxed["bool"] = true
+	// printValue walks struct fields via reflect without boxing them as any.
+	// Mark field types of boxed structs so float/int arms stay live.
+	markBoxedStructFieldTypes(m, boxed)
 
 	liveKinds := kindsFromBoxed(boxed)
 
@@ -70,15 +73,99 @@ const (
 	kindUnsafePtr  = 26
 )
 
+// markBoxedStructFieldTypes adds Go type keys for fields of boxed structs so
+// printValue's Kind arms (float64, int, …) are not blanked when those types
+// only appear as struct fields (never boxed as any themselves).
+func markBoxedStructFieldTypes(m *Module, boxed map[string]bool) {
+	queue := make([]string, 0, len(boxed))
+	for k := range boxed {
+		queue = append(queue, k)
+	}
+	seen := map[string]bool{}
+	for len(queue) > 0 {
+		key := queue[0]
+		queue = queue[1:]
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		td := m.LookupType("$go.struct." + key)
+		if td == nil || td.Kind != TypeStruct {
+			continue
+		}
+		for _, f := range td.Fields {
+			markFmtFieldType(m, f.Type, boxed, &queue)
+		}
+	}
+}
+
+func markFmtFieldType(m *Module, t Type, boxed map[string]bool, queue *[]string) {
+	switch t := t.(type) {
+	case *NumType:
+		switch t.Kind {
+		case F32:
+			boxed["float32"] = true
+		case F64:
+			boxed["float64"] = true
+		case I64:
+			// IR collapses int64/uint64 to i64; keep both Kind families.
+			boxed["int64"] = true
+			boxed["uint64"] = true
+		case I32:
+			boxed["int"] = true
+			boxed["int32"] = true
+			boxed["uint"] = true
+			boxed["uint32"] = true
+			boxed["uintptr"] = true
+		case I8:
+			boxed["int8"] = true
+			boxed["uint8"] = true
+			boxed["byte"] = true
+		case I16:
+			boxed["int16"] = true
+			boxed["uint16"] = true
+		}
+	case *Ref:
+		switch {
+		case t.Named == "$go.string":
+			boxed["string"] = true
+		case strings.HasPrefix(t.Named, "$go.struct."):
+			key := strings.TrimPrefix(t.Named, "$go.struct.")
+			if !boxed[key] {
+				boxed[key] = true
+				*queue = append(*queue, key)
+			}
+		case strings.HasPrefix(t.Named, "$go.slice."):
+			boxed["[]byte"] = true // ensures slice kind; elem handled below
+			if td := m.LookupType(t.Named); td != nil {
+				for _, f := range td.Fields {
+					if f.Name == "data" {
+						markFmtFieldType(m, f.Type, boxed, queue)
+					}
+				}
+			}
+		case strings.HasPrefix(t.Named, "$go.array.") || t.Named == "$go.bytes" || t.Named == "$go.i16s":
+			boxed["array"] = true // kindsFromBoxed treats array via always-live kindArray
+			if td := m.LookupType(t.Named); td != nil && td.Elem != nil {
+				markFmtFieldType(m, td.Elem, boxed, queue)
+			}
+		case strings.HasPrefix(t.Named, "$go.box."):
+			// ignore
+		case t.Named == "$go.iface":
+			boxed["interface"] = true
+		}
+	}
+}
+
 func kindsFromBoxed(boxed map[string]bool) map[int64]bool {
 	live := map[int64]bool{
-		0:           true, // Invalid
-		kindBool:    true,
-		kindString:  true,
-		kindPtr:     true, // *T boxing / catch-all
-		kindSlice:   true,
-		kindArray:   true,
-		kindStruct:  true,
+		0:             true, // Invalid
+		kindBool:      true,
+		kindString:    true,
+		kindPtr:       true, // *T boxing / catch-all
+		kindSlice:     true,
+		kindArray:     true,
+		kindStruct:    true,
 		kindInterface: true,
 	}
 	hasFloat := boxed["float32"] || boxed["float64"] ||

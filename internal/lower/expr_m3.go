@@ -313,6 +313,20 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 			if err != nil {
 				return nil, nil, fl.errorf(e, "%v", err)
 			}
+			// Widen i32 fields when the context wants i64 (e.g. uint mantbits
+			// as the count of an i64 shift in strconv.(*decimal).floatBits).
+			if want != nil && irNumWidth(want) == ir.I64 {
+				ft := fl.typeOf(e)
+				if ft != nil {
+					if ftIR, err := fl.mapType(ft); err == nil && irNumWidth(ftIR) == ir.I32 {
+						if isUnsigned(ft) {
+							ex = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{ex}}
+						} else {
+							ex = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{ex}}
+						}
+					}
+				}
+			}
 			return ex, stmts, nil
 		}
 		// Fat-pointer path for other bases: set ptr kind from field type.

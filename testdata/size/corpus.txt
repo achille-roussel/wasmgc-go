@@ -5,3 +5,5 @@ empty_main
 println
 m8_fmt_hello
 m8_fmt_map
+m8_fmt_float
+m8_fmt_quote

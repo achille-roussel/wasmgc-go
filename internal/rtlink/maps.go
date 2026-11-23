@@ -173,11 +173,16 @@ func stripMapSupport(mod *ir.Module) {
 }
 
 // fillFloatBits replaces empty f32bits/f64bits bodies with reinterpret.
-// Also fills internal.strconv.float*bits / float*frombits (deps.go overlay).
+// Also fills internal.strconv.float*bits / float*frombits (deps.go overlay)
+// and math.Float*bits / Float*frombits (unsafe pointer cast is not valid on
+// Wasm GC — those bodies become f64.reinterpret_i64 / i64.reinterpret_f64).
 func fillFloatBits(mod *ir.Module) {
-	fillReinterpret := func(name string, op ir.Op) {
+	fillReinterpret := func(name string, op ir.Op, force bool) {
 		f := mod.LookupFunc(name)
-		if f == nil || !emptyBody(f) || len(f.Params) != 1 {
+		if f == nil || len(f.Params) != 1 {
+			return
+		}
+		if !force && !emptyBody(f) {
 			return
 		}
 		p := f.Params[0]
@@ -187,12 +192,16 @@ func fillFloatBits(mod *ir.Module) {
 			}},
 		}}
 	}
-	fillReinterpret("runtime.f32bits", ir.OpI32ReinterpretF32)
-	fillReinterpret("runtime.f64bits", ir.OpI64ReinterpretF64)
-	fillReinterpret("internal.strconv.float32bits", ir.OpI32ReinterpretF32)
-	fillReinterpret("internal.strconv.float64bits", ir.OpI64ReinterpretF64)
-	fillReinterpret("internal.strconv.float32frombits", ir.OpF32ReinterpretI32)
-	fillReinterpret("internal.strconv.float64frombits", ir.OpF64ReinterpretI64)
+	fillReinterpret("runtime.f32bits", ir.OpI32ReinterpretF32, false)
+	fillReinterpret("runtime.f64bits", ir.OpI64ReinterpretF64, false)
+	fillReinterpret("internal.strconv.float32bits", ir.OpI32ReinterpretF32, false)
+	fillReinterpret("internal.strconv.float64bits", ir.OpI64ReinterpretF64, false)
+	fillReinterpret("internal.strconv.float32frombits", ir.OpF32ReinterpretI32, false)
+	fillReinterpret("internal.strconv.float64frombits", ir.OpF64ReinterpretI64, false)
+	fillReinterpret("math.Float32bits", ir.OpI32ReinterpretF32, true)
+	fillReinterpret("math.Float64bits", ir.OpI64ReinterpretF64, true)
+	fillReinterpret("math.Float32frombits", ir.OpF32ReinterpretI32, true)
+	fillReinterpret("math.Float64frombits", ir.OpF64ReinterpretI64, true)
 }
 
 // hashHelperFuncs are the per-type mapKeyHash branches (and their callees).
@@ -402,4 +411,3 @@ func stripUnusedHashLocals(stmts []ir.Stmt) []ir.Stmt {
 	}
 	return out
 }
-

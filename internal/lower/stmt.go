@@ -892,7 +892,7 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	// if i >= len { br break }
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
 		Label: breakL,
-		Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
+		Cond:  &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
 	})
 	if valVar != nil {
 		elem := &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
@@ -1221,7 +1221,7 @@ func (fl *funcLower) rangeChanStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 	})
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
 		Label: breakL,
-		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useTemp(ot)}},
+		Cond:  &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useTemp(ot)}},
 	})
 	if valVar != nil {
 		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, fl.useTemp(vt)))
@@ -1385,7 +1385,9 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 		} else {
 			for _, c := range cc.List {
 				want, _ := fl.mapType(tagType)
-				ex, stmts, err := fl.expr(c, want)
+				// Box concrete case values into the tag's interface type
+				// (e.g. strconv.toError switches on error vs internal/strconv.Error ints).
+				ex, stmts, err := fl.coerceExpr(c, tagType, want)
 				if err != nil {
 					return nil, err
 				}
@@ -1676,14 +1678,25 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 		} else {
 			pre = append(pre, a.pre...)
 			want, _ := fl.mapType(tagType)
-			eqOp := ir.OpI32Eq
-			if irNumWidth(want) == ir.I64 {
-				eqOp = ir.OpI64Eq
+			// Interface / string / ref tags cannot use i32.eq (strconv.toError
+			// switches on error values; string switches need runtime.stringeq).
+			eq := func(v ir.Expr) ir.Expr {
+				switch {
+				case isIface(tagType):
+					return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{tag, v}}
+				case isString(tagType):
+					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Type: ir.TypeI32, Args: []ir.Expr{tag, v}}
+				case irNumWidth(want) == ir.I64:
+					return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{tag, v}}
+				case want != nil && isRefIR(want):
+					return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{tag, v}}
+				default:
+					return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{tag, v}}
+				}
 			}
-			cond = &ir.Instr{Op: eqOp, Args: []ir.Expr{tag, a.values[0]}}
+			cond = eq(a.values[0])
 			for _, v := range a.values[1:] {
-				cmp := &ir.Instr{Op: eqOp, Args: []ir.Expr{tag, v}}
-				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, cmp}}
+				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, eq(v)}}
 			}
 		}
 		seq := append(pre, &ir.If{Cond: cond, Then: body, Else: elseR})
