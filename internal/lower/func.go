@@ -153,7 +153,7 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	if v, ok := fl.vars[obj]; ok {
 		return v, nil, nil
 	}
-	ty, err := mapType(obj.Type())
+	ty, err := fl.mapType(obj.Type())
 	if err != nil {
 		return nil, nil, fl.errorf(id, "%v", err)
 	}
@@ -179,4 +179,15 @@ func (fl *funcLower) lookupVar(id *ast.Ident) (*ir.Var, error) {
 		return v, nil
 	}
 	return nil, fl.errorf(id, "variable %s has no IR local", id.Name)
+}
+
+func (fl *funcLower) lookupGlobal(id *ast.Ident) *ir.Global {
+	obj := fl.info.Uses[id]
+	if obj == nil {
+		obj = fl.info.Defs[id]
+	}
+	if obj == nil {
+		return nil
+	}
+	return fl.pkg.globals[obj]
 }

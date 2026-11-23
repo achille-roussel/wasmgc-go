@@ -1,0 +1,8 @@
+func main.main() {
+  var s refnull $go.struct.main.S
+  var p refnull $go.ptr.i32
+  s = literal $go.struct.main.S 3
+  call runtime.printint(struct.get $go.struct.main.S X s)
+  call runtime.printnl()
+  return
+}

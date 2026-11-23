@@ -142,6 +142,12 @@ func (g *gen) emitFuncBodies() error {
 		case f.Name == "runtime.printnl" && g.fillPrintNL:
 			g.wm.AddCode(g.bodyPrintNL())
 			continue
+		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
+			g.wm.AddCode(bodyUnreachable())
+			continue
+		case f.Name == "runtime.panicSliceB" && g.fillPanicSliceB:
+			g.wm.AddCode(bodyUnreachable())
+			continue
 		}
 		body, err := g.emitFunc(f)
 		if err != nil {
@@ -200,4 +206,49 @@ func (g *gen) emitFunc(f *ir.Func) (wasm.Code, error) {
 		return wasm.Code{}, fmt.Errorf("codegen: func %s: %w", f.Name, err)
 	}
 	return wasm.CodeFrom(fe.locals, fe.enc), nil
+}
+
+
+func (g *gen) addDeclarativeRefFuncs() {
+	seen := map[uint32]bool{}
+	var idxs []uint32
+	add := func(name string) {
+		idx, ok := g.funcs[name]
+		if !ok || seen[idx] {
+			return
+		}
+		seen[idx] = true
+		idxs = append(idxs, idx)
+	}
+	for _, f := range g.m.Funcs {
+		walkExprs(f.Body, func(e ir.Expr) {
+			if in, ok := e.(*ir.Instr); ok && in.Op == ir.OpRefFunc {
+				add(in.Func)
+			}
+		})
+	}
+	for _, gl := range g.m.Globals {
+		if gl.Init != nil {
+			walkInit(gl.Init, func(e ir.Expr) {
+				if in, ok := e.(*ir.Instr); ok && in.Op == ir.OpRefFunc {
+					add(in.Func)
+				}
+			})
+		}
+	}
+	if len(idxs) > 0 {
+		g.wm.AddDeclarativeFuncs(idxs...)
+	}
+}
+
+func walkInit(e ir.Expr, fn func(ir.Expr)) {
+	if e == nil {
+		return
+	}
+	fn(e)
+	if in, ok := e.(*ir.Instr); ok {
+		for _, a := range in.Args {
+			walkInit(a, fn)
+		}
+	}
 }

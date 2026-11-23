@@ -27,17 +27,17 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.CallExpr:
 		return fl.callAsValue(e, want)
 	case *ast.SelectorExpr:
-		return nil, nil, fl.errorf(e, "selectors not supported in M1/M2")
+		return fl.selector(e, want)
 	case *ast.IndexExpr:
-		return nil, nil, fl.errorf(e, "index not supported in M1/M2")
+		return fl.indexExpr(e, want)
 	case *ast.SliceExpr:
-		return nil, nil, fl.errorf(e, "slice expr not supported in M1/M2")
+		return fl.sliceExpr(e, want)
 	case *ast.CompositeLit:
-		return nil, nil, fl.errorf(e, "composite literals not supported in M1/M2")
+		return fl.compositeLit(e, want)
 	case *ast.FuncLit:
-		return nil, nil, fl.errorf(e, "function literals not supported in M1/M2")
+		return nil, nil, fl.errorf(e, "function literals not supported in M3")
 	case *ast.StarExpr:
-		return nil, nil, fl.errorf(e, "pointers not supported in M1/M2")
+		return fl.starExpr(e, want)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported expression %T", e)
 	}
@@ -53,13 +53,16 @@ func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
 	// Constant from package / iota / const.
 	if obj, ok := fl.info.Uses[e]; ok {
 		if c, ok := obj.(*types.Const); ok {
-			ty, err := mapType(c.Type())
+			ty, err := fl.mapType(c.Type())
 			if err != nil {
 				return nil, nil, fl.errorf(e, "%v", err)
 			}
 			ex, err := fl.constVal(c.Val(), ty)
 			return ex, nil, err
 		}
+	}
+	if g := fl.lookupGlobal(e); g != nil {
+		return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
 	}
 	v, err := fl.lookupVar(e)
 	if err != nil {
@@ -76,7 +79,7 @@ func (fl *funcLower) basicLit(e *ast.BasicLit, want ir.Type) (ir.Expr, []ir.Stmt
 	ty := want
 	if ty == nil {
 		var err error
-		ty, err = mapType(tv.Type)
+		ty, err = fl.mapType(tv.Type)
 		if err != nil {
 			return nil, nil, fl.errorf(e, "%v", err)
 		}
@@ -145,7 +148,7 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 			return nil, nil, err
 		}
 		ty := fl.typeOf(e.X)
-		irt, _ := mapType(ty)
+		irt, _ := fl.mapType(ty)
 		if want != nil {
 			irt = want
 		}
@@ -171,13 +174,13 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 			return nil, nil, err
 		}
 		ty := fl.typeOf(e)
-		irt, _ := mapType(ty)
+		irt, _ := fl.mapType(ty)
 		if irNumWidth(irt) == ir.I64 {
 			return &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{x, fl.i64const(-1)}}, stmts, nil
 		}
 		return &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{x, fl.i32const(-1)}}, stmts, nil
 	case token.AND:
-		return nil, nil, fl.errorf(e, "address-of not supported in M1/M2")
+		return fl.addrOf(e.X, want)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported unary %v", e.Op)
 	}
@@ -238,14 +241,14 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	}
 
 	xt := fl.typeOf(e.X)
-	xWant, err := mapType(xt)
+	xWant, err := fl.mapType(xt)
 	if err != nil {
 		// untyped: use want
 		xWant = want
 	}
 	yWant := xWant
 	if yt := fl.typeOf(e.Y); yt != nil {
-		if m, err := mapType(yt); err == nil {
+		if m, err := fl.mapType(yt); err == nil {
 			yWant = m
 		}
 	}
@@ -298,7 +301,7 @@ func (fl *funcLower) binaryOp(op token.Token, goType types.Type) (ir.Op, error) 
 	unsigned := isUnsigned(goType)
 	width := ir.I32
 	if goType != nil {
-		if t, err := mapType(goType); err == nil {
+		if t, err := fl.mapType(goType); err == nil {
 			width = irNumWidth(t)
 		}
 	}
@@ -506,6 +509,9 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if fl.isConversion(e) {
 		return fl.conversion(e, want)
 	}
+	if fl.isBuiltinCall(e) {
+		return fl.builtinAsValue(e, want)
+	}
 	name, results, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -540,11 +546,11 @@ func (fl *funcLower) isConversion(e *ast.CallExpr) bool {
 func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	dst := fl.typeOf(e)
 	src := fl.typeOf(e.Args[0])
-	dstIR, err := mapType(dst)
+	dstIR, err := fl.mapType(dst)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
-	srcIR, err := mapType(src)
+	srcIR, err := fl.mapType(src)
 	if err != nil {
 		return nil, nil, fl.errorf(e.Args[0], "%v", err)
 	}
@@ -633,6 +639,17 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 		st, err := fl.lowerPrint(e)
 		return nil, st, err
 	}
+	if fl.isBuiltinCall(e) {
+		ex, st, err := fl.builtinAsValue(e, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !asValue {
+			stmts = append(st, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			return nil, stmts, nil
+		}
+		return nil, st, nil
+	}
 	if fl.isConversion(e) {
 		return nil, nil, fl.errorf(e, "conversion used as statement")
 	}
@@ -712,7 +729,7 @@ func (fl *funcLower) resolveCallee(e *ast.CallExpr) (name string, results []ir.T
 		}
 		sig := fn.Type().(*types.Signature)
 		for i := 0; i < sig.Results().Len(); i++ {
-			ty, err := mapType(sig.Results().At(i).Type())
+			ty, err := fl.mapType(sig.Results().At(i).Type())
 			if err != nil {
 				return "", nil, fl.errorf(e, "%v", err)
 			}
@@ -720,35 +737,133 @@ func (fl *funcLower) resolveCallee(e *ast.CallExpr) (name string, results []ir.T
 		}
 		pkg := fn.Pkg()
 		if pkg == nil {
-			// builtin already handled
 			return "", nil, fl.errorf(fun, "builtin %s not lowered here", fun.Name)
 		}
 		return pkg.Name() + "." + fn.Name(), results, nil
 	case *ast.SelectorExpr:
-		return "", nil, fl.errorf(e, "method/qualified calls beyond package funcs not supported in M1/M2 (got %T)", fun)
+		return fl.resolveMethodCallee(e, fun)
 	default:
 		return "", nil, fl.errorf(e, "unsupported callee %T", e.Fun)
 	}
 }
 
-func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
-	obj, _ := fl.info.Uses[identOf(e.Fun)].(*types.Func)
-	var sig *types.Signature
-	if obj != nil {
-		sig, _ = obj.Type().(*types.Signature)
+func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr) (name string, results []ir.Type, err error) {
+	sel := fl.info.Selections[fun]
+	if sel == nil {
+		// Package-qualified function: pkg.Func
+		if id, ok := fun.X.(*ast.Ident); ok {
+			if obj, ok := fl.info.Uses[id].(*types.PkgName); ok {
+				fn, ok := fl.info.Uses[fun.Sel].(*types.Func)
+				if !ok {
+					return "", nil, fl.errorf(fun, "not a function")
+				}
+				sig := fn.Type().(*types.Signature)
+				for i := 0; i < sig.Results().Len(); i++ {
+					ty, err := fl.mapType(sig.Results().At(i).Type())
+					if err != nil {
+						return "", nil, err
+					}
+					results = append(results, ty)
+				}
+				return obj.Imported().Name() + "." + fn.Name(), results, nil
+			}
+		}
+		return "", nil, fl.errorf(fun, "not a method selection")
 	}
-	var args []ir.Expr
+	fn, ok := sel.Obj().(*types.Func)
+	if !ok {
+		return "", nil, fl.errorf(fun, "selection is not a method")
+	}
+	sig := fn.Type().(*types.Signature)
+	for i := 0; i < sig.Results().Len(); i++ {
+		ty, err := fl.mapType(sig.Results().At(i).Type())
+		if err != nil {
+			return "", nil, err
+		}
+		results = append(results, ty)
+	}
+	name = methodIRName(fn)
+	return name, results, nil
+}
+
+func methodIRName(fn *types.Func) string {
+	sig := fn.Type().(*types.Signature)
+	recv := sig.Recv()
+	if recv == nil {
+		pkg := "main"
+		if fn.Pkg() != nil {
+			pkg = fn.Pkg().Name()
+		}
+		return pkg + "." + fn.Name()
+	}
+	pkg := "main"
+	if fn.Pkg() != nil {
+		pkg = fn.Pkg().Name()
+	}
+	rt := recv.Type()
+	if p, ok := types.Unalias(rt).(*types.Pointer); ok {
+		named, _ := types.Unalias(p.Elem()).(*types.Named)
+		tname := "T"
+		if named != nil {
+			tname = named.Obj().Name()
+		}
+		return pkg + ".(*" + tname + ")." + fn.Name()
+	}
+	named, _ := types.Unalias(rt).(*types.Named)
+	tname := "T"
+	if named != nil {
+		tname = named.Obj().Name()
+	}
+	return pkg + "." + tname + "." + fn.Name()
+}
+
+func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
+	var sig *types.Signature
+	var recvExpr ir.Expr
 	var stmts []ir.Stmt
+
+	if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if s := fl.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
+			fn := s.Obj().(*types.Func)
+			sig = fn.Type().(*types.Signature)
+			recvWant, err := fl.mapType(sig.Recv().Type())
+			if err != nil {
+				return nil, nil, fl.errorf(sel.X, "%v", err)
+			}
+			// If method has pointer receiver but X is a value, take address.
+			rx, rst, err := fl.methodRecv(sel.X, sig.Recv().Type(), recvWant)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, rst...)
+			recvExpr = rx
+		}
+	}
+	if sig == nil {
+		if obj, _ := fl.info.Uses[identOf(e.Fun)].(*types.Func); obj != nil {
+			sig, _ = obj.Type().(*types.Signature)
+		}
+	}
+
+	var args []ir.Expr
+	if recvExpr != nil {
+		args = append(args, recvExpr)
+	}
+	paramOff := 0
+	if recvExpr != nil {
+		paramOff = 0 // sig.Params does not include receiver
+	}
+	_ = paramOff
 	for i, a := range e.Args {
 		var want ir.Type
 		if sig != nil && i < sig.Params().Len() {
 			var err error
-			want, err = mapType(sig.Params().At(i).Type())
+			want, err = fl.mapType(sig.Params().At(i).Type())
 			if err != nil {
 				return nil, nil, fl.errorf(a, "%v", err)
 			}
 		} else if t := fl.typeOf(a); t != nil {
-			want, _ = mapType(t)
+			want, _ = fl.mapType(t)
 		}
 		ex, st, err := fl.expr(a, want)
 		if err != nil {
@@ -758,6 +873,26 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		args = append(args, ex)
 	}
 	return args, stmts, nil
+}
+
+func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	xt := fl.typeOf(x)
+	needPtr := isPointer(recvType)
+	havePtr := isPointer(xt)
+	if needPtr && !havePtr {
+		return fl.addrOf(x, want)
+	}
+	if !needPtr && havePtr {
+		// Auto-deref for value-receiver method on pointer.
+		ex, stmts, err := fl.expr(x, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		t := fl.newTemp(want)
+		stmts = append(stmts, fl.assignTemp(t, &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{ex}, Type: want}))
+		return fl.useTemp(t), stmts, nil
+	}
+	return fl.expr(x, want)
 }
 
 func identOf(e ast.Expr) *ast.Ident {

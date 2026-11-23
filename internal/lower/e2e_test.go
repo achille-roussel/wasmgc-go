@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/achille-roussel/wasmgc-go/internal/codegen"
+	"github.com/achille-roussel/wasmgc-go/internal/escape"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/lower"
 )
@@ -26,6 +27,9 @@ func lowerToWasm(t *testing.T, src string) []byte {
 	t.Helper()
 	m, err := lower.Compile("e2e.go", src)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := escape.Analyze(m); err != nil {
 		t.Fatal(err)
 	}
 	if err := lower.RuntimeOps(m); err != nil {

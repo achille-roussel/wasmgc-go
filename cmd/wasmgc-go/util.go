@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/check"
+	"github.com/achille-roussel/wasmgc-go/internal/jsglue"
 	"github.com/achille-roussel/wasmgc-go/internal/stdlib"
 )
 
@@ -51,9 +52,9 @@ func packageArg(fs *flag.FlagSet) string {
 	return args[0]
 }
 
-// findWasmgcJS locates lib/wasmgc.js.
-// Order: WASMGC_JS, walk from cwd, walk from executable, then from this
-// source tree via the wasmgc-go module root if go.mod is nearby.
+// findWasmgcJS locates lib/wasmgc.js for the Node runner.
+// Order: WASMGC_JS override, walk from cwd / executable for a source-tree
+// checkout, then the bytes embedded in the binary (go:embed).
 func findWasmgcJS() (string, error) {
 	if p := os.Getenv("WASMGC_JS"); p != "" {
 		return p, nil
@@ -72,7 +73,6 @@ func findWasmgcJS() (string, error) {
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
 			}
-			// Also accept repo layout when cwd is cmd/wasmgc-go.
 			candidate = filepath.Join(dir, "..", "lib", "wasmgc.js")
 			if abs, err := filepath.Abs(candidate); err == nil {
 				if _, err := os.Stat(abs); err == nil {
@@ -86,5 +86,5 @@ func findWasmgcJS() (string, error) {
 			dir = parent
 		}
 	}
-	return "", fmt.Errorf("wasmgc-go: lib/wasmgc.js not found (set WASMGC_JS)")
+	return jsglue.Path()
 }

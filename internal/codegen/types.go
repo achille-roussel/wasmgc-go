@@ -369,6 +369,36 @@ func (g *gen) fieldIndex(typeName, field string) (uint32, error) {
 				return 2, nil
 			}
 		}
+		if strings.HasPrefix(typeName, "$go.slice.") {
+			switch field {
+			case "data", "0":
+				return 0, nil
+			case "off", "1":
+				return 1, nil
+			case "len", "2":
+				return 2, nil
+			case "cap", "3":
+				return 3, nil
+			}
+		}
+		if strings.HasPrefix(typeName, "$go.class.") {
+			switch field {
+			case "get", "0":
+				return 0, nil
+			case "set", "1":
+				return 1, nil
+			}
+		}
+		if strings.HasPrefix(typeName, "$go.ptr.") {
+			switch field {
+			case "class", "0":
+				return 0, nil
+			case "base", "1":
+				return 1, nil
+			case "index", "2":
+				return 2, nil
+			}
+		}
 		return 0, fmt.Errorf("unknown type %s for field %s", typeName, field)
 	}
 	if n, err := parseUint(field); err == nil {

@@ -417,9 +417,11 @@ func OpArity(op Op) int {
 		OpF64ConvertI32S, OpF64ConvertI32U, OpF64ConvertI64S, OpF64ConvertI64U, OpF64PromoteF32,
 		OpDrop, OpLocalSet, OpGlobalSet, OpArrayLen, OpRefIsNull, OpRefAsNonNull,
 		OpThrow, OpThrowRef, OpMemoryGrow, OpPanic, OpDefer, OpGo, OpLen, OpCap,
-		OpReal, OpImag, OpAddr, OpDeref, OpStringLen, OpMapLen, OpMapIter, OpChanClose,
+		OpReal, OpImag, OpDeref, OpStringLen, OpMapLen, OpMapIter, OpChanClose,
 		OpTypeSwitch, OpConv:
 		return 1
+	case OpAddr: // &local | &s.f | &a[i]
+		return -1
 	case OpI32Add, OpI32Sub, OpI32Mul, OpI32DivS, OpI32DivU, OpI32RemS, OpI32RemU,
 		OpI32And, OpI32Or, OpI32Xor, OpI32Shl, OpI32ShrS, OpI32ShrU, OpI32Rotl, OpI32Rotr,
 		OpI32Eq, OpI32Ne, OpI32LtS, OpI32LtU, OpI32GtS, OpI32GtU, OpI32LeS, OpI32LeU, OpI32GeS, OpI32GeU,

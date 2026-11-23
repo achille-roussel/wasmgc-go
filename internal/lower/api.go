@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/escape"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
 )
@@ -60,6 +61,11 @@ func PackageHigh(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
 		}
 	}
 	if err := Finish(mod); err != nil {
+		return nil, err
+	}
+	// Escape rewrites non-escaping addresses before the pipeline's rtlink
+	// and RuntimeOps expand remaining high ops (docs/design/09 M3).
+	if err := escape.Analyze(mod); err != nil {
 		return nil, err
 	}
 	return mod, nil

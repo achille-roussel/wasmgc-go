@@ -475,6 +475,10 @@ func (f *formatter) instr(e *Instr) {
 		f.write(" ")
 		f.write(strconv.Quote(e.Str))
 		return
+	case OpAddr:
+		if e.Field != "" {
+			f.printf(" %s", e.Field)
+		}
 	}
 
 	if len(e.Args) > 0 {

@@ -223,6 +223,10 @@ These names are stable. Codegen and the runtime workstream share this list.
 | `runtime.fastrand() int32` | xorshift on a global, seeded from `go.runtime.rand` |
 | `runtime.nanotime() int64` / `runtime.walltime() (int64, int32)` | host clocks |
 | `runtime.printstring` / `printint` / `printnl` | the builtins |
+| `runtime.panicIndex` | slice/array/string index OOB |
+| `runtime.panicSliceB` | growslice overflow / slice bounds |
 | `runtime.exit(code int32)` | host exit |
+
+**M3 note.** Bounds checks and growslice overflow call `runtime.panicIndex` / `runtime.panicSliceB`. Until M5 EH, those symbols are body-less and codegen fills them with Wasm `unreachable` (trap). After M5 they throw a panic object via `throwPanic`. `internal/rtlink.EnsureSlice` links the decls from `std/src/runtime/slice.go` before `RuntimeOps`.
 
 `runtime.GOMAXPROCS` returns 1. `runtime.NumGoroutine` returns the count of goroutines that have been started and have not returned. `runtime.KeepAlive` is a call the escape pass treats as a use. `runtime.GC` is a no-op: the host collects when it collects.
