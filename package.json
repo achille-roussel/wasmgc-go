@@ -1,0 +1,6 @@
+{
+  "name": "wasmgc-go",
+  "private": true,
+  "type": "module",
+  "description": "Host glue for wasmgc-go Wasm GC modules (lib/wasmgc.js)."
+}

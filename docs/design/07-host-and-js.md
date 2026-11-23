@@ -1,6 +1,6 @@
 # 07 — Host and JS
 
-The host is JavaScript: a browser, or Node.js. The module imports from a module named `go` and exports `run`, `_sched`, and `memory`. The glue is `lib/wasmgc.js`, one file, generated into the program's runner with the import list the module actually uses. A program that never parks does not reference `WebAssembly.Suspending` and instantiates on any engine that has Wasm GC, which includes Node 22.
+The host is JavaScript: a browser, or Node.js. The module imports from a module named `go` and exports `run`, `_sched`, and `memory`. The glue is `lib/wasmgc.js`, one file. It reads `WebAssembly.Module.imports` and installs only the `go.*` names the module declares; `WebAssembly.Suspending` is constructed only for imports in the suspending set (`runtime.park`, `runtime.gosched`, and a later `js.Await`). A program that never parks therefore never mentions `Suspending` and instantiates on any engine that has Wasm GC, including Node 22. `wasmgc-go build -target node` may still emit a specialized runner that inlines that import set; the shared file must stay correct when used as-is.
 
 wasm3's glue was two copies (`misc/wasm/wasm_exec_wasm3.js` at 233 lines and `lib/wasm/wasm_exec_wasm3.js` at 521) and it constructed `WebAssembly.Suspending` unconditionally. Node v22.23.4 throws `WebAssembly.Suspending is not a constructor` (`docs/wasm3-study/00-overview.md`). This glue does not.
 

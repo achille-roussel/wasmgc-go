@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Node versions: 22.23.4 (Wasm GC + EH, no JSPI Suspending) and 26.13.1
+# (JSPI on by default). See docs/design/07-host-and-js.md. Node 25+ also
+# has unflagged JSPI; we pin 26 as the newest line tested with the prototypes.
+
+jobs:
+  go:
+    name: Go vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install wasm-tools
+        env:
+          WASM_TOOLS_VERSION: "1.263.0"
+        run: |
+          curl -fsSL \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1
+          wasm-tools --version
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: wasm-tools validate M0 module
+        run: wasm-tools validate testdata/m0/empty.wasm
+
+  node:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.23.4", "26.13.1"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install wasm-tools
+        env:
+          WASM_TOOLS_VERSION: "1.263.0"
+        run: |
+          curl -fsSL \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1
+
+      - name: Ensure M0 wasm is present
+        run: |
+          go test ./internal/wasm -run TestEmptyRunModule
+          test -f testdata/m0/empty.wasm
+          wasm-tools validate testdata/m0/empty.wasm
+
+      - name: Run M0 glue (empty module)
+        run: |
+          node lib/wasmgc.js testdata/m0/empty.wasm
+          # Must print nothing and exit 0.
+          out="$(node lib/wasmgc.js testdata/m0/empty.wasm 2>&1)"
+          test -z "$out"
+
+      - name: Prototypes (EH + fat-pointer)
+        run: |
+          node prototypes/eh-panic/run.mjs
+          node prototypes/fat-pointer/run.mjs
+
+      - name: Prototype JSPI (Node 26 only)
+        if: matrix.node == '26.13.1'
+        run: node prototypes/jspi-sched/run.mjs

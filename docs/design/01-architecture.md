@@ -137,6 +137,6 @@ The module path is `github.com/achille-roussel/wasmgc-go`.
 
 ## Host output
 
-`build -target node` writes `prog.wasm` and `prog.wasm.js`. The JS file is `lib/wasmgc.js` with the list of imports the module actually uses filled in, so a program that does not park does not mention `WebAssembly.Suspending`. The study's glue always constructed `Suspending`, and Node 22 could not load it (`docs/wasm3-study/00-overview.md`). A module with no suspending import runs on any engine with Wasm GC, including Node 22.
+`build -target node` writes `prog.wasm` and `prog.wasm.js`. The JS file is based on `lib/wasmgc.js`, which installs only the imports `WebAssembly.Module.imports` reports and wraps `WebAssembly.Suspending` only for suspending ones, so a program that does not park does not mention `Suspending`. The study's glue always constructed `Suspending`, and Node 22 could not load it (`docs/wasm3-study/00-overview.md`). A module with no suspending import runs on any engine with Wasm GC, including Node 22.
 
 `run` executes `node prog.wasm.js [args]`. The glue passes `process.argv` after the program name as `runtime.args`.
