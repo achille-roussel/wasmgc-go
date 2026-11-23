@@ -122,6 +122,44 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 		})
 		return stmts, nil
 	}
+	if isFloat(ty) {
+		want, err := fl.mapType(ty)
+		if err != nil {
+			return nil, err
+		}
+		ex, stmts, err := fl.expr(arg, want)
+		if err != nil {
+			return nil, err
+		}
+		fn := "runtime.printfloat64"
+		if irNumWidth(want) == ir.F32 {
+			fn = "runtime.printfloat32"
+		}
+		stmts = append(stmts, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}},
+		})
+		return stmts, nil
+	}
+	if isComplex(ty) {
+		name := "$go.complex128"
+		fn := "runtime.printcomplex128"
+		elem := ir.TypeF64
+		if b, ok := ty.Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+			name = "$go.complex64"
+			fn = "runtime.printcomplex64"
+			elem = ir.TypeF32
+		}
+		fl.ensureComplexType(name, elem)
+		irt := &ir.Ref{Null: true, Named: name}
+		ex, stmts, err := fl.expr(arg, irt)
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}},
+		})
+		return stmts, nil
+	}
 	return nil, fl.errorf(arg, "print of type %s not supported in M3 (need string or int)", ty)
 }
 
@@ -547,6 +585,12 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 		return nil, nil, err
 	}
 	args := []ir.Expr{slice}
+	var elemGo types.Type
+	var elemIR ir.Type
+	if st, ok := types.Unalias(fl.typeOf(e)).Underlying().(*types.Slice); ok {
+		elemGo = st.Elem()
+		elemIR, _ = fl.mapType(elemGo)
+	}
 	for i, a := range e.Args[1:] {
 		isEllipsis := e.Ellipsis.IsValid() && i == len(e.Args)-2
 		if isEllipsis {
@@ -566,7 +610,7 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 				return fl.appendSliceSpread(e, a, args, stmts, ty)
 			}
 		}
-		ex, st, err := fl.expr(a, nil)
+		ex, st, err := fl.coerceExpr(a, elemGo, elemIR)
 		if err != nil {
 			return nil, nil, err
 		}

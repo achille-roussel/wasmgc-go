@@ -1155,6 +1155,12 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
 					return apply(sig)
 				}
+			case types.MethodExpr:
+				// T.M / (*T).M / I.M: signature includes the receiver so
+				// T.M(nil) can coerce untyped nil via lowerArgsWithSig.
+				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
+					return apply(sig)
+				}
 			default:
 				return nil // method call / method value handled elsewhere
 			}

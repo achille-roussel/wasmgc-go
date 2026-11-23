@@ -12,22 +12,25 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/lower"
 )
 
-// EnsurePrint links runtime.printstring / printint / printnl from
-// std/src/runtime/print.go when the module calls them and they are missing.
-// printstring stays body-less (codegen intrinsic until WAT); printnl and
-// printint are ordinary Go.
+// EnsurePrint links runtime.printstring / printint / printnl / printfloat*
+// / printcomplex* from std/src/runtime/print.go when the module calls them
+// and they are missing. printstring stays body-less (codegen intrinsic until
+// WAT); printnl, printint, and float/complex helpers are ordinary Go.
 func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	needString, needInt, needNL, needStreq, needCmpstr := scanPrintCalls(mod)
-	if !needString && !needInt && !needNL && !needStreq && !needCmpstr {
+	needString, needInt, needNL, needFloat, needComplex, needStreq, needCmpstr := scanPrintCalls(mod)
+	if !needString && !needInt && !needNL && !needFloat && !needComplex && !needStreq && !needCmpstr {
 		return nil
 	}
-	// Linked when decls exist: printstring may be body-less; int/nl/streq need bodies.
+	needPrintGo := needString || needInt || needNL || needFloat || needComplex
+	// Linked when decls exist: printstring may be body-less; others need bodies.
 	if (!needString || mod.LookupFunc("runtime.printstring") != nil) &&
 		(!needInt || hasPrintBody(mod, "runtime.printint")) &&
 		(!needNL || hasPrintBody(mod, "runtime.printnl")) &&
+		(!needFloat || hasPrintBody(mod, "runtime.printfloat64")) &&
+		(!needComplex || hasPrintBody(mod, "runtime.printcomplex128")) &&
 		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) &&
 		(!needCmpstr || hasPrintBody(mod, "runtime.cmpstring")) {
 		return nil
@@ -47,7 +50,7 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 		srcs = append(srcs, string(src))
 		return nil
 	}
-	if needString || needInt || needNL {
+	if needPrintGo {
 		if err := add("print.go"); err != nil {
 			return err
 		}
@@ -66,10 +69,11 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower print: %w", err)
 	}
+	fillPrintF64bits(mod)
 	return nil
 }
 
-func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq, needCmpstr bool) {
+func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needFloat, needComplex, needStreq, needCmpstr bool) {
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
@@ -79,6 +83,10 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq, nee
 				needInt = true
 			case "runtime.printnl":
 				needNL = true
+			case "runtime.printfloat32", "runtime.printfloat64":
+				needFloat = true
+			case "runtime.printcomplex64", "runtime.printcomplex128":
+				needComplex = true
 			case "runtime.stringeq":
 				needStreq = true
 			case "runtime.cmpstring":
@@ -87,6 +95,20 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq, nee
 		})
 	}
 	return
+}
+
+// fillPrintF64bits replaces empty printF64bits with i64.reinterpret_f64.
+func fillPrintF64bits(mod *ir.Module) {
+	f := mod.LookupFunc("runtime.printF64bits")
+	if f == nil || len(f.Params) != 1 || !emptyBody(f) {
+		return
+	}
+	p := f.Params[0]
+	f.Body = &ir.Seq{Stmts: []ir.Stmt{
+		&ir.Return{Results: []ir.Expr{
+			&ir.Instr{Op: ir.OpI64ReinterpretF64, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+		}},
+	}}
 }
 
 func hasPrintBody(mod *ir.Module, name string) bool {
@@ -110,12 +132,20 @@ func emptyBody(f *ir.Func) bool {
 
 func stripPrintFuncs(mod *ir.Module) {
 	names := map[string]bool{
-		"runtime.printstring": true,
-		"runtime.printint":    true,
-		"runtime.printnl":     true,
-		"runtime.printuint":   true,
-		"runtime.stringeq":    true,
-		"runtime.cmpstring":   true,
+		"runtime.printstring":      true,
+		"runtime.printint":         true,
+		"runtime.printnl":          true,
+		"runtime.printuint":        true,
+		"runtime.printfloat32":     true,
+		"runtime.printfloat64":     true,
+		"runtime.printcomplex64":   true,
+		"runtime.printcomplex128":  true,
+		"runtime.printF64bits":     true,
+		"runtime.printFloatUint":   true,
+		"runtime.printFloatDigits": true,
+		"runtime.printDigitByte":   true,
+		"runtime.stringeq":         true,
+		"runtime.cmpstring":        true,
 	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
