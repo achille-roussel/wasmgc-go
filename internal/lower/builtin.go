@@ -255,10 +255,12 @@ func (fl *funcLower) builtinCopy(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 		Then: &ir.Seq{},
 		Else: &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
+			// slice/string .data is already (ref $go.bytes); ref.as_non_null
+			// requires (ref null T) and is invalid on a non-null field get.
 			Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{dstData}},
+				dstData,
 				dstOff,
-				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{srcData}},
+				srcData,
 				srcOff,
 				fl.useVar(nV),
 			},

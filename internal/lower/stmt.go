@@ -1391,19 +1391,27 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 	// Dense integer switch → IR Switch; else if-chain.
 	// Fallthrough disables dense form (bodies are merged in the if-chain).
 	if s.Tag != nil && isInteger(tagType) && canDenseSwitch(arms) && !anyFallthrough(arms) && !anyCasePre(arms) {
-		sw, err := fl.emitDenseSwitch(tag, arms, breakL)
+		sw, allTerm, err := fl.emitDenseSwitch(tag, arms, breakL)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{sw}}})
+		if len(fl.results) > 0 && allTerm {
+			out = append(out, &ir.Unreachable{})
+		}
 		return out, nil
 	}
 
-	chain, err := fl.emitSwitchIfChain(tag, s.Tag == nil, tagType, arms, breakL)
+	chain, allTerm, err := fl.emitSwitchIfChain(tag, s.Tag == nil, tagType, arms, breakL)
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: chain}})
+	// When every case returns/unreachable, fallthru after the break block
+	// leaves no result on the stack; Wasm still expects the function result.
+	if len(fl.results) > 0 && allTerm {
+		out = append(out, &ir.Unreachable{})
+	}
 	return out, nil
 }
 
@@ -1438,6 +1446,51 @@ func anyFallthrough(arms []caseArm) bool {
 		}
 	}
 	return false
+}
+
+// allCasesReturn reports whether every case/default body ends with a return
+// (no break out of the switch). Used to insert unreachable after the switch
+// block in functions that return a value.
+func allCasesReturn(arms []caseArm) bool {
+	if len(arms) == 0 {
+		return false
+	}
+	for _, a := range arms {
+		if caseHasFallthrough(a.body) {
+			return false
+		}
+		if !astBlockEndsWithReturn(a.body) {
+			return false
+		}
+	}
+	return true
+}
+
+func astBlockEndsWithReturn(b *ast.BlockStmt) bool {
+	if b == nil || len(b.List) == 0 {
+		return false
+	}
+	last := b.List[len(b.List)-1]
+	if _, ok := last.(*ast.ReturnStmt); ok {
+		return true
+	}
+	// panic(...) never returns — treat like a return for switch fallthru.
+	es, ok := last.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	var id *ast.Ident
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	}
+	return id != nil && id.Name == "panic"
 }
 
 func anyCasePre(arms []caseArm) bool {
@@ -1497,15 +1550,22 @@ func canDenseSwitch(arms []caseArm) bool {
 	return width >= 0 && width <= int64(4*len(vals))
 }
 
-func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string) (ir.Stmt, error) {
+func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string) (ir.Stmt, bool, error) {
 	sw := &ir.Switch{Tag: tag, Dense: true}
+	allTerm := len(arms) > 0
 	for _, a := range arms {
 		body, err := fl.stmtBlock(a.body)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		// End each case with br break (no fallthrough).
+		// End each case with br break (no fallthrough), unless the body
+		// already returns or is unreachable.
+		beforeBr := body
 		body = appendBr(body, breakL)
+		// Terminates only if we did not append a break (still returns/unreach).
+		if !regionTerminates(beforeBr) {
+			allTerm = false
+		}
 		if a.def {
 			sw.Default = body
 			continue
@@ -1515,7 +1575,7 @@ func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string)
 			sw.Cases = append(sw.Cases, ir.Case{Value: c.I64, Body: body})
 		}
 	}
-	return sw, nil
+	return sw, allTerm, nil
 }
 
 func appendBr(r ir.Region, label string) ir.Region {
@@ -1523,11 +1583,24 @@ func appendBr(r ir.Region, label string) ir.Region {
 	if !ok {
 		seq = &ir.Seq{Stmts: []ir.Stmt{r}}
 	}
+	// Skip trailing br after return/unreachable — dead and confuses Wasm
+	// block typing (br after unreachable leaves the case arm ill-typed).
+	if endsWithReturn(seq) || endsWithUnreachable(seq) {
+		return seq
+	}
 	seq.Stmts = append(seq.Stmts, &ir.Br{Label: label})
 	return seq
 }
 
-func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Type, arms []caseArm, breakL string) ([]ir.Stmt, error) {
+func endsWithUnreachable(s *ir.Seq) bool {
+	if s == nil || len(s.Stmts) == 0 {
+		return false
+	}
+	_, ok := s.Stmts[len(s.Stmts)-1].(*ir.Unreachable)
+	return ok
+}
+
+func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Type, arms []caseArm, breakL string) ([]ir.Stmt, bool, error) {
 	// Non-default cases form the if/else chain; default is the final else.
 	// Fallthrough merges still walk source order in arms (incl. default).
 	defIdx := -1
@@ -1539,15 +1612,21 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 			caseIdxs = append(caseIdxs, i)
 		}
 	}
+	allTerm := len(arms) > 0
 	var build func(k int) (ir.Region, error)
 	build = func(k int) (ir.Region, error) {
 		if k >= len(caseIdxs) {
 			if defIdx < 0 {
+				// No default: falling off the switch is a valid exit.
+				allTerm = false
 				return &ir.Seq{}, nil
 			}
 			body, err := fl.stmtBlock(mergeFallthroughBody(arms, defIdx))
 			if err != nil {
 				return nil, err
+			}
+			if !regionTerminates(body) {
+				allTerm = false
 			}
 			return appendBr(body, breakL), nil
 		}
@@ -1556,6 +1635,9 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 		body, err := fl.stmtBlock(mergeFallthroughBody(arms, i))
 		if err != nil {
 			return nil, err
+		}
+		if !regionTerminates(body) {
+			allTerm = false
 		}
 		body = appendBr(body, breakL)
 		elseR, err := build(k + 1)
@@ -1601,12 +1683,73 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 	}
 	r, err := build(0)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if seq, ok := r.(*ir.Seq); ok {
-		return seq.Stmts, nil
+		return seq.Stmts, allTerm, nil
 	}
-	return []ir.Stmt{r}, nil
+	return []ir.Stmt{r}, allTerm, nil
+}
+
+// regionTerminates reports whether every path through r ends in return or
+// unreachable (no break out to a following statement).
+func regionTerminates(r ir.Region) bool {
+	if r == nil {
+		return false
+	}
+	switch x := r.(type) {
+	case *ir.Seq:
+		if len(x.Stmts) == 0 {
+			return false
+		}
+		return stmtTerminates(x.Stmts[len(x.Stmts)-1])
+	case *ir.Block:
+		return regionTerminates(x.Body)
+	case *ir.Loop:
+		return regionTerminates(x.Body)
+	case *ir.If:
+		if x.Else == nil {
+			return false
+		}
+		return regionTerminates(x.Then) && regionTerminates(x.Else)
+	case *ir.Switch:
+		ok := true
+		for _, c := range x.Cases {
+			if !regionTerminates(c.Body) {
+				ok = false
+			}
+		}
+		if x.Default != nil {
+			ok = ok && regionTerminates(x.Default)
+		} else {
+			ok = false
+		}
+		return ok
+	default:
+		return stmtTerminates(x)
+	}
+}
+
+func stmtTerminates(s ir.Stmt) bool {
+	switch x := s.(type) {
+	case *ir.Return, *ir.Unreachable:
+		return true
+	case *ir.Block:
+		return regionTerminates(x.Body)
+	case *ir.Loop:
+		return regionTerminates(x.Body)
+	case *ir.If:
+		if x.Else == nil {
+			return false
+		}
+		return regionTerminates(x.Then) && regionTerminates(x.Else)
+	case *ir.Switch:
+		return regionTerminates(x)
+	case *ir.Seq:
+		return regionTerminates(x)
+	default:
+		return false
+	}
 }
 
 func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {

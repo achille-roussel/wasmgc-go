@@ -464,6 +464,14 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			preamble = append(preamble, &ir.VarDef{Var: v})
 		}
 	}
+	// Address-taken locals spill into cells (see addrOf); allocate them here.
+	for _, ci := range child.cellInits {
+		preamble = append(preamble, child.assignVar(ci.cell, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: ci.cellTy},
+			Args: []ir.Expr{child.useVar(ci.orig)},
+		}))
+	}
 	if child.needsRecoverPrologue {
 		preamble = append(preamble, child.recoverPrologue()...)
 	}

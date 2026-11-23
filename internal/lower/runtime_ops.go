@@ -975,7 +975,9 @@ func (rt *runtimeLower) expandSliceGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	})
 	at := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, idx}}
 	getOp := ir.OpArrayGet
-	if arrName == "$go.bytes" {
+	switch arrName {
+	case "$go.bytes", "$go.i16s":
+		// Packed i8/i16 arrays require get_u (or get_s); plain get is invalid.
 		getOp = ir.OpArrayGetU
 	}
 	pre = append(pre, &ir.Assign{
@@ -1381,25 +1383,26 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	// Object pointer store of whole struct not handled here (field stores use fat/struct.set).
 	kind := "i32"
 	ptrType := "$go.ptr.i32"
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		typ := ir.Type(nil)
-		if nm.Var != nil {
-			typ = nm.Var.Typ
+	ptrTyp := exprRefTypeMod(rt.mod, in.Args[0])
+	if ptrTyp == "" {
+		ptrTyp = exprRefTypeMod(rt.mod, ptr)
+	}
+	switch {
+	case strings.HasPrefix(ptrTyp, "$go.struct."):
+		return nil, fmt.Errorf("store through object pointer of whole struct not lowered")
+	case strings.HasPrefix(ptrTyp, "$go.ptr."):
+		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
+		ptrType = ptrTyp
+	default:
+		// Infer from the stored value when the pointer expr has no named type
+		// (e.g. struct.get of a *[]byte field → $go.ptr.ref).
+		valNamed := exprRefTypeMod(rt.mod, in.Args[1])
+		if valNamed == "" {
+			valNamed = exprRefTypeMod(rt.mod, val)
 		}
-		if nm.Temp != nil {
-			typ = nm.Temp.Typ
-		}
-		if r, ok := typ.(*ir.Ref); ok {
-			if strings.HasPrefix(r.Named, "$go.struct.") {
-				// *Struct = val → fieldwise copy would be needed; for scalar field
-				// stores we use fat ptr. Whole-struct assign through pointer:
-				// copy fields — simplified: not in M3 exit criteria.
-				return nil, fmt.Errorf("store through object pointer of whole struct not lowered")
-			}
-			if strings.HasPrefix(r.Named, "$go.ptr.") {
-				kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-				ptrType = r.Named
-			}
+		if valNamed != "" && !strings.HasPrefix(valNamed, "$go.ptr.") {
+			kind = "ref"
+			ptrType = "$go.ptr.ref"
 		}
 	}
 	rt.ensureFatPtr(kind)
@@ -1413,10 +1416,14 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	setFn := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.class." + kind}, Field: "set", Args: []ir.Expr{&ir.Name{Temp: clT, Raw: clT.Name}}}
 	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
 	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
+	storeVal := val
+	if kind == "ref" {
+		storeVal = &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Null: true, Heap: ir.HeapAny}, Args: []ir.Expr{val}}
+	}
 	pre = append(pre, &ir.ExprStmt{X: &ir.Instr{
 		Op:   ir.OpCallRef,
 		Type: &ir.Ref{Named: "$go.set." + kind},
-		Args: []ir.Expr{base, index, val, setFn},
+		Args: []ir.Expr{base, index, storeVal, setFn},
 	}})
 	return pre, nil
 }
@@ -1545,7 +1552,7 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	if isArrayElem {
 		if isGet {
 			getOp := ir.OpArrayGet
-			if container == "$go.bytes" {
+			if container == "$go.bytes" || container == "$go.i16s" {
 				getOp = ir.OpArrayGetU
 			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
@@ -1582,10 +1589,22 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 			}}
 		} else {
 			v := &ir.Var{Name: "v", Typ: val}
+			setVal := ir.Expr(&ir.Name{Raw: "v", Var: v})
+			if kind == "ref" {
+				// Caller passes anyref; cast to the struct field's concrete type.
+				if td := rt.mod.LookupType(container); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == field {
+							setVal = &ir.Instr{Op: ir.OpRefCast, Type: f.Type, Args: []ir.Expr{setVal}}
+							break
+						}
+					}
+				}
+			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
 				&ir.ExprStmt{X: &ir.Instr{
 					Op: ir.OpStructSet, Type: &ir.Ref{Named: container}, Field: field,
-					Args: []ir.Expr{cast, &ir.Name{Raw: "v", Var: v}},
+					Args: []ir.Expr{cast, setVal},
 				}},
 				&ir.Return{},
 			}}

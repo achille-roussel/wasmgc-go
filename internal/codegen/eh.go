@@ -396,6 +396,14 @@ func (fe *funcEmitter) emitTry(r *ir.Try) error {
 	}
 	fe.enc.End()
 	fe.labels = fe.labels[:len(fe.labels)-1]
+	// Handler typically ends with `return`, which leaves this empty outer
+	// block's continuation reachable for validation with a cleared
+	// unreachable flag and an empty stack. Functions with results need a
+	// value here — mark the fallthrough unreachable (same as try's normal
+	// edge after all returns).
+	if len(fe.fn.Results) > 0 {
+		fe.enc.Unreachable()
+	}
 	return nil
 }
 

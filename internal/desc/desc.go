@@ -762,6 +762,13 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{a, b}}
 		case types.String:
 			return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{a, b}}
+		case types.UnsafePointer:
+			// anyref — reference identity, not i32.
+			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+			return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{b}},
+			}}
 		default:
 			return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{a, b}}
 		}
@@ -1022,8 +1029,15 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 		baseIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
 	if isPointer(concrete) {
-		// *Struct: data is already struct ref.
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
+		elem := derefIfPtr(concrete)
+		if isStruct(elem) {
+			// *Struct: data is already the struct object ref.
+			expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
+		} else {
+			// *scalar / *string / *slice: data is the fat pointer.
+			ptrIR, _ := mapTypeApprox(concrete)
+			expr = &ir.Instr{Op: ir.OpRefCast, Type: ptrIR, Args: []ir.Expr{expr}}
+		}
 		cur = concrete
 	} else if isStruct(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
@@ -1238,16 +1252,79 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 		if _, ok := elem.(*types.Struct); ok {
 			return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 		}
-		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+		// *string / *int / *[]T → fat pointer ($go.ptr.ref / .i32 / …).
+		return &ir.Ref{Null: true, Named: "$go.ptr." + fatPtrKindApprox(elem)}, nil
 	case *types.Named:
 		if _, ok := t.Underlying().(*types.Struct); ok {
 			return &ir.Ref{Null: true, Named: structName(t)}, nil
 		}
 		return mapTypeApprox(t.Underlying())
 	case *types.Slice:
+		return sliceIRApprox(t.Elem()), nil
+	case *types.Array:
+		// Rare as a method param; treat like a ref.
 		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	case *types.Map, *types.Chan:
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	case *types.Signature:
+		// Func values are (ref null $go.clos) — see design 03 / M5.
+		return &ir.Ref{Null: true, Named: "$go.clos"}, nil
 	}
 	return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+}
+
+// fatPtrKindApprox mirrors lower.fatPtrKind for descriptor wrappers.
+func fatPtrKindApprox(elem types.Type) string {
+	elem = types.Unalias(elem)
+	switch u := elem.Underlying().(type) {
+	case *types.Basic:
+		switch u.Kind() {
+		case types.Int64, types.Uint64:
+			return "i64"
+		case types.Float32:
+			return "f32"
+		case types.Float64:
+			return "f64"
+		case types.String, types.UnsafePointer,
+			types.Complex64, types.Complex128, types.UntypedComplex:
+			return "ref"
+		default:
+			return "i32"
+		}
+	case *types.Slice, *types.Pointer, *types.Map, *types.Chan, *types.Signature, *types.Interface,
+		*types.Struct, *types.Array:
+		return "ref"
+	case *types.Named:
+		return fatPtrKindApprox(u.Underlying())
+	}
+	return "ref"
+}
+
+// sliceIRApprox maps []T to the WasmGC slice header name used by the lowerer.
+func sliceIRApprox(elem types.Type) ir.Type {
+	elem = types.Unalias(elem)
+	if b, ok := elem.Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Uint8: // also types.Byte
+			return &ir.Ref{Null: true, Named: "$go.slice.i8"}
+		case types.Int16, types.Uint16:
+			return &ir.Ref{Null: true, Named: "$go.slice.i16"}
+		case types.Int, types.Int32, types.Uint, types.Uint32, types.Uintptr, types.Bool:
+			return &ir.Ref{Null: true, Named: "$go.slice.i32"}
+		case types.Int64, types.Uint64:
+			return &ir.Ref{Null: true, Named: "$go.slice.i64"}
+		case types.Float32:
+			return &ir.Ref{Null: true, Named: "$go.slice.f32"}
+		case types.Float64:
+			return &ir.Ref{Null: true, Named: "$go.slice.f64"}
+		case types.String:
+			return &ir.Ref{Null: true, Named: "$go.slice.go.string"}
+		}
+	}
+	if _, ok := elem.Underlying().(*types.Interface); ok {
+		return &ir.Ref{Null: true, Named: "$go.slice.go.iface"}
+	}
+	return &ir.Ref{Null: true, Heap: ir.HeapAny}
 }
 
 func structName(t *types.Named) string {

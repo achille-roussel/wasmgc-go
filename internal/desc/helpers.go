@@ -200,7 +200,11 @@ func (g *gen) fillReflectIface() {
 			Else: &ir.Seq{Stmts: []ir.Stmt{
 				&ir.Assign{Lhs: []ir.Dest{{Name: "itab", Var: itab}}, Rhs: &ir.Instr{
 					Op: ir.OpStructNew, Type: itabTy,
-					Args: []ir.Expr{&ir.Name{Raw: "typ", Var: typ}},
+					// $go.itab.type is non-null; typ is refnull after the guard.
+					Args: []ir.Expr{&ir.Instr{
+						Op:   ir.OpRefAsNonNull,
+						Args: []ir.Expr{&ir.Name{Raw: "typ", Var: typ}},
+					}},
 				}},
 				&ir.Return{Results: []ir.Expr{&ir.Instr{
 					Op: ir.OpStructNew, Type: &ir.Ref{Named: "$go.iface"},

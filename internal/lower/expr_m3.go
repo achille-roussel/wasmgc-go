@@ -33,9 +33,52 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 			base := &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}
 			return &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Type: ptrTy}, nil, nil
 		}
+		obj := fl.info.Uses[x]
+		if obj == nil {
+			obj = fl.info.Defs[x]
+		}
 		v, err := fl.lookupVar(x)
 		if err != nil {
 			return nil, nil, err
+		}
+		// Wasm locals are not addressable. Spill into a cell and take the
+		// address of cell.v (design 03: escaping &local).
+		if obj != nil {
+			elemTy := v.Typ
+			if fl.cells != nil {
+				if cv, ok := fl.cells[obj]; ok {
+					return &ir.Instr{
+						Op:    ir.OpAddr,
+						Args:  []ir.Expr{fl.useVar(cv)},
+						Field: "v",
+						Type:  ptrTy,
+					}, nil, nil
+				}
+			}
+			cellName, err := fl.pkg.ensureCellType(elemTy)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := fl.ensureLocalCell(obj, cellName, elemTy); err != nil {
+				return nil, nil, err
+			}
+			fl.markAssigned(obj)
+			cv := fl.cells[obj]
+			// Sync plain local → cell (assignments before ensureLocalCell only
+			// updated the local), same as closure capture-by-ref.
+			var stmts []ir.Stmt
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op:    ir.OpStructSet,
+				Type:  &ir.Ref{Named: cellName},
+				Field: "v",
+				Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
+			}})
+			return &ir.Instr{
+				Op:    ir.OpAddr,
+				Args:  []ir.Expr{fl.useVar(cv)},
+				Field: "v",
+				Type:  ptrTy,
+			}, stmts, nil
 		}
 		return &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{fl.useVar(v)}, Type: ptrTy}, nil, nil
 	case *ast.SelectorExpr:
@@ -220,6 +263,11 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				if err != nil {
 					return nil, nil, err
 				}
+				// Prefer contextual want for rune/int consts used as uint64
+				// (e.g. u <= utf8.MaxRune in fmt.(*fmt).fmtUnicode).
+				if want != nil && irNumWidth(want) == ir.I64 && irNumWidth(ty) == ir.I32 {
+					ty = want
+				}
 				ex, err := fl.constVal(c.Val(), ty)
 				return ex, nil, err
 			}
@@ -350,6 +398,20 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)
 }
 
+func (fl *funcLower) sliceBoundI32(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
+	ex, stmts, err := fl.expr(e, ir.TypeI32)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Wasm slice bounds are i32; Go may use int64 (e.g. io.LimitedReader.N).
+	if t := fl.typeOf(e); t != nil {
+		if irt, err := fl.mapType(t); err == nil && irNumWidth(irt) == ir.I64 {
+			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		}
+	}
+	return ex, stmts, nil
+}
+
 func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	base, stmts, err := fl.expr(e.X, nil)
 	if err != nil {
@@ -357,16 +419,18 @@ func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.St
 	}
 	var lo, hi, max ir.Expr
 	if e.Low != nil {
-		lo, _, err = fl.expr(e.Low, ir.TypeI32)
+		var lstmts []ir.Stmt
+		lo, lstmts, err = fl.sliceBoundI32(e.Low)
 		if err != nil {
 			return nil, nil, err
 		}
+		stmts = append(stmts, lstmts...)
 	} else {
 		lo = fl.i32const(0)
 	}
 	if e.High != nil {
 		var hstmts []ir.Stmt
-		hi, hstmts, err = fl.expr(e.High, ir.TypeI32)
+		hi, hstmts, err = fl.sliceBoundI32(e.High)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -378,7 +442,7 @@ func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.St
 	args := []ir.Expr{base, lo, hi}
 	if e.Max != nil {
 		var mstmts []ir.Stmt
-		max, mstmts, err = fl.expr(e.Max, ir.TypeI32)
+		max, mstmts, err = fl.sliceBoundI32(e.Max)
 		if err != nil {
 			return nil, nil, err
 		}

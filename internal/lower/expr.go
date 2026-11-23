@@ -1038,12 +1038,11 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 		data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
 		off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
 		len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
+		// .data is already (ref $go.bytes); do not ref.as_non_null.
 		return &ir.Instr{
-			Op: ir.OpStructNew, Type: typeString,
-			Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{data}},
-				off, len_,
-			},
+			Op:   ir.OpStructNew,
+			Type: typeString,
+			Args: []ir.Expr{data, off, len_},
 		}, stmts, nil
 	}
 	// [N]byte / *[N]byte: whole array is the data, off=0, len=N.
@@ -1060,12 +1059,9 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 		// already the array ref
 	}
 	return &ir.Instr{
-		Op: ir.OpStructNew, Type: typeString,
-		Args: []ir.Expr{
-			&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{arr}},
-			fl.i32const(0),
-			fl.i32const(n),
-		},
+		Op:   ir.OpStructNew,
+		Type: typeString,
+		Args: []ir.Expr{arr, fl.i32const(0), fl.i32const(n)},
 	}, stmts, nil
 }
 
@@ -1591,15 +1587,37 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 	if recvExpr != nil {
 		args = append(args, recvExpr)
 	}
-	paramOff := 0
-	if recvExpr != nil {
-		paramOff = 0 // sig.Params does not include receiver
+
+	nParams := 0
+	variadic := false
+	if sig != nil {
+		nParams = sig.Params().Len()
+		variadic = sig.Variadic()
 	}
-	_ = paramOff
-	for i, a := range e.Args {
+	nFixed := nParams
+	if variadic {
+		nFixed = nParams - 1
+	}
+
+	// Fixed (non-variadic) parameters.
+	nArgs := len(e.Args)
+	if variadic && !e.Ellipsis.IsValid() && nArgs < nFixed {
+		return nil, nil, fl.errorf(e, "not enough arguments")
+	}
+	limit := nArgs
+	if variadic {
+		// With or without ellipsis, only the first nFixed args are fixed
+		// params; the rest form (or are) the variadic slice.
+		limit = nFixed
+		if limit > nArgs {
+			limit = nArgs
+		}
+	}
+	for i := 0; i < limit; i++ {
+		a := e.Args[i]
 		var want ir.Type
 		var dstGo types.Type
-		if sig != nil && i < sig.Params().Len() {
+		if sig != nil && i < nFixed {
 			dstGo = sig.Params().At(i).Type()
 			var err error
 			want, err = fl.mapType(dstGo)
@@ -1616,6 +1634,67 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		}
 		stmts = append(stmts, st...)
 		args = append(args, ex)
+	}
+
+	if variadic {
+		sliceGo := sig.Params().At(nFixed).Type()
+		sliceIR, err := fl.mapType(sliceGo)
+		if err != nil {
+			return nil, nil, fl.errorf(e, "%v", err)
+		}
+		if e.Ellipsis.IsValid() {
+			// f(slice...) — last arg is already the slice.
+			if nArgs != nFixed+1 {
+				return nil, nil, fl.errorf(e, "invalid use of ... with %d args", nArgs)
+			}
+			a := e.Args[nFixed]
+			ex, st, err := fl.coerceExpr(a, sliceGo, sliceIR)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, st...)
+			args = append(args, ex)
+		} else {
+			// Pack trailing args into a []T literal.
+			elemGo := sliceGo.Underlying().(*types.Slice).Elem()
+			elemIR, err := fl.mapType(elemGo)
+			if err != nil {
+				return nil, nil, fl.errorf(e, "%v", err)
+			}
+			var elems []ir.Expr
+			for i := nFixed; i < nArgs; i++ {
+				a := e.Args[i]
+				ex, st, err := fl.coerceExpr(a, elemGo, elemIR)
+				if err != nil {
+					return nil, nil, err
+				}
+				stmts = append(stmts, st...)
+				elems = append(elems, ex)
+			}
+			// Empty variadic → nil slice (same as Go for f() with f(...T)).
+			if len(elems) == 0 {
+				args = append(args, &ir.Instr{Op: ir.OpRefNull, Type: sliceIR})
+			} else {
+				args = append(args, &ir.Instr{Op: ir.OpLiteral, Type: sliceIR, Args: elems})
+			}
+		}
+	} else {
+		// Non-variadic: any remaining args already handled in limit==nArgs.
+		for i := limit; i < nArgs; i++ {
+			a := e.Args[i]
+			var want ir.Type
+			var dstGo types.Type
+			if t := fl.typeOf(a); t != nil {
+				dstGo = t
+				want, _ = fl.mapType(t)
+			}
+			ex, st, err := fl.coerceExpr(a, dstGo, want)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, st...)
+			args = append(args, ex)
+		}
 	}
 	return args, stmts, nil
 }
