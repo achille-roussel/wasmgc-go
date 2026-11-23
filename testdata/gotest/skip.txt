@@ -105,7 +105,6 @@ fixedbugs/bug271.go — compile error: lower: tuple type not a single value: (in
 fixedbugs/bug272.go — wasm validate/compile error
 fixedbugs/bug273.go — wasm validate/compile error
 fixedbugs/bug279.go — compile error: lower: not a function: unsafe.Sizeof obj=*types.Builtin
-fixedbugs/bug285.go — compile error: lower: untyped nil needs a typed context
 fixedbugs/bug286.go — wasm validate/compile error
 fixedbugs/bug291.go — compile error: codegen
 fixedbugs/bug293.go — output mismatch
@@ -127,7 +126,6 @@ fixedbugs/bug356.go — wasm validate/compile error
 fixedbugs/bug364.go — wasm validate/compile error
 fixedbugs/bug370.go — compile error: codegen
 fixedbugs/bug401.go — wasm validate/compile error
-fixedbugs/bug409.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
 fixedbugs/bug433.go — runtime error
 fixedbugs/bug434.go — runtime error
 fixedbugs/bug436.go — compile error: lower: multi-value call used in single-value context
@@ -135,7 +133,6 @@ fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug444.go — compile error: lower: untyped nil needs a typed context
 fixedbugs/bug446.go — failed: panic: dummy1 != 1
-fixedbugs/bug453.go — compile error: lower: print of type float32 not supported in M3 (need string or int)
 fixedbugs/bug454.go — compile error: lower: range over *[10]int not supported
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
@@ -153,7 +150,6 @@ fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue10486.go — compile error: codegen
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue11286.go — compile error: codegen
-fixedbugs/issue11326b.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
 fixedbugs/issue11945.go — wasm validate/compile error
 fixedbugs/issue12577.go — compile error: lower: print of type float32 not supported in M3 (need string or int)
 fixedbugs/issue12621.go — runtime error
@@ -194,7 +190,6 @@ fixedbugs/issue19113.go — wasm validate/compile error
 fixedbugs/issue19246.go — output mismatch
 fixedbugs/issue19710.go — compile error: lower: unsupported deferred builtin delete
 fixedbugs/issue19799.go — compile error: codegen
-fixedbugs/issue19911.go — compile error: lower: untyped nil needs a typed context
 fixedbugs/issue20029.go — compile error: codegen
 fixedbugs/issue20530.go — output mismatch
 fixedbugs/issue20811.go — failed: build: pipeline: IR verify: cannot assign ref $go.string to var h4 of type i32 in main.main pipeline…
@@ -467,7 +462,6 @@ interface/receiver.go — compile error: lower: print of type *gotestcase.T not 
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
 ken/convert.go — compile error: lower: print of type gotestcase.big not supported in M3 (need string or int)
-ken/cplx0.go — compile error: lower: print of type complex128 not supported in M3 (need string or int)
 ken/cplx1.go — compile error: lower: print of type complex64 not supported in M3 (need string or int)
 ken/cplx2.go — compile error: lower: print of type complex64 not supported in M3 (need string or int)
 ken/cplx3.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
@@ -555,7 +549,6 @@ typeparam/fact.go — wasm validate/compile error
 typeparam/genembed.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn8014 of type ref $go.ifacefn.main_getter$stri…
 typeparam/graph.go — failed: build: mono: pending main._NodeC$main.mazeEdge.Edges missing package/info mono: pending main._NodeC$…
 typeparam/interfacearg.go — compile error: codegen
-typeparam/issue42758.go — compile error: lower: untyped nil needs a typed context
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …
 typeparam/issue45722.go — could not import log
 typeparam/issue46591.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
@@ -571,7 +564,6 @@ typeparam/issue48042.go — compile error: lower: variable T has no IR local (in
 typeparam/issue48047.go — wasm validate/compile error
 typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer2$byte desc: no concrete type for main.fooer2$byte
 typeparam/issue48253.go — compile error: codegen
-typeparam/issue48276b.go — compile error: lower: untyped nil needs a typed context
 typeparam/issue48317.go — compile error: codegen
 typeparam/issue48318.go — could not import encoding/xml
 typeparam/issue48344.go — wasm validate/compile error
@@ -611,7 +603,6 @@ typeparam/issue58513.go — compile error: lower: variable To has no IR local (i
 typeparam/list.go — wasm validate/compile error
 typeparam/list2.go — wasm validate/compile error
 typeparam/map.go — failed: panic: got [1 2 3], want [1 2 3]
-typeparam/maps.go — compile error: lower: untyped nil needs a typed context
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
 typeparam/mdempsky/14.go — compile error: codegen
 typeparam/mdempsky/15.go — compile error: codegen
