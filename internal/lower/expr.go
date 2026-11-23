@@ -348,11 +348,14 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			(isNilIdent(e.Y) && isIface(xt)) {
 			return fl.ifaceCompare(e, e.Op)
 		}
-		// pointer/ref == nil → ref.is_null
+		// pointer/ref/externref == nil → ref.is_null
 		if isNilIdent(e.Y) && xt != nil {
 			if irt, err := fl.mapType(xt); err == nil {
 				if _, ok := irt.(*ir.Ref); ok {
 					return fl.refNilCompare(e.X, irt, e.Op)
+				}
+				if _, ok := irt.(*ir.Extern); ok {
+					return fl.refNilCompare(e.X, ir.TypeExtern, e.Op)
 				}
 			}
 		}
@@ -360,6 +363,9 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			if irt, err := fl.mapType(yt); err == nil {
 				if _, ok := irt.(*ir.Ref); ok {
 					return fl.refNilCompare(e.Y, irt, e.Op)
+				}
+				if _, ok := irt.(*ir.Extern); ok {
+					return fl.refNilCompare(e.Y, ir.TypeExtern, e.Op)
 				}
 			}
 		}

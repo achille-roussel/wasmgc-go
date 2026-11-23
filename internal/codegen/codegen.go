@@ -113,6 +113,9 @@ type gen struct {
 	fillWriteHost bool
 	// runtime.getArgString: host getArg → linear memory → Go string.
 	fillGetArgString bool
+	// syscall/js string bridge fills (Go string ↔ JS string via linear memory).
+	fillJSValueOfString bool
+	fillJSValueToString bool
 
 	// Slice/index panic stubs (legacy trap fill; M5 uses EH fills).
 	panicIndexIdx       uint32
@@ -208,7 +211,9 @@ func (g *gen) scanNeeds() {
 					switch e.Func {
 					case "runtime.printstring", "runtime.printint", "runtime.printnl",
 						"go.runtime.write", "syscall.writeHost", "runtime.getArgString",
-						"runtime.getArg":
+						"runtime.getArg",
+						"syscall.js.valueOfString", "syscall.js.valueToString",
+						"syscall.js.jsValue", "syscall.js.jsStringCopy":
 						g.needsMemory = true
 						g.needsStringTypes = true
 					}
@@ -245,6 +250,7 @@ func (g *gen) scanNeeds() {
 	for _, name := range []string{
 		"runtime.printstring", "runtime.printint", "runtime.printnl",
 		"syscall.writeHost", "runtime.getArgString",
+		"syscall.js.valueOfString", "syscall.js.valueToString",
 	} {
 		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {
 			g.needsMemory = true

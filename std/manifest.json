@@ -35,7 +35,15 @@
     },
     "syscall/js": {
       "tier": "rewrite",
-      "notes": "externref rewrite"
+      "notes": "externref rewrite; js.get/set/call/new/value/await host imports"
+    },
+    "net/http": {
+      "tier": "rewrite",
+      "notes": "M9: Get/Head/Post/Do via fetch; ListenAndServe ErrUnsupported"
+    },
+    "net": {
+      "tier": "out",
+      "notes": "Sockets out of v1; HTTP client is rewrite net/http via fetch"
     },
     "slices": {
       "tier": "overlay",

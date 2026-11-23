@@ -53,7 +53,14 @@ func (g *gen) ensurePrintStubs() error {
 	if f := g.m.LookupFunc("runtime.getArgString"); f != nil && emptyPrintBody(f) {
 		g.fillGetArgString = true
 	}
-	if !needString && !needInt && !needNL && !g.fillWriteHost && !g.fillGetArgString {
+	if f := g.m.LookupFunc("syscall.js.valueOfString"); f != nil && emptyPrintBody(f) {
+		g.fillJSValueOfString = true
+	}
+	if f := g.m.LookupFunc("syscall.js.valueToString"); f != nil && emptyPrintBody(f) {
+		g.fillJSValueToString = true
+	}
+	if !needString && !needInt && !needNL && !g.fillWriteHost && !g.fillGetArgString &&
+		!g.fillJSValueOfString && !g.fillJSValueToString {
 		return nil
 	}
 	if g.fillGetArgString && !g.hasMemory {
@@ -61,6 +68,18 @@ func (g *gen) ensurePrintStubs() error {
 	}
 	if g.fillGetArgString && !g.hostImported["runtime.getArg"] {
 		return fmt.Errorf("codegen: getArgString requires go.runtime.getArg import")
+	}
+	if g.fillJSValueOfString && !g.hasMemory {
+		return fmt.Errorf("codegen: valueOfString requires linear memory")
+	}
+	if g.fillJSValueOfString && !g.hostImported["syscall.js.jsValue"] {
+		return fmt.Errorf("codegen: valueOfString requires go.js.value import")
+	}
+	if g.fillJSValueToString && !g.hasMemory {
+		return fmt.Errorf("codegen: valueToString requires linear memory")
+	}
+	if g.fillJSValueToString && !g.hostImported["syscall.js.jsStringCopy"] {
+		return fmt.Errorf("codegen: valueToString requires go.js.stringCopy import")
 	}
 	if (needString || needInt || needNL || g.fillWriteHost) && (!g.hasWrite || !g.hasMemory) {
 		return fmt.Errorf("codegen: print stubs require memory and go.runtime.write")

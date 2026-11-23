@@ -107,6 +107,13 @@ func PruneUnreachable(m *Module) {
 			seedGetArg = true
 			markFn("runtime.getArg")
 		}
+		// JS string bridge fills call host imports that empty IR bodies omit.
+		if liveFn["syscall.js.valueOfString"] {
+			markFn("syscall.js.jsValue")
+		}
+		if liveFn["syscall.js.valueToString"] {
+			markFn("syscall.js.jsStringCopy")
+		}
 	}
 
 	out := m.Funcs[:0]

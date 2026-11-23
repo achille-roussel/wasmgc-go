@@ -488,6 +488,11 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	}
 	ut := types.Unalias(ty)
 	if n, ok := ut.(*types.Named); ok {
+		if isJSValue(n) {
+			// Value{} is JS null (externref null), not an empty struct.
+			z, err := fl.zeroValue(ir.TypeExtern)
+			return z, nil, err
+		}
 		ut = n.Underlying()
 	}
 	switch ut := ut.(type) {
@@ -643,6 +648,8 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			}
 		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
+	case *ir.Extern:
+		return &ir.Instr{Op: ir.OpRefNull, Type: ir.TypeExtern}, nil
 	default:
 		return nil, fmt.Errorf("no zero value for %s", t)
 	}

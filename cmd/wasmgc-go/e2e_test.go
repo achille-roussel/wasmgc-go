@@ -874,6 +874,71 @@ func TestM9ReflectMakeE2E(t *testing.T) {
 	runM8(t, "m9_reflect_make", "7\n3\n1\n", 0)
 }
 
+// TestM9HTTPGetE2E: http.Get of a local Node http server returns the body
+// via fetch (docs/design/09). Passes the server URL as os.Args[0].
+func TestM9HTTPGetE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	if !jspiAvailable(t) {
+		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
+	}
+
+	node := "node"
+	for _, c := range jspiNodeCandidates() {
+		if c == "node" {
+			continue
+		}
+		if _, err := os.Stat(c); err == nil {
+			out, err := exec.Command(c, "-e",
+				`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`).CombinedOutput()
+			if err == nil {
+				node = c
+				break
+			}
+			_ = out
+		}
+	}
+
+	srvScript := `
+const http = require("http");
+const srv = http.createServer((req, res) => {
+  res.writeHead(200, {"Content-Type": "text/plain"});
+  res.end("hello-fetch");
+});
+srv.listen(0, "127.0.0.1", () => {
+  const { port } = srv.address();
+  process.stdout.write("http://127.0.0.1:" + port + "\n");
+});
+`
+	srvCmd := exec.Command(node, "-e", srvScript)
+	stdoutPipe, err := srvCmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvCmd.Stderr = os.Stderr
+	if err := srvCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = srvCmd.Process.Kill()
+		_, _ = srvCmd.Process.Wait()
+	}()
+
+	urlBuf := make([]byte, 256)
+	n, err := stdoutPipe.Read(urlBuf)
+	if err != nil {
+		t.Fatalf("read server url: %v", err)
+	}
+	url := strings.TrimSpace(string(urlBuf[:n]))
+	if !strings.HasPrefix(url, "http://") {
+		t.Fatalf("bad server url %q", url)
+	}
+	t.Logf("test server at %s", url)
+
+	runM8Args(t, "m9_http_get", "hello-fetch\n", 0, []string{url})
+}
+
 func TestM7SizeBudgets(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
