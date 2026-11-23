@@ -81,17 +81,26 @@ func FormatSkipLine(name, reason string) string {
 }
 
 // LoadBaseSkipEntries reads skip.txt from the comparison base (WASMGC_SKIP_BASE
-// ref, default origin/main). Missing file → empty list.
+// ref, default origin/main). The base ref must resolve (shallow CI checkouts
+// need fetch-depth: 0 or an explicit fetch of main). Missing file on that ref
+// → empty list (first introduction of skip.txt). A missing ref is an error so
+// we never treat "could not see main" as "main has zero skips".
 func LoadBaseSkipEntries(repoRoot, skipRel string) ([]SkipEntry, error) {
 	base := os.Getenv("WASMGC_SKIP_BASE")
 	if base == "" {
 		base = "origin/main"
 	}
+	rev := exec.Command("git", "rev-parse", "--verify", base)
+	rev.Dir = repoRoot
+	if out, err := rev.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("skip baseline ref %q not available (fetch the base branch, e.g. git fetch origin main): %w\n%s",
+			base, err, strings.TrimSpace(string(out)))
+	}
 	cmd := exec.Command("git", "show", base+":"+filepath.ToSlash(skipRel))
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
-		// Base branch may not have the file yet.
+		// File missing on base → empty list.
 		return nil, nil
 	}
 	return ParseSkipBytes(out)

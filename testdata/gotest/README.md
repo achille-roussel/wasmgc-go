@@ -39,7 +39,9 @@ Format (em dash required):
 
 A skip without a reason fails `TestSkipListFormat`. Growing the list relative to
 `origin/main` (or `WASMGC_SKIP_BASE`) fails `TestSkipListGrowth` unless
-`skip_bump.txt` exists with a one-line reviewed justification.
+`skip_bump.txt` exists with a one-line reviewed justification. The baseline ref
+must resolve (`git fetch origin main`); a missing ref is an error, not an empty
+baseline. CI unit jobs use `fetch-depth: 0` for this.
 
 Regenerate skips after a broad sweep:
 

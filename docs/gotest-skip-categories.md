@@ -104,7 +104,7 @@ follow-up sweeps):
 | sort | 27 | Tables / pdqsort / stable | Runtime/algorithm parity |
 | strconv | 26 | Quote/unicode/alloc (13), null-deref (12) | Runtime + tables |
 | math/bits | 25 | `uint64`→`uint` overflow on 32-bit word | Sizes / build tags |
-| unicode/utf8 | 15 | Package-init non-defaultable string local | **Fixable** (zero-init synthetic init) |
+| unicode/utf8 | **0** | ~~Package-init / UTF-8 range~~ — cleared in [PR #24](https://github.com/achille-roussel/wasmgc-go/pull/24) | **done** |
 | container/ring | 8 | Circular pointer equality | Runtime pointer identity |
 | errors | 7 | `iface` assert → `interface{Unwrap() error}` itabs | **Fixable** (assert-site itabs) |
 | maps | 1 | `Clone` large keys / `-0` | Overlay/freeze semantics |
@@ -140,7 +140,7 @@ Order prefers unlock count and localization over size work.
 | PR | Category | Expected skip delta (approx.) |
 |---|---|---|
 | A | This doc (+ arm skip growth: drop M10 `skip_bump.txt`) | 0 |
-| B | Package-init zero-init → utf8 | −15 stdlib |
+| B | Package-init / copy(nil) / switch / UTF-8 range → utf8 | **done (−15 stdlib, [PR #24](https://github.com/achille-roussel/wasmgc-go/pull/24))** |
 | C | Untyped nil (`append` + method-expr) | −3…17 GOROOT |
 | D | `println` float/complex | −19…39 GOROOT |
 | E | errors Unwrap/Is itabs | −5…7 stdlib |
@@ -154,11 +154,21 @@ Each PR description should report before/after pass and skip counts for
 
 ---
 
-## 4. Baseline counts (M10 merge)
+## 4. Baseline counts
+
+### M10 merge
 
 | Layer | Pass | Fail | Skip |
 |---|---:|---:|---:|
 | `$GOROOT/test` (`// run`) | 380 | 0 | 646 (+ auto skip_action/constraint) |
 | Stdlib packages | 16/16 packages ok | 0 | ~1038 per-test |
+
+### After PR #24 (unicode/utf8 unlock)
+
+| Layer | Pass | Fail | Skip |
+|---|---:|---:|---:|
+| `$GOROOT/test` | 380 | 0 | 646 |
+| unicode/utf8 | **15** | 0 | **0** (was 15) |
+| Stdlib per-test total | — | — | ~1023 |
 
 Update this section when a burn-down PR lands.
