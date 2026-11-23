@@ -27,7 +27,7 @@ args.go — failed: panic: argc
 bigalg.go — output mismatch: map/slice print vs expected
 bigmap.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
 blank.go — wasm validate/compile error
-chan/doubleselect.go — compile error: lower: unsupported deferred builtin close
+chan/doubleselect.go — failed: panic: runtime error: slice bounds out of range
 chan/nonblock.go — compile error: build: load: typecheck
 chan/powser1.go — compile error: lower: copy: unsupported dst type
 chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
@@ -169,7 +169,6 @@ fixedbugs/issue19040.go — compile error: codegen
 fixedbugs/issue19078.go — unsupported: unsafe
 fixedbugs/issue19113.go — wasm validate/compile error
 fixedbugs/issue19246.go — output mismatch
-fixedbugs/issue19710.go — compile error: lower: unsupported deferred builtin delete
 fixedbugs/issue19799.go — compile error: codegen
 fixedbugs/issue20530.go — output mismatch
 fixedbugs/issue20811.go — failed: build: pipeline: IR verify: cannot assign ref $go.string to var h4 of type i32 in main.main pipeline…
@@ -229,7 +228,7 @@ fixedbugs/issue31419.go — wasm validate/compile error
 fixedbugs/issue31546.go — output mismatch
 fixedbugs/issue31782.go — compile error: codegen
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
-fixedbugs/issue32175.go — compile error: lower: unsupported defer call form *ast.CallExpr
+fixedbugs/issue32175.go — output mismatch: named result capture through defer CallExpr thunk
 fixedbugs/issue32187.go — could not import log
 fixedbugs/issue32288.go — runtime error
 fixedbugs/issue32477.go — compile error: codegen
@@ -372,8 +371,6 @@ fixedbugs/issue8004.go — compile error: build: load: typecheck
 fixedbugs/issue80127.go — runtime error
 fixedbugs/issue80188.go — compile error: codegen
 fixedbugs/issue80196.go — output mismatch: non-nil pointer print
-fixedbugs/issue8039.go — compile error: lower: unsupported deferred builtin copy
-fixedbugs/issue8047.go — compile error: lower: unsupported defer call form *ast.ParenExpr
 fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80517_1.go — runtime error
@@ -401,7 +398,6 @@ float_lit.go — compile error: lower: close wants 1 arg
 float_lit2.go — wasm validate/compile error
 floatcmp.go — runtime error
 for.go — output mismatch
-func5.go — compile error: lower: unsupported defer call form *ast.CallExpr
 func8.go — wasm validate/compile error
 gcgort.go — could not import runtime/debug
 gcstring.go — compile error: codegen

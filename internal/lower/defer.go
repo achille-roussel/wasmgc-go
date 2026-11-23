@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -115,20 +116,62 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 		if fl.isBuiltinCall(call) {
 			bname := fl.builtinName(call)
 			switch bname {
-			case "print", "println", "panic", "recover":
+			case "print", "println", "panic", "recover", "close", "delete", "copy":
 				// Capture args; thunk re-emits the builtin.
 				var printKinds []int
+				var copyDstIR, copySrcIR ir.Type
+				var deleteKeyStr string
 				for i, a := range call.Args {
 					src := fl.typeOf(a)
 					var want ir.Type
 					var ex ir.Expr
 					var astmts []ir.Stmt
 					var err error
-					if bname == "panic" {
+					switch bname {
+					case "panic":
 						emptyIface := types.NewInterfaceType(nil, nil)
 						want = typeIface
 						ex, astmts, err = fl.convertToIface(a, src, emptyIface, typeIface)
-					} else {
+					case "delete":
+						if i == 0 {
+							// map value
+							want, err = fl.mapType(src)
+							if err != nil {
+								return nil, nil, err
+							}
+							ex, astmts, err = fl.expr(a, want)
+							fl.markNeedsMaps()
+							if keyT, _ := mapKeyElem(src); keyT != nil {
+								deleteKeyStr = desc.TypeKey(keyT)
+							}
+						} else {
+							// key boxed to iface at capture time (like delete itself)
+							emptyIface := types.NewInterfaceType(nil, nil)
+							want = typeIface
+							ex, astmts, err = fl.convertToIface(a, src, emptyIface, typeIface)
+						}
+					case "close":
+						fl.pkg.ensureChanBaseTypes()
+						if fl.pkg.meta != nil {
+							fl.pkg.meta.needsSched = true
+						}
+						want, err = fl.mapType(src)
+						if err != nil {
+							return nil, nil, err
+						}
+						ex, astmts, err = fl.expr(a, want)
+					case "copy":
+						want, err = fl.mapType(src)
+						if err != nil {
+							return nil, nil, err
+						}
+						ex, astmts, err = fl.expr(a, want)
+						if i == 0 {
+							copyDstIR = want
+						} else {
+							copySrcIR = want
+						}
+					default:
 						want, err = fl.mapType(src)
 						if err != nil {
 							return nil, nil, err
@@ -148,9 +191,20 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 				}
 				nargs := len(call.Args)
 				kinds := printKinds
+				dstIR, srcIR := copyDstIR, copySrcIR
+				keyStr := deleteKeyStr
 				callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 					if bname == "print" || bname == "println" {
 						return child.deferredPrint(bname, nargs, kinds, fieldOf)
+					}
+					if bname == "copy" {
+						return child.deferredCopy(dstIR, srcIR, fieldOf)
+					}
+					if bname == "close" {
+						return child.deferredClose(fieldOf)
+					}
+					if bname == "delete" {
+						return child.deferredDelete(keyStr, fieldOf)
 					}
 					return child.deferredBuiltin(bname, nargs, fieldOf)
 				}
@@ -316,7 +370,69 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 		callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
 		}
+	case *ast.CallExpr, *ast.ParenExpr, *ast.TypeAssertExpr:
+		// defer f()() / defer (fn)() / defer x.(func())() — Fun is a func value.
+		fsig := fl.funcValueSig(call.Fun)
+		if fsig == nil {
+			return nil, nil, fl.errorf(call, "unsupported defer call form %T", call.Fun)
+		}
+		closTy := &ir.Ref{Null: true, Named: closBaseName}
+		ex, astmts, err := fl.expr(call.Fun, closTy)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, astmts...)
+		t := fl.newTemp(closTy)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		addCap("callee", closTy, fl.useTemp(t))
+		for i, a := range call.Args {
+			want, err := fl.mapType(fsig.Params().At(i).Type())
+			if err != nil {
+				return nil, nil, err
+			}
+			ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, astmts...)
+			at := fl.newTemp(want)
+			stmts = append(stmts, fl.assignTemp(at, ex))
+			addCap("a"+deferItoa(i), want, fl.useTemp(at))
+		}
+		callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+		}
 	default:
+		// Other func-value forms (IndexExpr instantiations, etc.).
+		if fsig := fl.funcValueSig(call.Fun); fsig != nil {
+			closTy := &ir.Ref{Null: true, Named: closBaseName}
+			ex, astmts, err := fl.expr(call.Fun, closTy)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, astmts...)
+			t := fl.newTemp(closTy)
+			stmts = append(stmts, fl.assignTemp(t, ex))
+			addCap("callee", closTy, fl.useTemp(t))
+			for i, a := range call.Args {
+				want, err := fl.mapType(fsig.Params().At(i).Type())
+				if err != nil {
+					return nil, nil, err
+				}
+				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
+				if err != nil {
+					return nil, nil, err
+				}
+				stmts = append(stmts, astmts...)
+				at := fl.newTemp(want)
+				stmts = append(stmts, fl.assignTemp(at, ex))
+				addCap("a"+deferItoa(i), want, fl.useTemp(at))
+			}
+			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+				return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+			}
+			break
+		}
 		return nil, nil, fl.errorf(call, "unsupported defer call form %T", call.Fun)
 	}
 
@@ -375,11 +491,23 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 	if err != nil {
 		return nil, nil, err
 	}
-	body := &ir.Seq{Stmts: bodyStmts}
+	// Locals allocated inside the thunk (e.g. deferred copy) need VarDefs +
+	// Func.Locals — same preamble shape as lowerFunc / func lit bodies.
+	var preamble []ir.Stmt
+	for _, v := range child.extraLocals {
+		preamble = append(preamble, &ir.VarDef{Var: v})
+		if needsZeroInit(v.Typ) || isNamedStructRef(v.Typ) {
+			if z, zerr := child.zeroValue(v.Typ); zerr == nil {
+				preamble = append(preamble, child.assignVar(v, z))
+			}
+		}
+	}
+	body := &ir.Seq{Stmts: append(preamble, bodyStmts...)}
 	fl.mod.Funcs = append(fl.mod.Funcs, &ir.Func{
 		Name:    bodyName,
 		Params:  child.params,
 		Results: nil,
+		Locals:  append([]*ir.Var(nil), child.extraLocals...),
 		Body:    body,
 	})
 
@@ -542,11 +670,123 @@ func (fl *funcLower) deferredBuiltin(name string, nargs int, fieldOf func(string
 	}
 }
 
+// deferredClose emits close(ch) inside a defer thunk.
+func (fl *funcLower) deferredClose(fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+	fl.pkg.ensureChanBaseTypes()
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpChanClose, Args: []ir.Expr{fieldOf("a0")}}},
+		&ir.Return{},
+	}, nil
+}
+
+// deferredDelete emits delete(m, k) inside a defer thunk.
+// keyStr is desc.TypeKey of the map key type (may be empty).
+func (fl *funcLower) deferredDelete(keyStr string, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+	fl.markNeedsMaps()
+	in := &ir.Instr{Op: ir.OpMapDelete, Args: []ir.Expr{fieldOf("a0"), fieldOf("a1")}}
+	if keyStr != "" {
+		in.Str = keyStr
+	}
+	return []ir.Stmt{&ir.ExprStmt{X: in}, &ir.Return{}}, nil
+}
+
+// deferredCopy emits copy(dst, src) inside a defer thunk using captured slice/
+// string values. Result is discarded (defer is a statement).
+func (fl *funcLower) deferredCopy(dstIR, srcIR ir.Type, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
+	dstName, dstArr := sliceParts(dstIR)
+	srcName, srcArr := sliceParts(srcIR)
+	if dstName == "" || srcName == "" {
+		if r, ok := srcIR.(*ir.Ref); ok && r.Named == "$go.string" {
+			srcName, srcArr = "$go.string", "$go.bytes"
+		}
+		if r, ok := dstIR.(*ir.Ref); ok && len(r.Named) > 0 {
+			dstName, dstArr = sliceParts(dstIR)
+		}
+	}
+	if dstArr == "" {
+		return nil, fl.errorf(nil, "deferred copy: unsupported dst type")
+	}
+	if srcArr == "" {
+		srcArr = dstArr
+	}
+
+	dstV := fl.newVar("cdst", dstIR)
+	srcV := fl.newVar("csrc", srcIR)
+	nV := fl.newVar("cn", ir.TypeI32)
+	dstLenV := fl.newVar("cdlen", ir.TypeI32)
+	srcLenV := fl.newVar("cslen", ir.TypeI32)
+	stmts := []ir.Stmt{
+		fl.assignVar(dstV, fieldOf("a0")),
+		fl.assignVar(srcV, fieldOf("a1")),
+		fl.assignVar(dstLenV, fl.i32const(0)),
+		fl.assignVar(srcLenV, fl.i32const(0)),
+		fl.assignVar(nV, fl.i32const(0)),
+	}
+
+	srcIsString := false
+	if r, ok := srcIR.(*ir.Ref); ok && r.Named == "$go.string" {
+		srcIsString = true
+	}
+	if srcIsString {
+		stmts = append(stmts, fl.assignVar(srcLenV, &ir.Instr{
+			Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)},
+		}))
+	} else {
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(srcLenV, &ir.Instr{
+				Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)},
+			})}},
+		})
+	}
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(dstV)}},
+		Then: &ir.Seq{},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(dstLenV, &ir.Instr{
+			Op: ir.OpStructGet, Type: dstIR, Field: "len", Args: []ir.Expr{fl.useVar(dstV)},
+		})}},
+	})
+	stmts = append(stmts, fl.assignVar(nV, fl.useVar(dstLenV)))
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(srcLenV), fl.useVar(nV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(nV, fl.useVar(srcLenV))}},
+		Else: &ir.Seq{},
+	})
+	copyBody := &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+		Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
+			fl.useVar(nV),
+		},
+	}}}}
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(nV)}},
+		Then: &ir.Seq{},
+		Else: copyBody,
+	})
+	_ = dstName
+	_ = srcName
+	stmts = append(stmts, &ir.Return{})
+	return stmts, nil
+}
+
 func (fl *funcLower) emitCallRefStmts(fnVal ir.Expr, fsig *types.Signature, argAt func(int) ir.Expr, nArgs int) ([]ir.Stmt, error) {
 	fl.pkg.ensureClosBase()
 	funcTy, err := fl.pkg.ensureFuncType(fsig, closBaseName)
 	if err != nil {
 		return nil, err
+	}
+	// Nil func value → panic (matches callFuncValue; needed for defer of nil).
+	nilCheck := &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fnVal}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
 	}
 	fnField := &ir.Instr{
 		Op:    ir.OpStructGet,
@@ -563,6 +803,7 @@ func (fl *funcLower) emitCallRefStmts(fnVal ir.Expr, fsig *types.Signature, argA
 	}
 	callArgs = append(callArgs, castFn)
 	return []ir.Stmt{
+		nilCheck,
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCallRef, Type: &ir.Ref{Named: funcTy}, Args: callArgs}},
 		&ir.Return{},
 	}, nil
