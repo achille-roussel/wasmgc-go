@@ -301,20 +301,24 @@ func (fl *funcLower) rangeMapStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 	var keyVar, valVar *ir.Var
 	if s.Key != nil {
 		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
-			if obj := fl.info.Defs[id]; obj != nil {
-				keyVar = &ir.Var{Name: id.Name, Typ: keyIR}
-				fl.vars[obj] = keyVar
-				fl.extraLocals = append(fl.extraLocals, keyVar)
+			v, defs, err := fl.defineLocal(id)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, defs...)
+			keyVar = v
+			_ = keyIR
 		}
 	}
 	if s.Value != nil {
 		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
-			if obj := fl.info.Defs[id]; obj != nil {
-				valVar = &ir.Var{Name: id.Name, Typ: valIR}
-				fl.vars[obj] = valVar
-				fl.extraLocals = append(fl.extraLocals, valVar)
+			v, defs, err := fl.defineLocal(id)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, defs...)
+			valVar = v
+			_ = valIR
 		}
 	}
 

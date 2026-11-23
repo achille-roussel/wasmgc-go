@@ -18,16 +18,16 @@ A golden that still contains a high-level instruction after the runtime-lowering
 
 Every emitted module is passed to `wasm-tools validate`. A module that does not validate is a test failure even if the bytes match a golden, so a golden cannot freeze a bug the validator would have caught. The type-index-64 encoding has its own test: a module with 64 types, a `ref.cast` of the last, decoded back, with the immediate not equal to the single byte `0x40`. That is the wasm3 bug (`docs/wasm3-study/02-runtime-and-abi.md`).
 
-`prototypes/` is the bottom of this layer, already run:
+`prototypes/` is the bottom of this layer, already run on **Node 26.13.1** (CI minimum; JSPI required):
 
-| Prototype | Node 26.13.1 | Node 22.23.4 |
-|---|---|---|
-| `prototypes/eh-panic` | pass | pass |
-| `prototypes/fat-pointer` | pass | pass |
-| `prototypes/jspi-sched` | pass (includes `run_glue.mjs` vs `lib/wasmgc.js`) | exits: no `WebAssembly.Suspending` |
-| `std/src/runtime/testdata/run_m7.mjs` | pass (channels, select, timer) | skips: no Suspending |
+| Prototype | Node 26.13.1 |
+|---|---|
+| `prototypes/eh-panic` | pass |
+| `prototypes/fat-pointer` | pass |
+| `prototypes/jspi-sched` | pass (includes `run_glue.mjs` vs `lib/wasmgc.js`) |
+| `std/src/runtime/testdata/run_m7.mjs` | pass (channels, select, timer) |
 
-They are re-run by `node prototypes/eh-panic/run.mjs` and the two siblings. `wasm-tools` 1.263.0 parsed them. wabt 1.0.42's `wat2wasm` does not recognize `struct.get`, so the suite depends on `wasm-tools`, not on wabt.
+They are re-run by `node prototypes/eh-panic/run.mjs` and the two siblings. `wasm-tools` 1.263.0 parsed them. wabt 1.0.42's `wat2wasm` does not recognize `struct.get`, so the suite depends on `wasm-tools`, not on wabt. Node 22 is not in CI.
 
 ## 3. Execution tests
 
@@ -53,7 +53,7 @@ A Go program in `testdata/run/`, compiled by the driver, run under Node, stdout 
 
 Map iteration tests sort. They do not freeze an order.
 
-JSPI tests skip when `WebAssembly.Suspending` is missing, and CI runs them on Node 26. The non-JSPI tests also run on Node 22, which is the check that a program that does not park stayed free of the JSPI import.
+JSPI is required for every Node execution test. Missing `WebAssembly.Suspending` is a hard failure. CI runs on Node 26.13.1 only.
 
 ## 4. The Go suite and the library tests
 

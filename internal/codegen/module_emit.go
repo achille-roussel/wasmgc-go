@@ -35,36 +35,58 @@ func (g *gen) emitImports() error {
 }
 
 // hostImportIR maps IR func names to Wasm import names under module "go".
+// park/ready/spawn are always imported (JSPI required, no opt-out); the rest
+// stay reachability-gated.
 var hostImportIR = []struct {
 	irName     string
 	importName string
+	always     bool
 }{
-	{"runtime.park", "runtime.park"},
-	{"runtime.ready", "runtime.ready"},
-	{"runtime.spawn", "runtime.spawn"},
-	{"runtime.goschedImport", "runtime.gosched"},
-	{"runtime.scheduleTimer", "runtime.scheduleTimer"},
-	{"runtime.clearTimer", "runtime.clearTimer"},
+	{"runtime.park", "runtime.park", true},
+	{"runtime.ready", "runtime.ready", true},
+	{"runtime.spawn", "runtime.spawn", true},
+	{"runtime.goschedImport", "runtime.gosched", false},
+	{"runtime.scheduleTimer", "runtime.scheduleTimer", false},
+	{"runtime.clearTimer", "runtime.clearTimer", false},
+}
+
+// alwaysSchedImportSigs are Wasm types for the always-on scheduler imports
+// when the IR has not linked empty bodies yet (e.g. empty_main).
+var alwaysSchedImportSigs = map[string]struct {
+	params  []wasm.ValType
+	results []wasm.ValType
+}{
+	"runtime.park":  {params: []wasm.ValType{wasm.I32()}, results: []wasm.ValType{wasm.I32()}},
+	"runtime.ready": {params: []wasm.ValType{wasm.I32()}},
+	"runtime.spawn": {},
 }
 
 func (g *gen) emitSchedImports() error {
 	for _, h := range hostImportIR {
-		if !g.needsHostImport(h.irName) {
+		if !h.always && !g.needsHostImport(h.irName) {
+			continue
+		}
+		if g.hostImported[h.irName] {
 			continue
 		}
 		f := g.m.LookupFunc(h.irName)
-		if f == nil {
+		var ty uint32
+		if f != nil && emptyPrintBody(f) {
+			params, err := g.valTypes(paramTypes(f))
+			if err != nil {
+				return fmt.Errorf("codegen: import %s params: %w", h.irName, err)
+			}
+			results, err := g.valTypes(f.Results)
+			if err != nil {
+				return fmt.Errorf("codegen: import %s results: %w", h.irName, err)
+			}
+			ty = g.internFuncType(params, results)
+		} else if h.always {
+			sig := alwaysSchedImportSigs[h.irName]
+			ty = g.internFuncType(sig.params, sig.results)
+		} else {
 			continue
 		}
-		params, err := g.valTypes(paramTypes(f))
-		if err != nil {
-			return fmt.Errorf("codegen: import %s params: %w", h.irName, err)
-		}
-		results, err := g.valTypes(f.Results)
-		if err != nil {
-			return fmt.Errorf("codegen: import %s results: %w", h.irName, err)
-		}
-		ty := g.internFuncType(params, results)
 		idx := g.wm.ImportFunc("go", h.importName, ty)
 		g.funcs[h.irName] = idx
 		g.hostImported[h.irName] = true
@@ -224,6 +246,9 @@ func (g *gen) emitFuncBodies() error {
 			continue
 		case f.Name == "runtime.printnl" && g.fillPrintNL:
 			g.wm.AddCode(g.bodyPrintNL())
+			continue
+		case f.Name == "syscall.writeHost" && g.fillWriteHost:
+			g.wm.AddCode(g.bodyWriteHost())
 			continue
 		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
 			if g.hasEH {

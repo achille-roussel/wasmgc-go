@@ -579,6 +579,31 @@ func (fl *funcLower) builtinRecover(e *ast.CallExpr) (ir.Expr, []ir.Stmt, error)
 	}, nil, nil
 }
 
+// resultReturn builds a return of named results, or zeros for result types,
+// or a bare return for void functions.
+func (fl *funcLower) resultReturn() *ir.Return {
+	if len(fl.namedResults) > 0 {
+		results := make([]ir.Expr, len(fl.namedResults))
+		for i, v := range fl.namedResults {
+			results[i] = fl.useVar(v)
+		}
+		return &ir.Return{Results: results}
+	}
+	if len(fl.results) == 0 {
+		return &ir.Return{}
+	}
+	results := make([]ir.Expr, len(fl.results))
+	for i, ty := range fl.results {
+		z, err := fl.zeroValue(ty)
+		if err != nil {
+			results[i] = &ir.Const{Op: ir.OpI32Const, I64: 0}
+			continue
+		}
+		results[i] = z
+	}
+	return &ir.Return{Results: results}
+}
+
 // applyDeferPass rewrites a function body that contains defer.
 func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	fl.pkg.ensureDeferTypes()
@@ -614,13 +639,13 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(payload)}}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
-		&ir.Return{},
+		fl.resultReturn(),
 	}}
 
 	// Normal edge: body already runs defers at returns; add fallthrough run+return.
 	if !endsWithReturn(newBody) {
 		newBody.Stmts = append(newBody.Stmts, runDefers...)
-		newBody.Stmts = append(newBody.Stmts, &ir.Return{})
+		newBody.Stmts = append(newBody.Stmts, fl.resultReturn())
 	}
 
 	try := &ir.Try{

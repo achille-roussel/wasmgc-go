@@ -46,7 +46,7 @@
     },
     "sync": {
       "tier": "rewrite",
-      "notes": "M7: Mutex/WaitGroup/Once via runtime.Semacquire; Cond/Pool stubs omitted"
+      "notes": "M7: Mutex/WaitGroup/Once via runtime.Semacquire; M8: Pool (single-local)"
     },
     "internal/sync": {
       "tier": "out",
@@ -120,14 +120,19 @@
       "tier": "vendor"
     },
     "internal/bytealg": {
-      "tier": "vendor",
-      "notes": "generic paths via re-filter"
+      "tier": "overlay",
+      "overlays": [
+        "compare_generic.go"
+      ],
+      "notes": "goto-free Compare; SIMD deferred, scalar paths"
     },
     "internal/stringslite": {
-      "tier": "vendor"
+      "tier": "rewrite",
+      "notes": "Simple scalar Index; avoids switch-case side effects"
     },
     "internal/strconv": {
-      "tier": "vendor"
+      "tier": "vendor",
+      "overlays": ["deps.go"]
     },
     "internal/fmtsort": {
       "tier": "vendor"

@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -113,6 +114,12 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 		rr.Body = body
 		return &rr, nil
 	case *ir.If:
+		// Cond before Then/Else so preamble stmts dominate the branch and any
+		// shared expr trees are expanded once in order.
+		cond, pre, err := rt.rewriteExpr(r.Cond, n)
+		if err != nil {
+			return nil, err
+		}
 		then, err := rt.lowerRegion(r.Then, n)
 		if err != nil {
 			return nil, err
@@ -123,10 +130,6 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 			if err != nil {
 				return nil, err
 			}
-		}
-		cond, pre, err := rt.rewriteExpr(r.Cond, n)
-		if err != nil {
-			return nil, err
 		}
 		iff := &ir.If{Cond: cond, Then: then, Else: elseR, Pos: r.Pos}
 		if len(pre) == 0 {
@@ -268,18 +271,28 @@ func (rt *runtimeLower) rewriteExpr(e ir.Expr, n *int) (ir.Expr, []ir.Stmt, erro
 			return &ir.Name{Raw: t.Name, Temp: t}, stmts, nil
 		}
 		if e.Op.IsHigh() {
-			tname := rt.fresh("h")
 			ty := e.Type
 			if ty == nil {
-				ty = ir.TypeI32
+				switch e.Op {
+				case ir.OpAddr:
+					ty = &ir.Ref{Null: true, Named: "$go.ptr.i32"}
+				case ir.OpMakeSlice, ir.OpSliceAppend, ir.OpSliceSlice, ir.OpMapMake:
+					ty = &ir.Ref{Null: true, Heap: ir.HeapAny}
+				default:
+					ty = ir.TypeI32
+				}
 			}
-			t := &ir.Temp{Name: tname, Typ: ty}
-			assign := &ir.Assign{Lhs: []ir.Dest{{Temp: t, Name: tname}}, Rhs: e}
+			// Use a Var, not a Temp: expanders (append, etc.) often assign the
+			// result inside both sides of an if, and temps cannot cross regions.
+			v := rt.newVar("h", ty)
+			assign := &ir.Assign{Lhs: []ir.Dest{{Var: v, Name: v.Name}}, Rhs: e}
 			stmts, err := rt.expandHighAssign(assign, e, n)
 			if err != nil {
 				return nil, nil, err
 			}
-			return &ir.Name{Raw: tname, Temp: t}, stmts, nil
+			out := []ir.Stmt{&ir.VarDef{Var: v}}
+			out = append(out, stmts...)
+			return &ir.Name{Raw: v.Name, Var: v}, out, nil
 		}
 		var pre []ir.Stmt
 		for i, a := range e.Args {
@@ -514,6 +527,12 @@ func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {
 }
 
 func elemOfArrayName(arrName string) ir.Type {
+	switch arrName {
+	case "$go.bytes":
+		return ir.TypeI8
+	case "$go.i16s":
+		return ir.TypeI16
+	}
 	suf := strings.TrimPrefix(arrName, "$go.array.")
 	switch suf {
 	case "i32":
@@ -524,8 +543,23 @@ func elemOfArrayName(arrName string) ir.Type {
 		return ir.TypeF32
 	case "f64":
 		return ir.TypeF64
+	case "i8":
+		return ir.TypeI8
+	case "i16":
+		return ir.TypeI16
+	case "go.iface", "iface":
+		return &ir.Ref{Null: true, Named: "$go.iface"}
+	case "go.string", "string":
+		return &ir.Ref{Named: "$go.string"}
 	default:
-		return ir.TypeI32
+		// Reference element arrays ($go.array.go.slice.i8, …).
+		if strings.HasSuffix(suf, ".iface") {
+			return &ir.Ref{Null: true, Named: "$go.iface"}
+		}
+		if strings.HasPrefix(suf, "go.") {
+			return &ir.Ref{Null: true, Named: "$" + suf}
+		}
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
 }
 
@@ -571,15 +605,21 @@ func (rt *runtimeLower) expandSliceLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	}
 	length := len(elems)
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+	arrTy := &ir.Ref{Named: arrName}
 	if length == 0 {
 		pre = append(pre, &ir.Assign{
 			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-			Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+			Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: arrTy, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+		})
+	} else if rhs, ok := rt.constArrayNew(arrTy, elems, n); ok {
+		pre = append(pre, &ir.Assign{
+			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
+			Rhs: rhs,
 		})
 	} else {
 		pre = append(pre, &ir.Assign{
 			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-			Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: &ir.Ref{Named: arrName}, Args: elems},
+			Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: arrTy, Args: elems},
 		})
 	}
 	pre = append(pre, &ir.Assign{
@@ -627,11 +667,164 @@ func (rt *runtimeLower) expandArrayLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 		pre = append(pre, p...)
 		args = append(args, ex)
 	}
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: in.Type, Args: args},
-	})
+	rhs := ir.Expr(&ir.Instr{Op: ir.OpArrayNewFixed, Type: in.Type, Args: args})
+	if packed, ok := rt.constArrayNew(in.Type, args, n); ok {
+		rhs = packed
+	}
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: rhs})
 	return pre, nil
+}
+
+// constArrayNew packs a constant numeric array/slice backing into a passive
+// data segment and returns array.new_data (03). Non-numeric or non-const
+// elements fall back to array.new_fixed.
+func (rt *runtimeLower) constArrayNew(arrTy ir.Type, elems []ir.Expr, n *int) (ir.Expr, bool) {
+	if len(elems) == 0 {
+		return nil, false
+	}
+	r, ok := arrTy.(*ir.Ref)
+	if !ok {
+		return nil, false
+	}
+	elemSize, pack := numericArrayPacker(r.Named)
+	if pack == nil {
+		return nil, false
+	}
+	buf := make([]byte, 0, len(elems)*elemSize)
+	for _, e := range elems {
+		c, ok := e.(*ir.Const)
+		if !ok {
+			return nil, false
+		}
+		b, ok := pack(c)
+		if !ok {
+			return nil, false
+		}
+		buf = append(buf, b...)
+	}
+	litName := fmt.Sprintf("$lit%d", len(rt.mod.Data))
+	if n != nil {
+		*n = len(rt.mod.Data) + 1
+	}
+	rt.mod.Data = append(rt.mod.Data, &ir.Data{Name: litName, Bytes: buf})
+	return &ir.Instr{
+		Op:   ir.OpArrayNewData,
+		Type: arrTy,
+		Data: litName,
+	}, true
+}
+
+// numericArrayPacker returns the element byte width and a const→bytes packer
+// for packed numeric Wasm array types ($go.bytes, $go.i16s, $go.array.i32, …).
+func numericArrayPacker(typeName string) (elemSize int, pack func(*ir.Const) ([]byte, bool)) {
+	putU16 := func(v uint16) []byte { return []byte{byte(v), byte(v >> 8)} }
+	putU32 := func(v uint32) []byte {
+		return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+	}
+	putU64 := func(v uint64) []byte {
+		b := make([]byte, 8)
+		for i := 0; i < 8; i++ {
+			b[i] = byte(v >> (8 * i))
+		}
+		return b
+	}
+	switch typeName {
+	case "$go.bytes":
+		return 1, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return []byte{byte(c.I64)}, true
+		}
+	case "$go.i16s":
+		return 2, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU16(uint16(c.I64)), true
+		}
+	case "$go.array.i32", "$go.array.u32", "$go.array.int", "$go.array.uint":
+		return 4, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU32(uint32(c.I64)), true
+		}
+	case "$go.array.i64", "$go.array.u64":
+		return 8, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU64(uint64(c.I64)), true
+		}
+	case "$go.array.f32":
+		return 4, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpF32Const && c.Op != ir.OpF64Const {
+				return nil, false
+			}
+			return putU32(math.Float32bits(float32(c.F64))), true
+		}
+	case "$go.array.f64":
+		return 8, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpF64Const && c.Op != ir.OpF32Const {
+				return nil, false
+			}
+			return putU64(math.Float64bits(c.F64)), true
+		}
+	default:
+		return 0, nil
+	}
+}
+
+// structZeroExpr builds a non-null zero $go.struct.* with nested struct
+// fields recursively allocated (same rules as funcLower.structZero).
+func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
+	if seen[td.Name] {
+		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+	}
+	seen[td.Name] = true
+	args := make([]ir.Expr, len(td.Fields))
+	for i, f := range td.Fields {
+		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			ntd := rt.mod.LookupType(r.Named)
+			if ntd != nil && ntd.Kind == ir.TypeStruct {
+				z, err := rt.structZeroExpr(ntd, r, seen)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = z
+				continue
+			}
+		}
+		if r, ok := f.Type.(*ir.Ref); ok && r.Named == "$go.string" {
+			args[i] = &ir.Instr{Op: ir.OpStringLit, Str: ""}
+			continue
+		}
+		// Fixed Go array field: allocate array.new_default of Len.
+		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
+			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
+			args[i] = &ir.Instr{
+				Op:   ir.OpArrayNewDefault,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			}
+			continue
+		}
+		switch f.Type {
+		case ir.TypeI32:
+			args[i] = &ir.Const{Op: ir.OpI32Const, I64: 0}
+		case ir.TypeI64:
+			args[i] = &ir.Const{Op: ir.OpI64Const, I64: 0}
+		case ir.TypeF32:
+			args[i] = &ir.Const{Op: ir.OpF32Const, F64: 0}
+		case ir.TypeF64:
+			args[i] = &ir.Const{Op: ir.OpF64Const, F64: 0}
+		default:
+			args[i] = &ir.Instr{Op: ir.OpRefNull, Type: f.Type}
+		}
+	}
+	delete(seen, td.Name)
+	return &ir.Instr{Op: ir.OpStructNew, Type: t, Args: args}, nil
 }
 
 func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
@@ -642,10 +835,18 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 		tname = r.Named
 	}
 	if strings.HasPrefix(tname, "$go.struct.") {
-		return []ir.Stmt{&ir.Assign{
-			Lhs: s.Lhs,
-			Rhs: &ir.Instr{Op: ir.OpStructNewDefault, Type: in.Type},
-		}}, nil
+		// Prefer a proper zero (nested $go.struct.* fields allocated, not
+		// null) so new(pp) yields a usable pp.fmt, matching Go value zeros.
+		var z ir.Expr
+		if td := rt.mod.LookupType(tname); td != nil && td.Kind == ir.TypeStruct {
+			if zz, err := rt.structZeroExpr(td, in.Type, map[string]bool{}); err == nil {
+				z = zz
+			}
+		}
+		if z == nil {
+			z = &ir.Instr{Op: ir.OpStructNewDefault, Type: in.Type}
+		}
+		return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: z}}, nil
 	}
 	// Fat pointer to scalar: allocate [1]T and build ptr.
 	kind := "i32"
@@ -845,34 +1046,99 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 	}
 	sl, lo, hi := args[0], args[1], args[2]
 	st := &ir.Ref{Named: sliceName}
-	offT := &ir.Temp{Name: rt.fresh("off"), Typ: ir.TypeI32}
-	capT := &ir.Temp{Name: rt.fresh("cap"), Typ: ir.TypeI32}
-	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
-	pre = append(pre,
-		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: capT, Name: capT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
-	)
-	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, lo}}
 	newLen := &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{hi, lo}}
-	var newCap ir.Expr
-	if len(args) > 3 {
-		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
-	} else {
-		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{&ir.Name{Temp: capT, Raw: capT.Name}, lo}}
-	}
 	// Bounds: lo > hi → panicSliceB (trap until M5).
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{lo, hi}},
 		Then: &ir.Seq{Stmts: rt.panicSliceB()},
 	})
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{
+
+	// Array → slice: base is a bare array ref; build a fresh header.
+	baseTy := lenCapArgType(rt.mod, in.Args[0])
+	if baseTy == nil {
+		baseTy = lenCapArgType(rt.mod, sl)
+	}
+	if baseArr := arrayIRName(baseTy); baseArr != "" {
+		if arrName == "" {
+			arrName = baseArr
+		}
+		dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+		// Slice headers require non-null data; array fields are refnull.
+		nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{sl}}
+		pre = append(pre, &ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: nn})
+		var newCap ir.Expr
+		if len(args) > 3 {
+			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
+		} else {
+			alen := &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}}}
+			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{alen, lo}}
+		}
+		pre = append(pre, &ir.Assign{
+			Lhs: s.Lhs,
+			Rhs: &ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: st,
+				Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}, lo, newLen, newCap},
+			},
+		})
+		return pre, nil
+	}
+
+	// nil[:0] is nil in Go (cap 0); nil with hi/max > 0 panics. Slice headers
+	// use non-null data, so the nil slice is a null header ref — keep it null.
+	nullSlice := &ir.Instr{Op: ir.OpRefNull, Type: st}
+	// hi > 0 (or max > 0) on a nil slice → panic (high > cap).
+	nilBad := ir.Expr(hi)
+	if len(args) > 3 {
+		nilBad = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			hi,
+			args[3],
+		}}
+	}
+	offV := rt.newVar("off", ir.TypeI32)
+	capV := rt.newVar("cap", ir.TypeI32)
+	// Nullable so the local is defaultable (only set on the non-null path).
+	dataV := rt.newVar("data", &ir.Ref{Null: true, Named: arrName})
+	resV := rt.newVar("sslice", &ir.Ref{Null: true, Named: sliceName})
+	pre = append(pre,
+		&ir.VarDef{Var: offV}, &ir.VarDef{Var: capV},
+		&ir.VarDef{Var: dataV}, &ir.VarDef{Var: resV},
+	)
+	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(offV), lo}}
+	var newCap ir.Expr
+	if len(args) > 3 {
+		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
+	} else {
+		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{useV(capV), lo}}
+	}
+	nonNullBody := []ir.Stmt{
+		assignV(offV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}),
+		assignV(capV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{sl}}),
+		assignV(dataV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}),
+		assignV(resV, &ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: st,
-			Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}, newOff, newLen, newCap},
-		},
+			// data field is non-null in the header; value comes from a live slice.
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(dataV)}},
+				newOff, newLen, newCap,
+			},
+		}),
+	}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{sl}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32Ne, Args: []ir.Expr{nilBad, &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			},
+			assignV(resV, nullSlice),
+		}},
+		Else: &ir.Seq{Stmts: nonNullBody},
+	})
+	pre = append(pre, &ir.Assign{
+		Lhs: s.Lhs,
+		Rhs: useV(resV),
 	})
 	return pre, nil
 }
@@ -910,7 +1176,9 @@ func (rt *runtimeLower) expandSliceGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	})
 	at := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, idx}}
 	getOp := ir.OpArrayGet
-	if arrName == "$go.bytes" {
+	switch arrName {
+	case "$go.bytes", "$go.i16s":
+		// Packed i8/i16 arrays require get_u (or get_s); plain get is invalid.
 		getOp = ir.OpArrayGetU
 	}
 	pre = append(pre, &ir.Assign{
@@ -972,15 +1240,13 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	if in.Op == ir.OpCap {
 		field = "cap"
 	}
-	// Determine type from arg
-	var ty ir.Type = &ir.Ref{Named: "$go.slice.i32"}
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Var != nil && nm.Var.Typ != nil {
-			ty = nm.Var.Typ
-		}
-		if nm.Temp != nil && nm.Temp.Typ != nil {
-			ty = nm.Temp.Typ
-		}
+	// Determine type from arg (var/temp/global — package []T uses global.get).
+	ty := lenCapArgType(rt.mod, in.Args[0])
+	if ty == nil {
+		ty = lenCapArgType(rt.mod, arg)
+	}
+	if ty == nil {
+		ty = &ir.Ref{Named: "$go.slice.i32"}
 	}
 	if r, ok := ty.(*ir.Ref); ok && r.Named == "$go.string" {
 		if in.Op == ir.OpCap {
@@ -1022,11 +1288,85 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: call})
 		return pre, nil
 	}
+	// Go arrays are bare Wasm array refs ($go.bytes / $go.array.*); len/cap = array.len.
+	if arrName := arrayIRName(ty); arrName != "" {
+		pre = append(pre, &ir.Assign{
+			Lhs: s.Lhs,
+			Rhs: &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{arg}},
+		})
+		return pre, nil
+	}
+	// Slices (and slice-shaped headers): nil → len/cap 0.
+	if r, ok := ty.(*ir.Ref); ok && (strings.HasPrefix(r.Named, "$go.slice.") || r.Named == "$go.bytes" || r.Named == "$go.i16s") {
+		slV := rt.newVar("lsl", ty)
+		pre = append(pre, &ir.VarDef{Var: slV}, assignV(slV, arg))
+		resV := rt.newVar("ln", ir.TypeI32)
+		pre = append(pre, &ir.VarDef{Var: resV}, assignV(resV, &ir.Const{Op: ir.OpI32Const, I64: 0}))
+		pre = append(pre, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(slV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{assignV(resV, &ir.Instr{
+				Op: ir.OpStructGet, Type: ty, Field: field,
+				Args: []ir.Expr{useV(slV)},
+			})}},
+		})
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(resV)})
+		return pre, nil
+	}
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
 		Rhs: &ir.Instr{Op: ir.OpStructGet, Type: ty, Field: field, Args: []ir.Expr{arg}},
 	})
 	return pre, nil
+}
+
+// arrayIRName returns the Wasm array type name if t is a bare array ref
+// (Go [N]T), else "".
+func arrayIRName(t ir.Type) string {
+	r, ok := t.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return ""
+	}
+	switch {
+	case r.Named == "$go.bytes", r.Named == "$go.i16s",
+		strings.HasPrefix(r.Named, "$go.array."):
+		return r.Named
+	}
+	return ""
+}
+
+func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
+	switch e := e.(type) {
+	case *ir.Name:
+		if e.Var != nil && e.Var.Typ != nil {
+			return e.Var.Typ
+		}
+		if e.Temp != nil && e.Temp.Typ != nil {
+			return e.Temp.Typ
+		}
+	case *ir.Instr:
+		if e.Op == ir.OpGlobalGet && mod != nil {
+			if g := mod.LookupGlobal(e.Global); g != nil && g.Typ != nil {
+				return g.Typ
+			}
+		}
+		// struct.get's Type is the container; resolve the field's type.
+		if e.Op == ir.OpStructGet && e.Field != "" && e.Type != nil && mod != nil {
+			if r, ok := e.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := mod.LookupType(r.Named); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == e.Field {
+							return f.Type
+						}
+					}
+				}
+			}
+		}
+		if e.Type != nil {
+			return e.Type
+		}
+	}
+	return nil
 }
 
 func (rt *runtimeLower) expandStringGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
@@ -1105,29 +1445,64 @@ func (rt *runtimeLower) addrClassKey(in *ir.Instr, base ir.Expr) (container, fie
 	if in.Str == "elem" {
 		field = "elem"
 		container = "$go.array.i32"
-		if t := structTypeOf(base); t != "" {
-			container = t
+		if t := exprRefTypeMod(rt.mod, base); t != "" {
+			container = arrayContainerOf(t)
 		}
 		return container, field
 	}
 	if in.Field != "" {
 		field = in.Field
 		container = "$go.object"
-		if t := structTypeOf(base); t != "" {
+		if t := exprRefTypeMod(rt.mod, base); t != "" {
 			container = t
 		}
 		return container, field
 	}
 	field = "elem"
 	container = "$go.array.i32"
-	if t := structTypeOf(base); t != "" {
-		container = t
+	if t := exprRefTypeMod(rt.mod, base); t != "" {
+		container = arrayContainerOf(t)
 	}
 	return container, field
 }
 
+// arrayContainerOf maps a slice/array/iface-array IR type name to the array
+// type used for elem fat-pointer accessors.
+func arrayContainerOf(t string) string {
+	switch {
+	case strings.HasPrefix(t, "$go.array."), t == "$go.bytes", t == "$go.i16s":
+		return t
+	case strings.HasPrefix(t, "$go.slice."):
+		rest := strings.TrimPrefix(t, "$go.slice.")
+		if rest == "i8" {
+			return "$go.bytes"
+		}
+		if rest == "i16" {
+			return "$go.i16s"
+		}
+		return "$go.array." + rest
+	case t == "$go.iface" || strings.HasSuffix(t, ".iface"):
+		return "$go.array.go.iface"
+	case t == "$go.string":
+		// []string / [N]string elem accessors use the string array type;
+		// a bare $go.string here means the base type was resolved to the
+		// element type — prefer the array of strings.
+		return "$go.array.go.string"
+	default:
+		return t
+	}
+}
+
 func structTypeOf(base ir.Expr) string {
-	switch b := base.(type) {
+	return exprRefType(base)
+}
+
+func exprRefType(e ir.Expr) string {
+	return exprRefTypeMod(nil, e)
+}
+
+func exprRefTypeMod(mod *ir.Module, e ir.Expr) string {
+	switch b := e.(type) {
 	case *ir.Name:
 		if b.Var != nil {
 			if r, ok := b.Var.Typ.(*ir.Ref); ok {
@@ -1140,6 +1515,20 @@ func structTypeOf(base ir.Expr) string {
 			}
 		}
 	case *ir.Instr:
+		// struct.get's Type is the container; resolve the field type when possible.
+		if b.Op == ir.OpStructGet && b.Field != "" && b.Type != nil && mod != nil {
+			if r, ok := b.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := mod.LookupType(r.Named); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == b.Field {
+							if fr, ok := f.Type.(*ir.Ref); ok {
+								return fr.Named
+							}
+						}
+					}
+				}
+			}
+		}
 		if r, ok := b.Type.(*ir.Ref); ok {
 			return r.Named
 		}
@@ -1152,33 +1541,27 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	if err != nil {
 		return nil, err
 	}
-	// Object pointer (*Struct): value is the ref itself for reads of the object;
-	// scalar fat ptr: call_ref get.
+	// Object pointer (*Struct): the pointer value IS the struct ref.
+	// Do not key off in.Type alone (result): fat-ptr deref to a struct element
+	// also has result type $go.struct.* but must call_ref get.
 	kind := "i32"
 	ptrType := "$go.ptr.i32"
-	if r, ok := in.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
-		// Dereferencing *Struct yields the struct ref — ptr IS the value.
+	ptrTyp := exprRefType(in.Args[0])
+	if ptrTyp == "" {
+		ptrTyp = exprRefType(ptr)
+	}
+	switch {
+	case strings.HasPrefix(ptrTyp, "$go.ptr."):
+		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
+		ptrType = ptrTyp
+	case strings.HasPrefix(ptrTyp, "$go.struct."), strings.HasPrefix(ptrTyp, "$go.array."):
+		// Object pointer: the ref is the value.
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ptr})
 		return pre, nil
-	}
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Var != nil {
-			if r, ok := nm.Var.Typ.(*ir.Ref); ok {
-				if strings.HasPrefix(r.Named, "$go.struct.") {
-					pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ptr})
-					return pre, nil
-				}
-				if strings.HasPrefix(r.Named, "$go.ptr.") {
-					kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-					ptrType = r.Named
-				}
-			}
-		}
-		if nm.Temp != nil {
-			if r, ok := nm.Temp.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
-				kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-				ptrType = r.Named
-			}
+	default:
+		if r, ok := in.Type.(*ir.Ref); ok && r.Named != "" && !strings.HasPrefix(r.Named, "$go.ptr.") {
+			kind = "ref"
+			ptrType = "$go.ptr.ref"
 		}
 	}
 	rt.ensureFatPtr(kind)
@@ -1191,14 +1574,16 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	getFn := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.class." + kind}, Field: "get", Args: []ir.Expr{&ir.Name{Temp: clT, Raw: clT.Name}}}
 	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
 	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{
-			Op:   ir.OpCallRef,
-			Type: &ir.Ref{Named: "$go.get." + kind},
-			Args: []ir.Expr{base, index, getFn},
-		},
+	loaded := ir.Expr(&ir.Instr{
+		Op:   ir.OpCallRef,
+		Type: &ir.Ref{Named: "$go.get." + kind},
+		Args: []ir.Expr{base, index, getFn},
 	})
+	// $go.get.ref returns anyref; cast to the concrete result type.
+	if kind == "ref" && in.Type != nil {
+		loaded = &ir.Instr{Op: ir.OpRefCast, Type: in.Type, Args: []ir.Expr{loaded}}
+	}
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: loaded})
 	return pre, nil
 }
 
@@ -1216,25 +1601,26 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	// Object pointer store of whole struct not handled here (field stores use fat/struct.set).
 	kind := "i32"
 	ptrType := "$go.ptr.i32"
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		typ := ir.Type(nil)
-		if nm.Var != nil {
-			typ = nm.Var.Typ
+	ptrTyp := exprRefTypeMod(rt.mod, in.Args[0])
+	if ptrTyp == "" {
+		ptrTyp = exprRefTypeMod(rt.mod, ptr)
+	}
+	switch {
+	case strings.HasPrefix(ptrTyp, "$go.struct."):
+		return nil, fmt.Errorf("store through object pointer of whole struct not lowered")
+	case strings.HasPrefix(ptrTyp, "$go.ptr."):
+		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
+		ptrType = ptrTyp
+	default:
+		// Infer from the stored value when the pointer expr has no named type
+		// (e.g. struct.get of a *[]byte field → $go.ptr.ref).
+		valNamed := exprRefTypeMod(rt.mod, in.Args[1])
+		if valNamed == "" {
+			valNamed = exprRefTypeMod(rt.mod, val)
 		}
-		if nm.Temp != nil {
-			typ = nm.Temp.Typ
-		}
-		if r, ok := typ.(*ir.Ref); ok {
-			if strings.HasPrefix(r.Named, "$go.struct.") {
-				// *Struct = val → fieldwise copy would be needed; for scalar field
-				// stores we use fat ptr. Whole-struct assign through pointer:
-				// copy fields — simplified: not in M3 exit criteria.
-				return nil, fmt.Errorf("store through object pointer of whole struct not lowered")
-			}
-			if strings.HasPrefix(r.Named, "$go.ptr.") {
-				kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-				ptrType = r.Named
-			}
+		if valNamed != "" && !strings.HasPrefix(valNamed, "$go.ptr.") {
+			kind = "ref"
+			ptrType = "$go.ptr.ref"
 		}
 	}
 	rt.ensureFatPtr(kind)
@@ -1248,10 +1634,14 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	setFn := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.class." + kind}, Field: "set", Args: []ir.Expr{&ir.Name{Temp: clT, Raw: clT.Name}}}
 	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
 	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
+	storeVal := val
+	if kind == "ref" {
+		storeVal = &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Null: true, Heap: ir.HeapAny}, Args: []ir.Expr{val}}
+	}
 	pre = append(pre, &ir.ExprStmt{X: &ir.Instr{
 		Op:   ir.OpCallRef,
 		Type: &ir.Ref{Named: "$go.set." + kind},
-		Args: []ir.Expr{base, index, val, setFn},
+		Args: []ir.Expr{base, index, storeVal, setFn},
 	}})
 	return pre, nil
 }
@@ -1303,6 +1693,10 @@ func (rt *runtimeLower) classGlobal(container, field, kind string) string {
 	getFn := rt.ensureAccessor(container, field, kind, true)
 	setFn := rt.ensureAccessor(container, field, kind, false)
 
+	// Idempotent across multiple RuntimeOps passes (pipeline runs twice).
+	if rt.mod.LookupGlobal(gname) != nil {
+		return gname
+	}
 	init := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.class." + kind},
@@ -1335,6 +1729,10 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 		return name
 	}
 	rt.accessors[name] = true
+	// Already emitted by a prior RuntimeOps pass.
+	if rt.mod.LookupFunc(name) != nil {
+		return name
+	}
 	rt.ensureFatPtr(kind)
 
 	var val ir.Type = ir.TypeI32
@@ -1357,26 +1755,44 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	// "elem" is the synthetic field name for array/slice index addresses.
 	// A real struct field may also be named elem (waiter.elem); only use the
 	// array path when the container is an array type.
+	// Normalize mistaken non-array containers for elem accessors.
+	if field == "elem" {
+		container = arrayContainerOf(container)
+	}
 	isArrayElem := field == "elem" && (strings.HasPrefix(container, "$go.array.") ||
 		container == "$go.bytes" || container == "$go.i16s")
+	castToVal := func(ex ir.Expr) ir.Expr {
+		if kind == "ref" {
+			return &ir.Instr{Op: ir.OpRefCast, Type: val, Args: []ir.Expr{ex}}
+		}
+		return ex
+	}
 	if isArrayElem {
 		if isGet {
 			getOp := ir.OpArrayGet
-			if container == "$go.bytes" {
+			if container == "$go.bytes" || container == "$go.i16s" {
 				getOp = ir.OpArrayGetU
 			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
+				&ir.Return{Results: []ir.Expr{castToVal(&ir.Instr{
 					Op: getOp, Type: &ir.Ref{Named: container},
 					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}},
-				}}},
+				})}},
 			}}
 		} else {
 			v := &ir.Var{Name: "v", Typ: val}
+			setVal := ir.Expr(&ir.Name{Raw: "v", Var: v})
+			if kind == "ref" {
+				// Caller passes anyref; cast to element type for array.set.
+				elemTy := elemOfArrayName(container)
+				if elemTy != nil {
+					setVal = &ir.Instr{Op: ir.OpRefCast, Type: elemTy, Args: []ir.Expr{setVal}}
+				}
+			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
 				&ir.ExprStmt{X: &ir.Instr{
 					Op: ir.OpArraySet, Type: &ir.Ref{Named: container},
-					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}, &ir.Name{Raw: "v", Var: v}},
+					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}, setVal},
 				}},
 				&ir.Return{},
 			}}
@@ -1384,17 +1800,29 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	} else {
 		if isGet {
 			body = &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
+				&ir.Return{Results: []ir.Expr{castToVal(&ir.Instr{
 					Op: ir.OpStructGet, Type: &ir.Ref{Named: container}, Field: field,
 					Args: []ir.Expr{cast},
-				}}},
+				})}},
 			}}
 		} else {
 			v := &ir.Var{Name: "v", Typ: val}
+			setVal := ir.Expr(&ir.Name{Raw: "v", Var: v})
+			if kind == "ref" {
+				// Caller passes anyref; cast to the struct field's concrete type.
+				if td := rt.mod.LookupType(container); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == field {
+							setVal = &ir.Instr{Op: ir.OpRefCast, Type: f.Type, Args: []ir.Expr{setVal}}
+							break
+						}
+					}
+				}
+			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
 				&ir.ExprStmt{X: &ir.Instr{
 					Op: ir.OpStructSet, Type: &ir.Ref{Named: container}, Field: field,
-					Args: []ir.Expr{cast, &ir.Name{Raw: "v", Var: v}},
+					Args: []ir.Expr{cast, setVal},
 				}},
 				&ir.Return{},
 			}}

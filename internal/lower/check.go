@@ -48,10 +48,24 @@ func TypeCheckFiles(filenames []string, srcs []string) (*token.FileSet, []*ast.F
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 		Scopes:     make(map[ast.Node]*types.Scope),
 	}
-	conf := types.Config{Sizes: Sizes}
+	conf := types.Config{
+		Sizes:    Sizes,
+		Importer: unsafeOnlyImporter{},
+	}
 	pkg, err := conf.Check(pkgName, fset, files, info)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("typecheck: %w", err)
 	}
 	return fset, files, pkg, info, nil
+}
+
+// unsafeOnlyImporter resolves the built-in "unsafe" package for rtlink
+// typechecks of rewrite-tier runtime fragments that import unsafe.
+type unsafeOnlyImporter struct{}
+
+func (unsafeOnlyImporter) Import(path string) (*types.Package, error) {
+	if path == "unsafe" {
+		return types.Unsafe, nil
+	}
+	return nil, fmt.Errorf("import %q not available in TypeCheckFiles", path)
 }

@@ -162,7 +162,8 @@ func DumpIR(opts Options) (string, *Result, error) {
 		return "", nil, err
 	}
 	if err := ir.Verify(mod); err != nil {
-		return "", nil, fmt.Errorf("pipeline: IR verify: %w", err)
+		// Still return IR so callers can dump on failure.
+		return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, fmt.Errorf("pipeline: IR verify: %w", err)
 	}
 	return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, nil
 }
@@ -200,6 +201,11 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsureMaps(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	rtlink.EnsurePool(mod)
+	// Reflect helpers (runtime.Reflect*) before desc fills their body-less IR.
+	if err := rtlink.EnsureReflect(mod, rewriteDir); err != nil {
+		return nil, err
+	}
 	// Sched/maps may introduce printstring / printnl via fatal; link if still missing.
 	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
 		return nil, err
@@ -226,6 +232,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	// AppendFiles from Ensure* may have registered package inits (e.g.
 	// runtime.init for gp/ngo) after Finish already built main.run.
 	lower.LinkPendingInits(mod)
+	// Blank fmt type-switch arms for types never boxed as any in this
+	// program so float/complex strconv paths die before DCE (M8 size).
+	ir.PruneDeadFmtTypeCases(mod)
 	// Drop runtime (and other) funcs not reachable from exports / ref.func
 	// sites so GOROOT import "runtime" cannot keep unused map/select/Frames.
 	ir.PruneUnreachable(mod)

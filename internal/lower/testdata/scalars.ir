@@ -51,22 +51,19 @@ func main.classified(x i32) i32 {
     switch tag {
       case 0: {
         return 1
-        br $sw.1
       }
       case 1: {
         return 2
-        br $sw.1
       }
       case 2: {
         return 2
-        br $sw.1
       }
       default: {
         return 3
-        br $sw.1
       }
     }
   }
+  unreachable
 }
 
 func main.multi() i32, i32 {

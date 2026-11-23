@@ -186,7 +186,7 @@ func (l *pkgLower) freshClosName(prefix string) string {
 		l.meta = metaOf(l.mod)
 	}
 	l.meta.closSeq++
-	return l.pkg.Name() + "." + prefix + "." + strconv.Itoa(l.meta.closSeq)
+	return pkgIRPrefix(l.pkg) + "." + prefix + "." + strconv.Itoa(l.meta.closSeq)
 }
 
 func (l *pkgLower) ensureClosType(caps []captureInfo) (string, error) {
@@ -464,6 +464,14 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			preamble = append(preamble, &ir.VarDef{Var: v})
 		}
 	}
+	// Address-taken locals spill into cells (see addrOf); allocate them here.
+	for _, ci := range child.cellInits {
+		preamble = append(preamble, child.assignVar(ci.cell, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: ci.cellTy},
+			Args: []ir.Expr{child.useVar(ci.orig)},
+		}))
+	}
 	if child.needsRecoverPrologue {
 		preamble = append(preamble, child.recoverPrologue()...)
 	}
@@ -567,7 +575,7 @@ func (l *pkgLower) funcIRNameOf(fn *types.Func) string {
 	if fn.Type().(*types.Signature).Recv() != nil {
 		return methodIRName(fn)
 	}
-	return fn.Pkg().Name() + "." + fn.Name()
+	return pkgIRPrefix(fn.Pkg()) + "." + fn.Name()
 }
 
 // emitTopLevelClosWrapper emits a function (clos, args...) that ignores clos

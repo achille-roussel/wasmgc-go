@@ -27,31 +27,17 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	if rewriteDir == "" {
 		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime maps")
 	}
-	files := []string{"map.go"}
-	if mod.LookupFunc("runtime.fastrand") == nil {
-		files = append(files, "rand.go")
-	}
-	// throw / panicUncomparable / print for map nil-assign and uncomparable keys.
-	needFatal := mod.LookupFunc("runtime.throw") == nil
+	// TypeCheckFiles is isolated — include every dep map.go needs even when
+	// those symbols are already linked into the module (sched/select/print).
+	files := []string{"map.go", "rand.go", "fatal.go", "bridge.go", "print.go", "stringeq.go"}
 	needPanic := mod.LookupFunc("runtime.panicUncomparable") == nil &&
 		mod.LookupFunc("runtime.deferRun") == nil
 	needPanicIndex := mod.LookupFunc("runtime.panicIndex") == nil
-	needPrint := mod.LookupFunc("runtime.printstring") == nil
-	needStreq := mod.LookupFunc("runtime.stringeq") == nil
-	if needFatal {
-		files = append(files, "fatal.go", "bridge.go")
-	}
 	if needPanic {
 		files = append(files, "panic.go")
 	}
 	if needPanicIndex {
 		files = append(files, "panic_index.go")
-	}
-	if needPrint || needFatal {
-		files = append(files, "print.go")
-	}
-	if needStreq && !needPrint && !needFatal {
-		files = append(files, "stringeq.go")
 	}
 	var filenames []string
 	var srcs []string
@@ -74,9 +60,9 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 		return fmt.Errorf("rtlink: typecheck map runtime: %w", err)
 	}
 	stripMapFuncs(mod)
-	if needPrint || needFatal {
-		stripPrintFuncs(mod)
-	}
+	stripMapRand(mod)
+	stripPrintFuncs(mod)
+	stripMapSupport(mod)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower map runtime: %w", err)
 	}
@@ -125,6 +111,15 @@ func stripMapFuncs(mod *ir.Module) {
 	for _, s := range mapSyms {
 		names[s] = true
 	}
+	// Helpers and methods from map.go not in mapSyms.
+	for _, s := range []string{
+		"runtime.mapCapForHint",
+		"runtime.(*hmap).growTo",
+		"runtime.(*hmap).insertNew",
+		"runtime.(*hmap).maybeGrow",
+	} {
+		names[s] = true
+	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
 		if names[f.Name] {
@@ -135,24 +130,69 @@ func stripMapFuncs(mod *ir.Module) {
 	mod.Funcs = out
 }
 
+// stripMapRand drops fastrand symbols so AppendFiles can re-emit rand.go
+// (already linked by sched/select) without duplicate func/global errors.
+func stripMapRand(mod *ir.Module) {
+	drop := map[string]bool{
+		"runtime.fastrand":  true,
+		"runtime.fastrandn": true,
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if drop[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+	gOut := mod.Globals[:0]
+	for _, g := range mod.Globals {
+		if g.Name == "runtime.fastrandState" {
+			continue
+		}
+		gOut = append(gOut, g)
+	}
+	mod.Globals = gOut
+}
+
+// stripMapSupport drops fatal/exit/throw so AppendFiles can re-emit them.
+func stripMapSupport(mod *ir.Module) {
+	drop := map[string]bool{
+		"runtime.throw": true,
+		"runtime.fatal": true,
+		"runtime.exit":  true,
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if drop[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
 // fillFloatBits replaces empty f32bits/f64bits bodies with reinterpret.
+// Also fills internal.strconv.float*bits / float*frombits (deps.go overlay).
 func fillFloatBits(mod *ir.Module) {
-	if f := mod.LookupFunc("runtime.f32bits"); f != nil && emptyBody(f) {
+	fillReinterpret := func(name string, op ir.Op) {
+		f := mod.LookupFunc(name)
+		if f == nil || !emptyBody(f) || len(f.Params) != 1 {
+			return
+		}
 		p := f.Params[0]
 		f.Body = &ir.Seq{Stmts: []ir.Stmt{
 			&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpI32ReinterpretF32, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+				&ir.Instr{Op: op, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
 			}},
 		}}
 	}
-	if f := mod.LookupFunc("runtime.f64bits"); f != nil && emptyBody(f) {
-		p := f.Params[0]
-		f.Body = &ir.Seq{Stmts: []ir.Stmt{
-			&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpI64ReinterpretF64, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
-			}},
-		}}
-	}
+	fillReinterpret("runtime.f32bits", ir.OpI32ReinterpretF32)
+	fillReinterpret("runtime.f64bits", ir.OpI64ReinterpretF64)
+	fillReinterpret("internal.strconv.float32bits", ir.OpI32ReinterpretF32)
+	fillReinterpret("internal.strconv.float64bits", ir.OpI64ReinterpretF64)
+	fillReinterpret("internal.strconv.float32frombits", ir.OpF32ReinterpretI32)
+	fillReinterpret("internal.strconv.float64frombits", ir.OpF64ReinterpretI64)
 }
 
 // hashHelperFuncs are the per-type mapKeyHash branches (and their callees).

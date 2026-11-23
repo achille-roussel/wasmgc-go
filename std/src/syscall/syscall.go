@@ -58,11 +58,15 @@ var (
 	ENOTDIR = Errno(0x14)
 )
 
+// writeHost copies p through the linear bridge and calls go.runtime.write.
+// Body-less: filled by codegen (same pattern as runtime.printstring).
+func writeHost(fd int32, p []byte) int32
+
 func Write(fd int, p []byte) (n int, err error) {
 	if fd != 1 && fd != 2 {
 		return 0, ENOSYS
 	}
-	return len(p), nil
+	return int(writeHost(int32(fd), p)), nil
 }
 
 func Read(fd int, p []byte) (n int, err error) {

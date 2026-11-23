@@ -206,13 +206,14 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		}
 	}
 	return &ir.Instr{
-		Op:    ir.OpIfaceCall,
-		Type:  res,
-		Type2: &ir.Ref{Named: "$go.itabtype." + sanitizeName(ifaceKey)},
-		Func:  fn.Name(),
-		Field: itoa(methodIdx),
-		Str:   sigName,
-		Args:  args,
+		Op:     ir.OpIfaceCall,
+		Type:   res,
+		Type2:  &ir.Ref{Named: "$go.itabtype." + sanitizeName(ifaceKey)},
+		Global: ifaceKey, // so desc emits itabtype even without a concrete itab
+		Func:   fn.Name(),
+		Field:  itoa(methodIdx),
+		Str:    sigName,
+		Args:   args,
 	}, stmts, nil
 }
 
@@ -321,6 +322,11 @@ func isNilIdent(e ast.Expr) bool {
 // coerceExpr lowers e and converts to dstGo when assigning/passing to an interface.
 func (fl *funcLower) coerceExpr(e ast.Expr, dstGo types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	src := fl.typeOf(e)
+	// Apply mono subst so type params (whose Underlying is a constraint
+	// interface) are not mistaken for real interface destinations.
+	if dstGo != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		dstGo = fl.pkg.subst.Apply(dstGo)
+	}
 	if dstGo != nil && isIface(dstGo) {
 		if src == nil || isUntypedNil(src) {
 			return &ir.Instr{Op: ir.OpRefNull, Type: typeIface}, nil, nil

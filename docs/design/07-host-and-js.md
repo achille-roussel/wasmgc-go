@@ -1,16 +1,16 @@
 # 07 — Host and JS
 
-The host is JavaScript: a browser, or Node.js. The module imports from a module named `go` and exports `run`, `_sched`, and `memory`. The glue is `lib/wasmgc.js`, one file. It reads `WebAssembly.Module.imports` and installs only the `go.*` names the module declares; `WebAssembly.Suspending` is constructed only for imports in the suspending set (`runtime.park`, `runtime.gosched`, and a later `js.Await`). A program that never parks therefore never mentions `Suspending` and instantiates on any engine that has Wasm GC, including Node 22. `wasmgc-go build -target node` may still emit a specialized runner that inlines that import set; the shared file must stay correct when used as-is.
+The host is JavaScript: a browser, or Node.js. The module imports from a module named `go` and exports `run`, `_sched`, and `memory`. The glue is `lib/wasmgc.js`, one file. It reads `WebAssembly.Module.imports` and installs the `go.*` names the module declares. **JSPI is always required** (decision 13 in `10-open-questions.md`): the glue always wraps `run` (and `_sched`) with `WebAssembly.promising`, and always wraps suspending imports (`runtime.park`, `runtime.gosched`, and a later `js.Await`) in `WebAssembly.Suspending`. Compiled modules always import `runtime.park`, `runtime.ready`, and `runtime.spawn`. There is no opt-out for programs that never park. `wasmgc-go build -target node` may still emit a specialized runner that inlines that import set; the shared file must stay correct when used as-is.
 
-wasm3's glue was two copies (`misc/wasm/wasm_exec_wasm3.js` at 233 lines and `lib/wasm/wasm_exec_wasm3.js` at 521) and it constructed `WebAssembly.Suspending` unconditionally. Node v22.23.4 throws `WebAssembly.Suspending is not a constructor` (`docs/wasm3-study/00-overview.md`). This glue does not.
+wasm3's glue was two copies (`misc/wasm/wasm_exec_wasm3.js` at 233 lines and `lib/wasm/wasm_exec_wasm3.js` at 521) and it constructed `WebAssembly.Suspending` unconditionally. This project does the same for JSPI: Node v22.23.4 is unsupported (`WebAssembly.Suspending is not a constructor`; `docs/wasm3-study/00-overview.md`).
 
 ## What the engine has to implement
 
 Wasm GC, including `struct.new`, `array.new`, `array.new_data`, `array.copy`, `call_ref`, and `ref.cast`. Shipped in Chrome 119 (October 2023) and in every Node that this project can be built with. The aggregate instructions are in the core spec draft of 20 November 2026 ([W3C TR](https://www.w3.org/TR/wasm-core-2/)).
 
-Exception handling: `try_table`, `throw`, `throw_ref`, `exnref`. In the spec since the July 2025 working-group merge (version 3.0). `prototypes/eh-panic` instantiates on Node 22.23.4 and Node 26.13.1.
+Exception handling: `try_table`, `throw`, `throw_ref`, `exnref`. In the spec since the July 2025 working-group merge (version 3.0). `prototypes/eh-panic` instantiates on Node 26.13.1.
 
-JSPI, only when the program parks or the glue wraps `run` because a suspending import is present. The API is `WebAssembly.Suspending` and `WebAssembly.promising`, described in the [JSPI overview](https://github.com/WebAssembly/js-promise-integration/blob/main/proposals/js-promise-integration/Overview.md) and in the JS API draft. It adds no Wasm instructions. Verified behavior, from `prototypes/jspi-sched` on Node v26.13.1 (released 2026-11-10):
+JSPI is always on. The API is `WebAssembly.Suspending` and `WebAssembly.promising`, described in the [JSPI overview](https://github.com/WebAssembly/js-promise-integration/blob/main/proposals/js-promise-integration/Overview.md) and in the JS API draft. It adds no Wasm instructions. Verified behavior, from `prototypes/jspi-sched` on Node v26.13.1 (released 2026-11-10):
 
 - A local `i32` and a local `(ref $box)` survive a suspend, including two suspends in one activation.
 - A second `promising` call runs while the first activation is suspended.
@@ -26,15 +26,15 @@ JSPI, only when the program parks or the glue wraps `run` because a suspending i
 
 | Host | JSPI |
 |---|---|
-| Node.js 26, tested v26.13.1 | on by default |
+| Node.js 26, tested v26.13.1 (**CI minimum**) | on by default |
 | Node.js 25 | on by default ([wasm-bindgen JSPI table](https://wasm-bindgen.github.io/wasm-bindgen/reference/jspi.html); the v25 line took it from V8 directly) |
-| Node.js 24 | `--experimental-wasm-jspi`, and only if `typeof WebAssembly.Suspending === "function"`. The v24 backport is nodejs/node#65123, merged 2026-08-13. |
-| Node.js 22, tested v22.23.4 | not supported. `--experimental-wasm-jspi` exposes `WebAssembly.Suspender` and does not expose `Suspending` or `promising`. |
+| Node.js 24 | `--experimental-wasm-jspi`, and only if `typeof WebAssembly.Suspending === "function"`. The v24 backport is nodejs/node#65123, merged 2026-08-13. Not in CI. |
+| Node.js 22 | not supported. `--experimental-wasm-jspi` exposes `WebAssembly.Suspender` and does not expose `Suspending` or `promising`. Dropped from CI. |
 | Chrome and Edge 137+ | on by default |
 | Firefox 153+ | on by default |
 | Safari 27+ | on by default |
 
-JSPI across those three browser engines is recorded as newly available on 2026-09-14. `wasmgc-go run` checks `process.version` and the constructor and exits with the table above when the host is too old. A module with no suspending import skips the check.
+JSPI across those three browser engines is recorded as newly available on 2026-09-14. `wasmgc-go run` checks `process.version` and the constructor and exits with the table above when the host is too old. Every module requires the check.
 
 The glue never references `WebAssembly.Suspender`. That constructor is the earlier API the wasm3 notes were already migrating off (`docs/wasm3-study/04-open-problems.md`).
 
@@ -66,14 +66,14 @@ Returning a reference from an import works, both for a Wasm struct and for an `e
 
 | Export | Who calls it |
 |---|---|
-| `run` | the glue, under `promising` if the module imports any suspending function. Otherwise the glue calls it directly. |
+| `run` | the glue, always under `promising`. |
 | `_sched` | the glue, under `promising`, once per spawned goroutine. |
 | `memory` | the glue, to build a `Uint8Array` for `runtime.write` and `runtime.rand`. |
-| each `//go:wasmexport` | the host page, under `promising` if the body can park. The compiler knows which exports reach a suspending import and records it in a custom section `wasmgc-exports` of JSON, so the glue does not have to guess. |
+| each `//go:wasmexport` | the host page, under `promising`. The compiler may still record reachability in a custom section `wasmgc-exports` of JSON for tooling; the glue does not use it to skip JSPI. |
 
 There is no `_start`. WASI is not a v1 target.
 
-`run` calls the generated init functions in dependency order and then `main.main`. When `main.main` returns, `run` returns. The glue's promise reaction exits (`process.exit(0)` in Node) as a microtask, and `spawn`'s `setTimeout(0)` is a macrotask, so a returning `main` does not run queued goroutines. See `04`. Park, ready, spawn, gosched, scheduleTimer, and clearTimer are wired in `lib/wasmgc.js` (M7); `WebAssembly.Suspending` is still constructed only for imports in the suspending set.
+`run` calls the generated init functions in dependency order and then `main.main`. When `main.main` returns, `run` returns. The glue's promise reaction exits (`process.exit(0)` in Node) as a microtask, and `spawn`'s `setTimeout(0)` is a macrotask, so a returning `main` does not run queued goroutines. See `04`. Park, ready, spawn, gosched, scheduleTimer, and clearTimer are wired in `lib/wasmgc.js` (M7); every compiled module imports park/ready/spawn, and the glue always constructs `WebAssembly.Suspending` for suspending imports.
 
 ## Linear memory
 

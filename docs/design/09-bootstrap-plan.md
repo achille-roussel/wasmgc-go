@@ -10,9 +10,9 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Scope.** `internal/wasm` writes a module with a type section, a function that returns, and an export `run`. `lib/wasmgc.js` instantiates it and calls `run`. No Go.
 
-**Exit.** `node` on the glue, on Node 22 and Node 26, prints nothing and exits 0. `wasm-tools validate` accepts the bytes. A type index of 64 survives a round trip (the signed-LEB test from `08-testing.md`).
+**Exit.** `node` on the glue (Node 26, JSPI required) prints nothing and exits 0. `wasm-tools validate` accepts the bytes. A type index of 64 survives a round trip (the signed-LEB test from `08-testing.md`).
 
-**Artifact.** `internal/wasm.EmptyRunModule` encodes the module; `testdata/m0/empty.wasm` is the checked-in bytes. `node lib/wasmgc.js testdata/m0/empty.wasm` is the host smoke test. CI runs `go vet`, `go test ./...`, `wasm-tools validate`, that Node smoke test on **22.23.4** and **26.13.1**, and the EH/fat-pointer prototypes on both (JSPI prototype on 26 only). Node 26 is the newest line with unflagged JSPI used here; Node 25 would also work for JSPI.
+**Artifact.** `internal/wasm.EmptyRunModule` encodes the module; `testdata/m0/empty.wasm` is the checked-in bytes. `node lib/wasmgc.js testdata/m0/empty.wasm` is the host smoke test. CI runs `go vet`, `go test ./...`, `wasm-tools validate`, that Node smoke test on **26.13.1**, and the EH/fat-pointer/JSPI prototypes. JSPI is always required (decision 13).
 
 **Streams.** Wasm encoder (A), JS glue (B). No dependency on each other beyond the export name `run`.
 
@@ -28,7 +28,7 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Scope.** Scalars, locals, `if`, `for`, calls, string headers, `array.new_data`, the linear bridge, `runtime.printstring` and `printint`. The integer printer slices only the digits.
 
-**Exit.** The println rows of the execution table in `08-testing.md` pass, including `fib(20)` with no extra NUL and `hello, world`. Size of the hello program is under 8192 bytes. Node 22 runs it, because nothing suspends.
+**Exit.** The println rows of the execution table in `08-testing.md` pass, including `fib(20)` with no extra NUL and `hello, world`. Size of the hello program is under 8192 bytes. Runs under Node 26 with JSPI (always required).
 
 **Streams.** Lowerer (D) for expressions and structured statements. Runtime print and the bridge (F), tested with a hand-written WAT module that calls the same imports, before the lowerer emits them. Glue (B) grows `runtime.write`.
 

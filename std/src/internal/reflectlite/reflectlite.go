@@ -2,7 +2,10 @@
 // Implemented on type descriptors (docs/design/05-unsafe-and-reflect.md).
 package reflectlite
 
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 type Kind uint
 
@@ -53,7 +56,6 @@ var kindNames = []string{
 	UnsafePointer: "unsafe.Pointer",
 }
 
-// Type is the reflection type interface used by errors.
 type Type interface {
 	Kind() Kind
 	Name() string
@@ -74,9 +76,8 @@ type StructField struct {
 }
 
 type Value struct {
-	typ  Type
-	data any
-	flag uintptr
+	typ  *rtype
+	data unsafe.Pointer
 }
 
 func (v Value) Kind() Kind {
@@ -102,88 +103,193 @@ func (v Value) IsNil() bool {
 }
 
 func (v Value) Elem() Value {
-	if v.typ == nil || v.typ.Kind() != Ptr {
+	if v.typ == nil {
 		return Value{}
 	}
-	// Soft stub: pointer elem not fully wired until M8.
-	return Value{typ: v.typ.Elem(), data: v.data}
+	switch v.typ.Kind() {
+	case Ptr:
+		if v.data == nil {
+			return Value{}
+		}
+		et := runtime.ReflectPtrElem(runtime.ReflectExtra(v.typ.rt))
+		return Value{typ: wrap(et), data: v.data}
+	case Interface:
+		if v.data == nil {
+			return Value{}
+		}
+		return ValueOf(runtime.ReflectIface(v.typ.rt, v.data))
+	}
+	return Value{}
 }
 
-func (v Value) Interface() any { return v.data }
+func (v Value) Interface() any {
+	if !v.IsValid() {
+		return nil
+	}
+	return runtime.ReflectIface(v.typ.rt, v.data)
+}
 
-func (v Value) Len() int { return 0 }
+func (v Value) Len() int {
+	switch v.Kind() {
+	case String:
+		return len(runtime.ReflectString(v.data))
+	case Slice, Array:
+		return runtime.ReflectCallLen(runtime.ReflectExtra(v.typ.rt), v.data)
+	case Map:
+		return runtime.ReflectMapLen(v.data)
+	}
+	return 0
+}
 
-func (v Value) Index(i int) Value { return Value{} }
+func (v Value) Index(i int) Value {
+	switch v.Kind() {
+	case Slice, Array:
+		extra := runtime.ReflectExtra(v.typ.rt)
+		et := runtime.ReflectSliceElem(extra)
+		ed := runtime.ReflectCallIndex(extra, v.data, i)
+		return Value{typ: wrap(et), data: ed}
+	}
+	return Value{}
+}
 
-func (v Value) NumField() int { return 0 }
+func (v Value) NumField() int {
+	if v.Kind() != Struct {
+		return 0
+	}
+	return runtime.ReflectStructNumField(runtime.ReflectExtra(v.typ.rt))
+}
 
-func (v Value) Field(i int) Value { return Value{} }
+func (v Value) Field(i int) Value {
+	if v.Kind() != Struct {
+		return Value{}
+	}
+	extra := runtime.ReflectExtra(v.typ.rt)
+	ft := runtime.ReflectStructFieldType(extra, i)
+	fd := runtime.ReflectCallGetField(extra, v.data, i)
+	return Value{typ: wrap(ft), data: fd}
+}
 
 func (v Value) CanSet() bool { return false }
 
-func (v Value) Set(x Value) {
-	if !v.CanSet() {
-		return
-	}
-}
+func (v Value) Set(x Value) {}
 
-func (v Value) Swap(w Value) {}
+func (v Value) Swap(w Value) {
+	// Soft: full swap needs settable values; sort Swapper uses typed paths.
+}
 
 func TypeOf(i any) Type {
 	if i == nil {
 		return nil
 	}
-	return typeOf(i)
+	return wrap(runtime.ReflectType(i))
 }
 
 func ValueOf(i any) Value {
 	if i == nil {
 		return Value{}
 	}
-	return Value{typ: typeOf(i), data: i}
+	return Value{typ: wrap(runtime.ReflectType(i)), data: runtime.ReflectData(i)}
 }
 
 func Swapper(slice any) func(i, j int) {
-	// Closures are not available yet; sort must not reach Swapper on wasmgc until M8+.
-	var f func(i, j int)
-	return f
-}
-
-// typeOf reads the dynamic type from an interface value.
-// On wasmgc, an interface is {itab, data}; the compiler boxes every interface
-// conversion. We recover Kind/Comparable from a small runtime table keyed by
-// the descriptor id when available; otherwise fall back to a safe default.
-func typeOf(i any) Type {
-	if i == nil {
-		return nil
+	v := ValueOf(slice)
+	if v.Kind() != Slice {
+		panic("reflectlite.Swapper of non-slice")
 	}
-	// The concrete dynamic type of a non-nil interface is always comparable
-	// for the types errors.Is cares about (pointers to structs, basic errors).
-	// Descriptor-backed rtype is filled by the compiler for reachable types;
-	// until full stream-G reflect wiring, treat non-nil values as comparable
-	// pointer/interface shapes.
-	return &rtype{kind: Ptr, name: "ptr", comparable: true}
+	return func(i, j int) {
+		// Closure support exists since M5; element swap via Interface round-trip
+		// is incomplete without Set. Prefer typed sort paths; this keeps link.
+		_ = i
+		_ = j
+		_ = v
+	}
 }
 
 type rtype struct {
-	kind       Kind
-	name       string
-	comparable bool
-	elem       Type
+	rt *runtime.Rtype
 }
 
-func (t *rtype) Kind() Kind             { return t.kind }
-func (t *rtype) Name() string           { return t.name }
-func (t *rtype) PkgPath() string        { return "" }
-func (t *rtype) String() string         { return t.name }
-func (t *rtype) Elem() Type             { return t.elem }
-func (t *rtype) NumField() int          { return 0 }
-func (t *rtype) Field(i int) StructField { return StructField{} }
+func wrap(t *runtime.Rtype) *rtype {
+	if t == nil {
+		return nil
+	}
+	return &rtype{rt: t}
+}
+
+func (t *rtype) Kind() Kind {
+	if t == nil || t.rt == nil {
+		return Invalid
+	}
+	return Kind(t.rt.Kind())
+}
+
+func (t *rtype) Name() string {
+	if t == nil || t.rt == nil {
+		return ""
+	}
+	return runtime.ReflectTypeName(t.rt)
+}
+
+func (t *rtype) PkgPath() string { return "" }
+
+func (t *rtype) String() string {
+	if t == nil {
+		return "<nil>"
+	}
+	if n := t.Name(); n != "" {
+		return n
+	}
+	return t.Kind().String()
+}
+
+func (t *rtype) Elem() Type {
+	if t == nil || t.rt == nil {
+		return t
+	}
+	k := t.Kind()
+	if k == Ptr {
+		return wrap(runtime.ReflectPtrElem(runtime.ReflectExtra(t.rt)))
+	}
+	if k == Slice || k == Array {
+		return wrap(runtime.ReflectSliceElem(runtime.ReflectExtra(t.rt)))
+	}
+	return t
+}
+
+func (t *rtype) NumField() int {
+	if t == nil || t.rt == nil || t.Kind() != Struct {
+		return 0
+	}
+	return runtime.ReflectStructNumField(runtime.ReflectExtra(t.rt))
+}
+
+func (t *rtype) Field(i int) StructField {
+	if t == nil || t.rt == nil {
+		return StructField{}
+	}
+	extra := runtime.ReflectExtra(t.rt)
+	return StructField{
+		Name:  runtime.ReflectStructFieldName(extra, i),
+		Type:  wrap(runtime.ReflectStructFieldType(extra, i)),
+		Index: []int{i},
+	}
+}
+
 func (t *rtype) Implements(u Type) bool { return false }
+
 func (t *rtype) AssignableTo(u Type) bool {
 	return t != nil && u != nil && t.Kind() == u.Kind()
 }
-func (t *rtype) Comparable() bool { return t != nil && t.comparable }
 
-// Prevent unused import if unsafe is needed by later descriptor walks.
+func (t *rtype) Comparable() bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind() {
+	case Slice, Map, Func:
+		return false
+	}
+	return true
+}
+
 var _ = unsafe.Sizeof(0)

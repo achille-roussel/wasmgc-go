@@ -146,31 +146,39 @@ func (rt *runtimeLower) expandIfaceCall(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		Type: &ir.Ref{Named: sigName},
 		Args: callArgs,
 	}
-	if s != nil && len(s.Lhs) > 0 {
-		// Ensure LHS temps carry a real result type (codegen defaults nil → i32).
-		var resTy ir.Type = in.Type
-		if td := rt.mod.LookupType(sigName); td != nil && len(td.Results) > 0 {
-			resTy = td.Results[0]
+	var resTys []ir.Type
+	if td := rt.mod.LookupType(sigName); td != nil {
+		resTys = td.Results
+	}
+	// Void methods (e.g. Formatter.Format) must be ExprStmt; assigning
+	// leaves local.set with an empty stack.
+	if len(resTys) == 0 || s == nil || len(s.Lhs) == 0 {
+		pre = append(pre, &ir.ExprStmt{X: call})
+		return pre, nil
+	}
+	// Ensure LHS temps carry real result types (codegen defaults nil → i32).
+	lhs := make([]ir.Dest, len(s.Lhs))
+	for i := range s.Lhs {
+		resTy := in.Type
+		if i < len(resTys) && resTys[i] != nil {
+			resTy = resTys[i]
+		} else if i > 0 {
+			resTy = nil
 		}
 		if resTy == nil {
-			resTy = &ir.Ref{Named: "$go.string"} // last-resort; better than i32
+			resTy = &ir.Ref{Named: "$go.iface"} // last-resort for iface results
 		}
-		lhs := make([]ir.Dest, len(s.Lhs))
-		for i := range s.Lhs {
-			lhs[i] = s.Lhs[i]
-			if lhs[i].Temp != nil {
-				nt := &ir.Temp{Name: lhs[i].Temp.Name, Typ: resTy}
-				lhs[i].Temp = nt
-				lhs[i].Name = nt.Name
-			}
-			if lhs[i].Var != nil {
-				lhs[i].Var.Typ = resTy
-			}
+		lhs[i] = s.Lhs[i]
+		if lhs[i].Temp != nil {
+			nt := &ir.Temp{Name: lhs[i].Temp.Name, Typ: resTy}
+			lhs[i].Temp = nt
+			lhs[i].Name = nt.Name
 		}
-		pre = append(pre, &ir.Assign{Lhs: lhs, Rhs: call})
-	} else {
-		pre = append(pre, &ir.ExprStmt{X: call})
+		if lhs[i].Var != nil {
+			lhs[i].Var.Typ = resTy
+		}
 	}
+	pre = append(pre, &ir.Assign{Lhs: lhs, Rhs: call})
 	return pre, nil
 }
 
@@ -202,22 +210,11 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	toIface := strings.HasPrefix(str, "iface")
 
 	if toIface {
-		// Interface → interface: for M4, require exact type match via concrete
-		// descriptor when asserting to a concrete-shaped iface key, else trap/false.
-		// Simplified: treat as concrete assert of the dynamic type implementing J
-		// by checking descriptor identity against target iface descriptor — wrong for
-		// iface-to-iface. Proper path uses itable vector. Until then, copy on success
-		// of "same dynamic type implements" is approximated as always-fail for
-		// non-identical, and pass-through when keys match empty/any.
-		if commaOK && len(s.Lhs) == 2 {
-			pre = append(pre,
-				&ir.Assign{Lhs: []ir.Dest{s.Lhs[0]}, Rhs: useV(ifaceV)},
-				&ir.Assign{Lhs: []ir.Dest{s.Lhs[1]}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 1}},
-			)
-			return pre, nil
-		}
-		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(ifaceV)})
-		return pre, nil
+		// Interface → interface: match the dynamic concrete type against every
+		// live itab for the destination iface ($go.itab.<Iface>.@.<Concrete>).
+		// Design 03's itable vector is the long-term form; scanning emitted
+		// itab globals is correct for whole-program compiles.
+		return rt.expandIfaceToIfaceAssert(s, pre, ifaceV, typeKey, commaOK)
 	}
 
 	// Concrete assert: compare descriptor refs.
@@ -285,6 +282,106 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	} else {
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: readVal})
 	}
+	return pre, nil
+}
+
+// expandIfaceToIfaceAssert lowers x.(J) for interface J.
+// It compares the dynamic type to each concrete type that has an itab for J.
+func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, ifaceV *ir.Var, typeKey string, commaOK bool) ([]ir.Stmt, error) {
+	ifaceTy := typeIface
+	key := strings.TrimPrefix(typeKey, "$go.type.")
+	// x.(any): every dynamic value implements the empty interface. Pass
+	// through — do not cascade over every $go.itab.any.@.* (that kept all
+	// any-itabs live and blew the fmt hello size budget).
+	if key == "any" || key == "interface{}" {
+		if commaOK && len(s.Lhs) == 2 {
+			pre = append(pre,
+				&ir.Assign{Lhs: []ir.Dest{s.Lhs[0]}, Rhs: useV(ifaceV)},
+				&ir.Assign{Lhs: []ir.Dest{s.Lhs[1]}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 1}},
+			)
+			return pre, nil
+		}
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(ifaceV)})
+		return pre, nil
+	}
+	prefix := "$go.itab." + key + ".@."
+	var itabs []string
+	for _, g := range rt.mod.Globals {
+		if strings.HasPrefix(g.Name, prefix) {
+			itabs = append(itabs, g.Name)
+		}
+	}
+
+	outV := rt.newVar("i2i", ifaceTy)
+	okV := rt.newVar("ok", ir.TypeI32)
+	pre = append(pre, &ir.VarDef{Var: outV}, &ir.VarDef{Var: okV})
+	pre = append(pre,
+		assignV(outV, &ir.Instr{Op: ir.OpRefNull, Type: ifaceTy}),
+		assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+	)
+
+	// nil iface → fail
+	body := &ir.Seq{}
+	itabV := rt.newVar("it", &ir.Ref{Named: "$go.itab"})
+	typV := rt.newVar("ty", &ir.Ref{Named: "$go.type"})
+	dataV := rt.newVar("d", &ir.Ref{Null: true, Heap: ir.HeapAny})
+	body.Stmts = append(body.Stmts,
+		&ir.VarDef{Var: itabV}, &ir.VarDef{Var: typV}, &ir.VarDef{Var: dataV},
+		assignV(itabV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(ifaceV)}}),
+		assignV(typV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itabV)}}),
+		assignV(dataV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(ifaceV)}}),
+	)
+
+	// Cascade: if ty == itab_i.type { out = {itab_i, data}; ok = 1 }
+	for _, ig := range itabs {
+		match := &ir.Seq{Stmts: []ir.Stmt{
+			assignV(outV, &ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: ifaceTy,
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: "$go.itab"}, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpGlobalGet, Global: ig},
+					}},
+					useV(dataV),
+				},
+			}),
+			assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 1}),
+		}}
+		body.Stmts = append(body.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+				useV(typV),
+				&ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: "$go.itab"}, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpGlobalGet, Global: ig},
+					}},
+				}},
+			}},
+			Then: match,
+		})
+	}
+
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+		Then: &ir.Seq{},
+		Else: body,
+	})
+
+	if commaOK && len(s.Lhs) == 2 {
+		pre = append(pre,
+			&ir.Assign{Lhs: []ir.Dest{s.Lhs[0]}, Rhs: useV(outV)},
+			&ir.Assign{Lhs: []ir.Dest{s.Lhs[1]}, Rhs: useV(okV)},
+		)
+		return pre, nil
+	}
+	// One-result form: panic on failure.
+	pre = append(pre, &ir.If{
+		Cond: useV(okV),
+		Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: useV(outV)}}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
+			&ir.Unreachable{},
+		}},
+	})
 	return pre, nil
 }
 

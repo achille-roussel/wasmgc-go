@@ -90,7 +90,14 @@ func rand() uint64 { return uint64(fastrand()) | uint64(fastrand())<<32 }
 // preemptCheck is reserved for a later yield on loop back-edges; v1 is a no-op (04).
 func preemptCheck() {}
 
-// Processor pin stubs used by sync.Pool overlay.
+// Processor pin stubs used by sync.Pool.
 func procPin() int { return 0 }
 func procUnpin()   {}
 func registerPoolCleanup(cleanup func()) {}
+
+// RegisterPoolCleanup records a GC-cycle pool cleanup (no-op until GC hooks).
+func RegisterPoolCleanup(cleanup func()) { registerPoolCleanup(cleanup) }
+
+// ProcPin / ProcUnpin are sync.Pool pin stubs (single-activation wasmgc).
+func ProcPin() int { return procPin() }
+func ProcUnpin()   { procUnpin() }

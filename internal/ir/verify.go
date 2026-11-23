@@ -291,7 +291,11 @@ func (v *verifier) stmt(s Stmt) {
 		v.region(s)
 	case *VarDef:
 		if _, ok := v.vars[s.Var.Name]; ok {
-			v.errorf(s.Pos, "duplicate var %s", s.Var.Name)
+			fn := "?"
+			if v.fn != nil {
+				fn = v.fn.Name
+			}
+			v.errorf(s.Pos, "duplicate var %s in %s", s.Var.Name, fn)
 			return
 		}
 		if IsPacked(s.Var.Typ) {
@@ -324,7 +328,11 @@ func (v *verifier) stmt(s Stmt) {
 				v.temps[d.Temp.Name] = d.Temp
 			} else if d.Var != nil {
 				if want := d.Var.Typ; got != nil && want != nil && !typesCompatible(want, got) {
-					v.errorf(d.Pos, "cannot assign %s to var %s of type %s", got, d.Var.Name, want)
+					fn := "?"
+					if v.fn != nil {
+						fn = v.fn.Name
+					}
+					v.errorf(d.Pos, "cannot assign %s to var %s of type %s in %s", got, d.Var.Name, want, fn)
 				}
 			} else if strings.HasPrefix(d.Name, "%") {
 				t := &Temp{Name: d.Name, Typ: got, Def: s, Pos: d.Pos}
@@ -352,13 +360,21 @@ func (v *verifier) stmt(s Stmt) {
 		}
 	case *Return:
 		if len(s.Results) != len(v.fn.Results) {
-			v.errorf(s.Pos, "return has %d values, function wants %d", len(s.Results), len(v.fn.Results))
+			fn := "?"
+			if v.fn != nil {
+				fn = v.fn.Name
+			}
+			v.errorf(s.Pos, "return has %d values, function wants %d in %s", len(s.Results), len(v.fn.Results), fn)
 		}
 		for i, e := range s.Results {
 			got := v.exprType(e)
 			if i < len(v.fn.Results) && got != nil && v.fn.Results[i] != nil &&
 				!typesCompatible(v.fn.Results[i], got) {
-				v.errorf(e.GetPos(), "return value %d: have %s, want %s", i, got, v.fn.Results[i])
+				fn := "?"
+				if v.fn != nil {
+					fn = v.fn.Name
+				}
+				v.errorf(e.GetPos(), "return value %d: have %s, want %s in %s", i, got, v.fn.Results[i], fn)
 			}
 		}
 	case *Br:
@@ -461,7 +477,11 @@ func (v *verifier) exprTypes(e Expr) []Type {
 	case *Name:
 		if e.Temp != nil {
 			if _, ok := v.temps[e.Temp.Name]; !ok {
-				v.errorf(e.Pos, "temp %s used outside its defining region", e.Temp.Name)
+				fn := "?"
+				if v.fn != nil {
+					fn = v.fn.Name
+				}
+				v.errorf(e.Pos, "temp %s used outside its defining region in %s", e.Temp.Name, fn)
 			}
 			return []Type{e.Temp.Typ}
 		}

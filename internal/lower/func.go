@@ -13,6 +13,7 @@ import (
 type labelTargets struct {
 	breakLabel    string
 	continueLabel string // empty if not a loop
+	gotoLabel     string // forward goto target block (docs/design/02)
 }
 
 type funcLower struct {
@@ -214,7 +215,11 @@ func (fl *funcLower) lookupVar(id *ast.Ident) (*ir.Var, error) {
 	if v, ok := fl.vars[obj]; ok {
 		return v, nil
 	}
-	return nil, fl.errorf(id, "variable %s has no IR local", id.Name)
+	fn := fl.irName
+	if fn == "" && fl.obj != nil {
+		fn = fl.obj.Name()
+	}
+	return nil, fl.errorf(id, "variable %s has no IR local (in %s)", id.Name, fn)
 }
 
 func (fl *funcLower) lookupGlobal(id *ast.Ident) *ir.Global {

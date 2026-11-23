@@ -25,20 +25,20 @@ func cmdDumpIR(args []string) int {
 		GOROOT:     *goroot,
 		SkipStdlib: *skipStd,
 	})
+	if text != "" {
+		if *out == "" {
+			fmt.Print(text)
+		} else if werr := os.WriteFile(*out, []byte(text), 0o644); werr != nil {
+			fmt.Fprintln(os.Stderr, werr)
+			return 1
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if res != nil {
 		printWarnings(res.Warnings)
-	}
-	if *out == "" {
-		fmt.Print(text)
-		return 0
-	}
-	if err := os.WriteFile(*out, []byte(text), 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
 	}
 	return 0
 }

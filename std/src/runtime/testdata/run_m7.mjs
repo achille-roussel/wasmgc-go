@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-// M7 channel/select + JSPI harness (docs/design/09). Skips when Suspending is
-// missing so Node 22 CI stays green for non-parking modules.
+// M7 channel/select + JSPI harness (docs/design/09). JSPI is required.
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
-  console.log(`m7: skip (node ${process.version} has no JSPI Suspending)`);
-  process.exit(0);
+  console.error(`m7: JSPI required (node ${process.version} has no WebAssembly.Suspending)`);
+  process.exit(1);
 }
 
 const dir = dirname(fileURLToPath(import.meta.url));

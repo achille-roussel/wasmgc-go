@@ -8,6 +8,7 @@ package desc
 import (
 	"fmt"
 	"go/types"
+	"strconv"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -56,6 +57,7 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 		prog:     prog,
 		types:    map[string]*typeRec{},
 		itabs:    map[string]*itabRec{},
+		ifaces:   map[string]bool{},
 		wrappers: map[string]bool{},
 		equals:   map[string]bool{},
 		boxes:    map[string]bool{},
@@ -103,6 +105,7 @@ type gen struct {
 	prog     *load.Program
 	types    map[string]*typeRec
 	itabs    map[string]*itabRec
+	ifaces   map[string]bool // iface keys needed for OpIfaceCall (itabtype)
 	wrappers map[string]bool
 	equals   map[string]bool
 	boxes    map[string]bool
@@ -209,7 +212,12 @@ func (g *gen) scanModule() {
 					// equality uses descriptors already registered via makes
 				}
 			case ir.OpIfaceCall:
-				// itabs registered via make
+				// Need itabtype layout even when no concrete itab was made yet
+				// (e.g. type-assert to Formatter then call Format).
+				if in.Global != "" {
+					g.ifaces[in.Global] = true
+					g.needTypeKey(in.Global)
+				}
 			}
 		})
 	}
@@ -284,6 +292,28 @@ func (g *gen) collectFromProgram() {
 				}
 			}
 		}
+		// Anonymous structs/slices/maps appear in TypesInfo but not in the
+		// package scope — attach them so struct extras (NumField/getField) work.
+		if pkg.Info != nil {
+			for _, tv := range pkg.Info.Types {
+				if tv.Type == nil {
+					continue
+				}
+				g.attachGoType(tv.Type)
+			}
+			for _, obj := range pkg.Info.Defs {
+				if obj == nil {
+					continue
+				}
+				g.attachGoType(obj.Type())
+			}
+			for _, obj := range pkg.Info.Uses {
+				if obj == nil {
+					continue
+				}
+				g.attachGoType(obj.Type())
+			}
+		}
 	}
 	// Resolve go types for itab keys.
 	for _, it := range g.itabs {
@@ -295,6 +325,24 @@ func (g *gen) collectFromProgram() {
 		if tr := g.types[it.ifaceKey]; tr != nil && tr.goType == nil && it.iface != nil {
 			tr.goType = it.iface
 		}
+	}
+}
+
+func (g *gen) attachGoType(t types.Type) {
+	if t == nil {
+		return
+	}
+	key := TypeKey(t)
+	if key == "" {
+		return
+	}
+	// Only fill types we already need (from iface.make / itabs / asserts).
+	tr := g.types[key]
+	if tr == nil {
+		return
+	}
+	if tr.goType == nil {
+		tr.goType = t
 	}
 }
 
@@ -333,7 +381,41 @@ func (g *gen) lookupIface(key string) *types.Interface {
 }
 
 func (g *gen) emitAll() error {
-	// Assign dense ids.
+	// Assign dense ids and fill kind/name; extras may discover more types.
+	for {
+		keys := make([]string, 0, len(g.types))
+		for k := range g.types {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		before := len(keys)
+		for _, k := range keys {
+			tr := g.types[k]
+			if tr.id < 0 {
+				tr.id = g.nextID
+				g.nextID++
+			}
+			if tr.goType != nil {
+				tr.kind = kindOf(tr.goType)
+				if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
+					tr.name = n.Obj().Name()
+				} else {
+					tr.name = tr.goType.String()
+				}
+				tr.comparable = types.Comparable(tr.goType)
+			} else if tr.kind == 0 {
+				tr.kind, tr.name, tr.comparable = kindFromKey(k)
+			}
+		}
+		// Discover extras' dependent types without emitting globals yet.
+		for _, k := range keys {
+			tr := g.types[k]
+			g.discoverExtraDeps(tr)
+		}
+		if len(g.types) == before {
+			break
+		}
+	}
 	keys := make([]string, 0, len(g.types))
 	for k := range g.types {
 		keys = append(keys, k)
@@ -341,17 +423,6 @@ func (g *gen) emitAll() error {
 	sortStrings(keys)
 	for _, k := range keys {
 		tr := g.types[k]
-		if tr.id < 0 {
-			tr.id = g.nextID
-			g.nextID++
-		}
-		if tr.goType != nil {
-			tr.kind = kindOf(tr.goType)
-			tr.name = tr.goType.String()
-			tr.comparable = types.Comparable(tr.goType)
-		} else {
-			tr.kind, tr.name, tr.comparable = kindFromKey(k)
-		}
 		if err := g.emitTypeGlobal(tr); err != nil {
 			return err
 		}
@@ -359,10 +430,14 @@ func (g *gen) emitAll() error {
 			return err
 		}
 	}
+	if err := g.fillReflectHelpers(); err != nil {
+		return err
+	}
 	if err := g.emitDispatchEq(); err != nil {
 		return err
 	}
-	// Group itabs by iface for Wasm type.
+	// Group itabs by iface for Wasm type; also emit itabtypes for ifaces that
+	// are only called (OpIfaceCall) without a concrete make.
 	ifaceMethods := map[string][]*types.Func{}
 	for _, it := range g.itabs {
 		if it.iface == nil && it.ifaceKey == "error" {
@@ -380,6 +455,24 @@ func (g *gen) emitAll() error {
 		}
 		ifaceMethods[it.ifaceKey] = ms
 		it.typeName = "$go.itabtype." + sanitize(it.ifaceKey)
+	}
+	for ifaceKey := range g.ifaces {
+		if _, ok := ifaceMethods[ifaceKey]; ok {
+			continue
+		}
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil && ifaceKey == "error" {
+			iface = errorInterface()
+		}
+		if iface == nil || iface.Empty() {
+			continue
+		}
+		n := iface.NumMethods()
+		ms := make([]*types.Func, n)
+		for i := 0; i < n; i++ {
+			ms[i] = iface.Method(i)
+		}
+		ifaceMethods[ifaceKey] = ms
 	}
 	for ifaceKey, ms := range ifaceMethods {
 		if err := g.emitItabType(ifaceKey, ms); err != nil {
@@ -399,16 +492,42 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 	if g.mod.LookupGlobal(tr.global) != nil {
 		return nil
 	}
-	// Minimal descriptor: id, kind, name=null, extra=null.
-	// Per-type equal lives in $go.dispatchEq (keeps $go.type at 4 fields).
+	// Slice/map/pointer extras embed global.get of element descriptors in their
+	// init, so those deps must appear earlier in the globals list.
+	switch tr.kind {
+	case KindSlice, KindArray, KindPointer:
+		if ek, _ := g.elemOf(tr); ek != "" {
+			if dep := g.types[ek]; dep != nil {
+				if err := g.emitTypeGlobal(dep); err != nil {
+					return err
+				}
+			}
+		}
+	case KindMap:
+		if tr.goType != nil {
+			if m, ok := tr.goType.Underlying().(*types.Map); ok {
+				for _, t := range []types.Type{m.Key(), m.Elem()} {
+					if dep := g.types[TypeKey(t)]; dep != nil {
+						if err := g.emitTypeGlobal(dep); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	// Keep $go.type at 4 fields (empty_main size budget). Heavy metadata in $extra.
+	// Extra structs subtype $go.object — pass them directly (no ref.cast: Wasm
+	// constant initializers disallow cast).
+	extra := g.emitTypeExtra(tr)
 	init := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.type"},
 		Args: []ir.Expr{
 			&ir.Const{Op: ir.OpI32Const, I64: int64(tr.id)},
 			&ir.Const{Op: ir.OpI32Const, I64: int64(tr.kind)},
-			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.string"}},
-			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}},
+			g.nameExpr(tr),
+			extra,
 		},
 	}
 	g.mod.Globals = append(g.mod.Globals, &ir.Global{
@@ -418,6 +537,51 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 		Init: init,
 	})
 	return nil
+}
+
+// discoverExtraDeps registers type keys that extras will need, without emitting.
+func (g *gen) discoverExtraDeps(tr *typeRec) {
+	if tr.goType == nil {
+		return
+	}
+	switch tr.kind {
+	case KindStruct:
+		st, _ := g.structShape(tr)
+		if st == nil {
+			return
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			if isZeroSizeType(f.Type()) {
+				continue
+			}
+			fk := TypeKey(f.Type())
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = f.Type()
+			}
+		}
+	case KindSlice, KindArray, KindPointer:
+		ek, et := g.elemOf(tr)
+		if ek != "" {
+			g.needTypeKey(ek)
+			if t := g.types[ek]; t != nil && t.goType == nil {
+				t.goType = et
+			}
+		}
+	case KindMap:
+		if m, ok := tr.goType.Underlying().(*types.Map); ok {
+			kk, ek := TypeKey(m.Key()), TypeKey(m.Elem())
+			g.needTypeKey(kk)
+			g.needTypeKey(ek)
+			if t := g.types[kk]; t != nil && t.goType == nil {
+				t.goType = m.Key()
+			}
+			if t := g.types[ek]; t != nil && t.goType == nil {
+				t.goType = m.Elem()
+			}
+		}
+	}
 }
 
 func (g *gen) emitEqualFunc(tr *typeRec) error {
@@ -638,6 +802,13 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{a, b}}
 		case types.String:
 			return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{a, b}}
+		case types.UnsafePointer:
+			// anyref — reference identity, not i32.
+			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+			return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{b}},
+			}}
 		default:
 			return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{a, b}}
 		}
@@ -823,11 +994,57 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 	for i := 0; i < msig.Params().Len(); i++ {
 		callArgs = append(callArgs, &ir.Name{Raw: fmt.Sprintf("a%d", i), Var: params[i+1]})
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	var call ir.Expr
+	// Promoted method from an embedded interface: call through the itab.
+	if _, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+		ifaceKey := TypeKey(recvGo)
+		methodIdx := 0
+		if iface, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+			for i := 0; i < iface.NumMethods(); i++ {
+				if iface.Method(i).Name() == m.Name() {
+					methodIdx = i
+					break
+				}
+			}
+		}
+		fnSig := "$go.ifacefn." + sanitize(ifaceKey) + "." + m.Name()
+		g.ensureIfaceFnType(fnSig, m)
+		var res ir.Type
+		if len(results) > 0 {
+			res = results[0]
+		}
+		call = &ir.Instr{
+			Op:     ir.OpIfaceCall,
+			Type:   res,
+			Type2:  &ir.Ref{Named: "$go.itabtype." + sanitize(ifaceKey)},
+			Global: ifaceKey,
+			Func:   m.Name(),
+			Field:  strconv.Itoa(methodIdx),
+			Str:    fnSig,
+			Args:   callArgs,
+		}
+	} else {
+		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	}
 	if len(results) == 0 {
 		stmts = append(stmts, &ir.ExprStmt{X: call}, &ir.Return{})
 	} else {
-		stmts = append(stmts, &ir.Return{Results: []ir.Expr{call}})
+		// Assign call to N temps typed as ifacefn results. Call may produce a
+		// more specific ref ([]byte vs any); cast on the return edge.
+		temps := make([]*ir.Temp, len(results))
+		lhs := make([]ir.Dest, len(results))
+		rets := make([]ir.Expr, len(results))
+		for i, rt := range results {
+			temps[i] = &ir.Temp{Name: fmt.Sprintf("%%wr%d", i), Typ: rt}
+			lhs[i] = ir.Dest{Temp: temps[i], Name: temps[i].Name}
+			var ex ir.Expr = &ir.Name{Raw: temps[i].Name, Temp: temps[i]}
+			if _, ok := rt.(*ir.Ref); ok {
+				ex = &ir.Instr{Op: ir.OpRefCast, Type: rt, Args: []ir.Expr{ex}}
+			}
+			rets[i] = ex
+		}
+		stmts = append(stmts, &ir.Assign{Lhs: lhs, Rhs: call})
+		stmts = append(stmts, &ir.Return{Results: rets})
 	}
 	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
 		Name:    name,
@@ -852,14 +1069,31 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 		baseIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
 	if isPointer(concrete) {
-		// *Struct: data is already struct ref.
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
+		elem := derefIfPtr(concrete)
+		if isStruct(elem) {
+			// *Struct: data is already the struct object ref.
+			expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
+		} else {
+			// *scalar / *string / *slice: data is the fat pointer.
+			ptrIR, _ := mapTypeApprox(concrete)
+			expr = &ir.Instr{Op: ir.OpRefCast, Type: ptrIR, Args: []ir.Expr{expr}}
+		}
 		cur = concrete
 	} else if isStruct(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 	} else {
-		// Scalar boxed — leave as any; method wrappers for scalars uncommon.
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		// Scalar concrete types are stored as $go.box.{i32,i64,f32,f64}.
+		boxName, elem := scalarBoxOf(wantIR)
+		if boxName == "" {
+			boxName, elem = scalarBoxOf(baseIR)
+		}
+		if boxName == "" {
+			return nil, nil, fmt.Errorf("desc: cannot unbox scalar receiver %s", concrete)
+		}
+		boxTy := &ir.Ref{Named: boxName}
+		boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
+		expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
+		_ = elem
 		return stmts, expr, nil
 	}
 
@@ -924,7 +1158,7 @@ func TypeKey(t types.Type) string {
 	case *types.Named:
 		pkg := ""
 		if t.Obj().Pkg() != nil {
-			pkg = t.Obj().Pkg().Name() + "."
+			pkg = pkgIRPrefix(t.Obj().Pkg()) + "."
 		}
 		suffix := ""
 		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
@@ -973,13 +1207,24 @@ func TypeGlobal(t types.Type) string {
 	return "$go.type." + TypeKey(t)
 }
 
+func pkgIRPrefix(pkg *types.Package) string {
+	if pkg == nil {
+		return "main"
+	}
+	if pkg.Name() == "main" {
+		return "main"
+	}
+	path := pkg.Path()
+	if path == "" || path == pkg.Name() {
+		return pkg.Name()
+	}
+	return strings.ReplaceAll(path, "/", ".")
+}
+
 func methodIRName(fn *types.Func) string {
 	sig := fn.Type().(*types.Signature)
 	recv := sig.Recv()
-	pkg := "main"
-	if fn.Pkg() != nil {
-		pkg = fn.Pkg().Name()
-	}
+	pkg := pkgIRPrefix(fn.Pkg())
 	if recv == nil {
 		return pkg + "." + fn.Name()
 	}
@@ -1047,16 +1292,79 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 		if _, ok := elem.(*types.Struct); ok {
 			return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 		}
-		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+		// *string / *int / *[]T → fat pointer ($go.ptr.ref / .i32 / …).
+		return &ir.Ref{Null: true, Named: "$go.ptr." + fatPtrKindApprox(elem)}, nil
 	case *types.Named:
 		if _, ok := t.Underlying().(*types.Struct); ok {
 			return &ir.Ref{Null: true, Named: structName(t)}, nil
 		}
 		return mapTypeApprox(t.Underlying())
 	case *types.Slice:
+		return sliceIRApprox(t.Elem()), nil
+	case *types.Array:
+		// Rare as a method param; treat like a ref.
 		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	case *types.Map, *types.Chan:
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	case *types.Signature:
+		// Func values are (ref null $go.clos) — see design 03 / M5.
+		return &ir.Ref{Null: true, Named: "$go.clos"}, nil
 	}
 	return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+}
+
+// fatPtrKindApprox mirrors lower.fatPtrKind for descriptor wrappers.
+func fatPtrKindApprox(elem types.Type) string {
+	elem = types.Unalias(elem)
+	switch u := elem.Underlying().(type) {
+	case *types.Basic:
+		switch u.Kind() {
+		case types.Int64, types.Uint64:
+			return "i64"
+		case types.Float32:
+			return "f32"
+		case types.Float64:
+			return "f64"
+		case types.String, types.UnsafePointer,
+			types.Complex64, types.Complex128, types.UntypedComplex:
+			return "ref"
+		default:
+			return "i32"
+		}
+	case *types.Slice, *types.Pointer, *types.Map, *types.Chan, *types.Signature, *types.Interface,
+		*types.Struct, *types.Array:
+		return "ref"
+	case *types.Named:
+		return fatPtrKindApprox(u.Underlying())
+	}
+	return "ref"
+}
+
+// sliceIRApprox maps []T to the WasmGC slice header name used by the lowerer.
+func sliceIRApprox(elem types.Type) ir.Type {
+	elem = types.Unalias(elem)
+	if b, ok := elem.Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Uint8: // also types.Byte
+			return &ir.Ref{Null: true, Named: "$go.slice.i8"}
+		case types.Int16, types.Uint16:
+			return &ir.Ref{Null: true, Named: "$go.slice.i16"}
+		case types.Int, types.Int32, types.Uint, types.Uint32, types.Uintptr, types.Bool:
+			return &ir.Ref{Null: true, Named: "$go.slice.i32"}
+		case types.Int64, types.Uint64:
+			return &ir.Ref{Null: true, Named: "$go.slice.i64"}
+		case types.Float32:
+			return &ir.Ref{Null: true, Named: "$go.slice.f32"}
+		case types.Float64:
+			return &ir.Ref{Null: true, Named: "$go.slice.f64"}
+		case types.String:
+			return &ir.Ref{Null: true, Named: "$go.slice.go.string"}
+		}
+	}
+	if _, ok := elem.Underlying().(*types.Interface); ok {
+		return &ir.Ref{Null: true, Named: "$go.slice.go.iface"}
+	}
+	return &ir.Ref{Null: true, Heap: ir.HeapAny}
 }
 
 func structName(t *types.Named) string {
@@ -1123,6 +1431,8 @@ func runtimeStructAliasName(t *types.Named) string {
 		return "$go.semaRoot"
 	case "semaEntry":
 		return "$go.semaEntry"
+	case "Rtype":
+		return "$go.type"
 	default:
 		return ""
 	}
@@ -1321,6 +1631,21 @@ func findTypeByKey(pkg *types.Package, key string) types.Type {
 		}
 	}
 	return nil
+}
+
+// scalarBoxOf returns the $go.box.* type and element type for a scalar IR type.
+func scalarBoxOf(t ir.Type) (boxName string, elem ir.Type) {
+	switch t {
+	case ir.TypeI32, ir.TypeI8, ir.TypeI16:
+		return "$go.box.i32", ir.TypeI32
+	case ir.TypeI64:
+		return "$go.box.i64", ir.TypeI64
+	case ir.TypeF32:
+		return "$go.box.f32", ir.TypeF32
+	case ir.TypeF64:
+		return "$go.box.f64", ir.TypeF64
+	}
+	return "", nil
 }
 
 func isPointer(t types.Type) bool {
