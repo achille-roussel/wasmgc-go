@@ -891,6 +891,20 @@ func isPtrToArray(t types.Type) bool {
 	return ok
 }
 
+// arrayRangeLen returns N for [N]T or *[N]T (range length is N even if nil).
+func arrayRangeLen(t types.Type) (int64, bool) {
+	t = types.Unalias(t)
+	if a, ok := t.Underlying().(*types.Array); ok {
+		return a.Len(), true
+	}
+	if p, ok := t.Underlying().(*types.Pointer); ok {
+		if a, ok := types.Unalias(p.Elem()).Underlying().(*types.Array); ok {
+			return a.Len(), true
+		}
+	}
+	return 0, false
+}
+
 func arrayElemType(t types.Type) types.Type {
 	if a, ok := types.Unalias(t).Underlying().(*types.Array); ok {
 		return a.Elem()
