@@ -1,0 +1,1 @@
+# container/ring — per-test skips for wasmgc-go test (format: <TestName> — <reason>)

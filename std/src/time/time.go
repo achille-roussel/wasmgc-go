@@ -106,6 +106,12 @@ func (t Time) Nanosecond() int { return int(t.ext % 1e9) }
 // UTC returns t with location UTC (no-op location in v1 rewrite).
 func (t Time) UTC() Time { return t }
 
+// Format returns a textual representation of t. Stub: UnixNano decimal
+// (enough for io/fs.FormatFileInfo which needs a Format method).
+func (t Time) Format(layout string) string {
+	return string(t.AppendFormat(nil, layout))
+}
+
 // AppendFormat appends a textual representation of t to b.
 // Stub: appends UnixNano decimal; full layout parsing is deferred.
 func (t Time) AppendFormat(b []byte, layout string) []byte {

@@ -1,0 +1,26 @@
+# math/bits — wasmgc-go test skips
+TestAdd64OverflowPanic — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestAddSubUint — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestAddSubUint32 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestAddSubUint64 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDiv32PanicOverflow — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDiv32PanicZero — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDiv64PanicOverflow — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDiv64PanicZero — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDivPanicOverflow — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestDivPanicZero — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestLeadingZeros — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestLen — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestMulDiv — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestMulDiv32 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestMulDiv64 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestOnesCount — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestRem32 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestRem32Overflow — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestRem64 — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestRem64Overflow — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestReverse — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestReverseBytes — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestRotateLeft — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestSub64OverflowPanic — wasm/runtime: bits tables, Div panic, or uint64→uint
+TestTrailingZeros — wasm/runtime: bits tables, Div panic, or uint64→uint

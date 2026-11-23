@@ -1,0 +1,15 @@
+# unicode/utf8 — wasmgc-go test skips
+TestAppendRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestDecodeInvalidSequence — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestDecodeRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestDecodeSurrogateRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestEncodeRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestFullRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestNegativeRune — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestRuneCount — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestRuneCountNonASCIIAllocation — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestRuneLen — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestRuntimeConversion — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestSequencing — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestValid — wasm: package test tables/init hit non-defaultable array.new_fixed
+TestValidRune — wasm: package test tables/init hit non-defaultable array.new_fixed

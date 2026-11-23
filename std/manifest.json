@@ -243,6 +243,14 @@
       "tier": "rewrite",
       "notes": "M9: Args from host getArgc/getArg; Write returns PathError/ENOSYS; stdio via syscall"
     },
+    "testing": {
+      "tier": "rewrite",
+      "notes": "M10: minimal T/M/MainStart for wasmgc-go test; no testdeps/fuzz"
+    },
+    "testing/internal/testdeps": {
+      "tier": "out",
+      "notes": "M10: avoided; MainStart takes no testDeps"
+    },
     "plugin": {
       "tier": "out"
     },

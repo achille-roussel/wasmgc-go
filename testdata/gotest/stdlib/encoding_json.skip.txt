@@ -1,6 +1,0 @@
-# encoding/json — reflect.StructOf sites outside the closed constructor universe B.
-# See docs/design/05-unsafe-and-reflect.md.
-
-BenchmarkTypeFieldsCache — reflect.StructOf (encoding/json/bench_test.go; field list not a constant struct in B)
-TestBenchmarkUnmarshalUnknown — reflect.StructOf (encoding/json/v2/fold_test.go; Name0… field list not constant)
-Structs/OmitEmpty/PathologicalBreadth — reflect.StructOf (encoding/json/v2/arshal_test.go; X0…X99 field list not constant)

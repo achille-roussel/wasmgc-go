@@ -17,6 +17,10 @@ go test ./testdata/gotest/ -count=1 -short
 go test ./testdata/gotest/ -count=1 -short=false
 # or
 WASMGC_GOTEST=1 go test ./testdata/gotest/ -count=1 -short
+
+# Stdlib package tests (wasmgc-go test)
+go test ./testdata/gotest/ -run TestStdlibPackages -count=1 -short
+WASMGC_STDLIB_TEST=1 go test ./testdata/gotest/ -run TestStdlibPackages -count=1
 ```
 
 ## What runs
@@ -56,6 +60,7 @@ Per-package skips (including historical StructOf entries) live under `stdlib/`.
 |---|---|
 | `WASMGC_GOROOT` | Go source tree with `test/` (preferred) |
 | `GOROOT` | Fallback source tree |
-| `WASMGC_GOTEST=1` | Force full suite even under `-short` |
+| `WASMGC_GOTEST=1` | Force full $GOROOT/test suite even under `-short` |
+| `WASMGC_STDLIB_TEST=1` | Force full packages.txt stdlib suite even under `-short` |
 | `WASMGC_UPDATE_SKIP=1` | Allow `-update-skip` to rewrite `skip.txt` |
 | `WASMGC_SKIP_BASE` | Git ref for skip growth comparison (default `origin/main`) |

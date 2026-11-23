@@ -93,6 +93,32 @@ func Write(name string, data []byte, perm FileMode) error {
 	return &PathError{Op: "write", Path: name, Err: syscall.ENOSYS}
 }
 
+// Open opens the named file for reading. v1 has no host filesystem.
+func Open(name string) (*File, error) {
+	return nil, &PathError{Op: "open", Path: name, Err: syscall.ENOENT}
+}
+
+// IsNotExist reports whether err indicates a file does not exist.
+func IsNotExist(err error) bool {
+	return isPathError(err, syscall.ENOENT)
+}
+
+func isPathError(err error, errno syscall.Errno) bool {
+	for err != nil {
+		if pe, ok := err.(*PathError); ok {
+			if e, ok := pe.Err.(syscall.Errno); ok && e == errno {
+				return true
+			}
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
 // Ensure File implements io.Reader / io.Writer.
 var (
 	_ io.Reader = (*File)(nil)

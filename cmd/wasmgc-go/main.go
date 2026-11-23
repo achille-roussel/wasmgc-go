@@ -16,6 +16,8 @@ func main() {
 		os.Exit(cmdBuild(os.Args[2:]))
 	case "run":
 		os.Exit(cmdRun(os.Args[2:]))
+	case "test":
+		os.Exit(cmdTest(os.Args[2:]))
 	case "dump-ir":
 		os.Exit(cmdDumpIR(os.Args[2:]))
 	case "version":
@@ -37,6 +39,7 @@ func usage() {
 commands:
   build [-o out] [-target node|browser] [-tags a,b] [-names] [-vet-fail] [package]
   run   [-tags a,b] [-vet-fail] [package] [-- args]
+  test  [-v] [-short] [-run regexp] [-tags a,b] [packages…]
   dump-ir [-o file] [-tags a,b] [package]
   version
   std check       type-check and unsafe-check manifest-supported packages

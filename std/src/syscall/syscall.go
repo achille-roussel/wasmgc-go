@@ -85,6 +85,8 @@ func Environ() []string { return nil }
 
 func Getwd() (string, error) { return "", ENOSYS }
 
+// Exit terminates the process. v1 panics with a marker the host may map to
+// process.exit; prefer returning from main when possible.
 func Exit(code int) { panic("syscall.Exit") }
 
 func Getpid() int  { return 1 }
