@@ -10,6 +10,7 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
 	"github.com/achille-roussel/wasmgc-go/internal/lower"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 	"github.com/achille-roussel/wasmgc-go/internal/rtlink"
 	"github.com/achille-roussel/wasmgc-go/internal/stdlib"
 )
@@ -98,6 +99,11 @@ func Compile(opts Options) (*Result, error) {
 		}
 		warnings = append(warnings, d)
 	}
+	tab, err := mono.Program(prog)
+	if err != nil {
+		return nil, err
+	}
+	prog.Mono = tab
 	mod, err := lowerProgram(b, prog, opts)
 	if err != nil {
 		return nil, err
@@ -146,6 +152,11 @@ func DumpIR(opts Options) (string, *Result, error) {
 		}
 		warnings = append(warnings, d)
 	}
+	tab, err := mono.Program(prog)
+	if err != nil {
+		return "", nil, err
+	}
+	prog.Mono = tab
 	mod, err := lowerProgram(b, prog, opts)
 	if err != nil {
 		return "", nil, err
@@ -162,7 +173,11 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if isStubLowerer(b.Lower) {
 		return b.Lower.Package(prog.Packages, prog.Main)
 	}
-	mod, err := lower.PackageHigh(prog.Packages, prog.Main)
+	var tab *mono.Table
+	if prog.Mono != nil {
+		tab, _ = prog.Mono.(*mono.Table)
+	}
+	mod, err := lower.PackageHighMono(prog.Packages, prog.Main, tab)
 	if err != nil {
 		return nil, err
 	}

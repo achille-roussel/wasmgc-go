@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 type pkgLower struct {
@@ -18,6 +19,8 @@ type pkgLower struct {
 	info  *types.Info
 	mod   *ir.Module
 	meta  *meta
+	mono  *mono.Table
+	subst mono.Subst // active while lowering a specialization
 
 	initCount int
 	globals   map[types.Object]*ir.Global // package-level vars
@@ -114,10 +117,10 @@ func (l *pkgLower) lower() error {
 		l.meta.initOrder = append(l.meta.initOrder, name)
 	}
 	for _, fd := range funcs {
-		// Skip generic functions (e.g. abi.Escape): unused instantiations must
-		// not fail the build. Monomorphization is a later milestone.
+		// Skip generic origins: specialized copies are emitted by emitMonoInstances.
+		// Methods of generic types have TypeParams on the receiver, not the method.
 		if obj, _ := l.info.Defs[fd.decl.Name].(*types.Func); obj != nil {
-			if sig, _ := obj.Type().(*types.Signature); sig != nil && sig.TypeParams().Len() > 0 {
+			if isGenericOrigin(obj) {
 				continue
 			}
 		}
@@ -139,7 +142,7 @@ func (l *pkgLower) lower() error {
 		}
 		l.mod.Funcs = append(l.mod.Funcs, fn)
 	}
-	return nil
+	return l.emitMonoInstances()
 }
 
 func (l *pkgLower) newInitLower() *funcLower {
@@ -370,7 +373,7 @@ func (l *pkgLower) newFuncLower(fd *ast.FuncDecl, irName string) (*funcLower, er
 	if sig == nil {
 		return nil, l.errorf(fd, "no signature for %s", fd.Name.Name)
 	}
-	if sig.TypeParams().Len() > 0 {
+	if isGenericOrigin(obj) {
 		return nil, l.errorf(fd, "generic function %s not supported (see internal/mono)", irName)
 	}
 

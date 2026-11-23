@@ -9,6 +9,7 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/escape"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 // Package lowers a whole type-checked program to low IR ready for codegen.
@@ -39,6 +40,11 @@ func Package(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
 // pipeline can append rewrite-runtime funcs (stream F) before expanding
 // string literals.
 func PackageHigh(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
+	return PackageHighMono(pkgs, main, nil)
+}
+
+// PackageHighMono is PackageHigh with a monomorphization table from mono.Program.
+func PackageHighMono(pkgs []*load.Package, main *load.Package, tab *mono.Table) (*ir.Module, error) {
 	if main == nil {
 		return nil, fmt.Errorf("lower.Package: no main package")
 	}
@@ -51,12 +57,12 @@ func PackageHigh(pkgs []*load.Package, main *load.Package) (*ir.Module, error) {
 			continue
 		}
 		seen[pkg] = true
-		if err := lowerLoadPackage(mod, md, pkg); err != nil {
+		if err := lowerLoadPackage(mod, md, pkg, tab); err != nil {
 			return nil, err
 		}
 	}
 	if !seen[main] {
-		if err := lowerLoadPackage(mod, md, main); err != nil {
+		if err := lowerLoadPackage(mod, md, main, tab); err != nil {
 			return nil, err
 		}
 	}
@@ -89,7 +95,7 @@ func AppendFiles(mod *ir.Module, fset *token.FileSet, files []*ast.File, pkg *ty
 	return l.lower()
 }
 
-func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
+func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package, tab *mono.Table) error {
 	if pkg.Types == nil || pkg.Info == nil {
 		return fmt.Errorf("lower.Package: package %s is not type-checked", pkg.PkgPath)
 	}
@@ -107,6 +113,7 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
 		info:  pkg.Info,
 		mod:   mod,
 		meta:  md,
+		mono:  tab,
 	}
 	return l.lower()
 }

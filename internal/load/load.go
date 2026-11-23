@@ -48,6 +48,10 @@ type Program struct {
 	Packages []*Package // dependency-first order from go list -deps
 	Main     *Package
 	Sizes    types.Sizes
+	// Mono holds monomorphization results after pipeline runs mono.Program.
+	// Typed as any to avoid an import cycle (mono imports load); concrete
+	// type is *mono.Table.
+	Mono any
 }
 
 // Load resolves, re-filters, parses, and type-checks a package and its deps.
@@ -181,6 +185,7 @@ func loadFiles(fset *token.FileSet, dir, name, pkgPath string, files []string, f
 			Selections: make(map[*ast.SelectorExpr]*types.Selection),
 			Implicits:  make(map[ast.Node]types.Object),
 			Scopes:     make(map[ast.Node]*types.Scope),
+			Instances:  make(map[*ast.Ident]types.Instance),
 		},
 	}
 	var err error
@@ -371,6 +376,7 @@ func (imp *programImporter) loadOne(lp *listPackage) (*Package, error) {
 			Selections: make(map[*ast.SelectorExpr]*types.Selection),
 			Implicits:  make(map[ast.Node]types.Object),
 			Scopes:     make(map[ast.Node]*types.Scope),
+			Instances:  make(map[*ast.Ident]types.Instance),
 		},
 	}
 	pkg.Syntax, err = parseFiles(imp.fset, goFiles)
