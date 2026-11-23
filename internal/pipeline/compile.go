@@ -208,6 +208,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := lower.RuntimeOps(mod); err != nil {
 		return nil, err
 	}
+	// Drop runtime (and other) funcs not reachable from exports / ref.func
+	// sites so GOROOT import "runtime" cannot keep unused map/select/Frames.
+	ir.PruneUnreachable(mod)
 	return mod, nil
 }
 

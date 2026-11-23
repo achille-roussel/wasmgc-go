@@ -21,6 +21,7 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	}
 	if mod.LookupFunc("runtime.makemap") != nil && mod.LookupFunc("runtime.mapAccess") != nil {
 		fillFloatBits(mod)
+		specializeMapHashes(mod)
 		return nil
 	}
 	if rewriteDir == "" {
@@ -80,6 +81,7 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 		return fmt.Errorf("rtlink: lower map runtime: %w", err)
 	}
 	fillFloatBits(mod)
+	specializeMapHashes(mod)
 	return nil
 }
 
@@ -151,5 +153,213 @@ func fillFloatBits(mod *ir.Module) {
 			}},
 		}}
 	}
+}
+
+// hashHelperFuncs are the per-type mapKeyHash branches (and their callees).
+var hashHelperFuncs = []string{
+	"runtime.hashBool",
+	"runtime.hashInt",
+	"runtime.hashInt64",
+	"runtime.hashUint",
+	"runtime.hashUint64",
+	"runtime.hashFloat32",
+	"runtime.hashFloat64",
+	"runtime.hashString",
+	"runtime.f32hash",
+	"runtime.f64hash",
+	"runtime.strhash",
+	"runtime.f32bits",
+	"runtime.f64bits",
+}
+
+// specializeMapHashes keeps only hash helpers for key types actually used in
+// OpMap* (Instr.Str = desc.TypeKey). map[int] programs drop float/string/bool
+// hashers that mapKeyHash would otherwise keep live for DCE.
+func specializeMapHashes(mod *ir.Module) {
+	if mod == nil || mod.LookupFunc("runtime.mapKeyHash") == nil {
+		return
+	}
+	keep, ok := scanMapKeyHashKeep(mod)
+	if !ok {
+		return // unknown keys — leave the full cascade
+	}
+	rewriteMapKeyHash(mod, keep)
+	drop := map[string]bool{}
+	for _, name := range hashHelperFuncs {
+		if !keep[name] {
+			drop[name] = true
+		}
+	}
+	if len(drop) == 0 {
+		return
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if drop[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
+// scanMapKeyHashKeep returns the set of runtime.hash* (and callees) to keep.
+// ok is false when no typed map op was found (keep everything).
+func scanMapKeyHashKeep(mod *ir.Module) (keep map[string]bool, ok bool) {
+	keys := map[string]bool{}
+	found := false
+	for _, f := range mod.Funcs {
+		walkExprs(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			switch in.Op {
+			case ir.OpMapMake, ir.OpMapGet, ir.OpMapSet, ir.OpMapDelete,
+				ir.OpMapLen, ir.OpMapIter, ir.OpMapNext:
+				// Str holds desc.TypeKey(key) except comma-ok ("ok") and clear.
+				if in.Str != "" && in.Str != "ok" && in.Str != "clear" {
+					keys[in.Str] = true
+					found = true
+				}
+			}
+		})
+	}
+	if !found {
+		return nil, false
+	}
+	keep = map[string]bool{}
+	for k := range keys {
+		for _, h := range hashHelpersForKey(k) {
+			keep[h] = true
+		}
+	}
+	return keep, true
+}
+
+func hashHelpersForKey(typeKey string) []string {
+	switch typeKey {
+	case "bool":
+		return []string{"runtime.hashBool"}
+	case "int", "int8", "int16", "int32":
+		return []string{"runtime.hashInt"}
+	case "int64":
+		return []string{"runtime.hashInt64"}
+	case "uint", "uint8", "uint16", "uint32", "uintptr", "byte", "rune":
+		return []string{"runtime.hashUint"}
+	case "uint64":
+		return []string{"runtime.hashUint64"}
+	case "float32":
+		return []string{"runtime.hashFloat32", "runtime.f32hash", "runtime.f32bits"}
+	case "float64":
+		return []string{"runtime.hashFloat64", "runtime.f64hash", "runtime.f64bits"}
+	case "string":
+		return []string{"runtime.hashString", "runtime.strhash"}
+	default:
+		// Pointers, structs, arrays: mapKeyHash falls through to key==key only.
+		return nil
+	}
+}
+
+// rewriteMapKeyHash drops cascade arms whose helpers are not in keep.
+func rewriteMapKeyHash(mod *ir.Module, keep map[string]bool) {
+	f := mod.LookupFunc("runtime.mapKeyHash")
+	if f == nil || f.Body == nil {
+		return
+	}
+	seq, ok := f.Body.(*ir.Seq)
+	if !ok {
+		return
+	}
+	var out []ir.Stmt
+	for i := 0; i < len(seq.Stmts); i++ {
+		s := seq.Stmts[i]
+		as, isAssign := s.(*ir.Assign)
+		if !isAssign || len(as.Lhs) != 2 {
+			out = append(out, s)
+			continue
+		}
+		in, isCall := as.Rhs.(*ir.Instr)
+		if !isCall || in.Op != ir.OpCall || !isHashHelperCall(in.Func) {
+			out = append(out, s)
+			continue
+		}
+		// Cascade arm: call hashX; h=; ok=; if ok { return h }
+		arm := []ir.Stmt{s}
+		j := i + 1
+		for j < len(seq.Stmts) && j < i+4 {
+			arm = append(arm, seq.Stmts[j])
+			if _, isIf := seq.Stmts[j].(*ir.If); isIf {
+				j++
+				break
+			}
+			j++
+		}
+		if keep[in.Func] {
+			out = append(out, arm...)
+		}
+		// Drop unused VarDefs later by rebuilding without them — keep
+		// referenced locals only via a second pass on `out`.
+		i = j - 1
+	}
+	f.Body = &ir.Seq{Stmts: stripUnusedHashLocals(out)}
+}
+
+func isHashHelperCall(name string) bool {
+	switch name {
+	case "runtime.hashBool", "runtime.hashInt", "runtime.hashInt64",
+		"runtime.hashUint", "runtime.hashUint64",
+		"runtime.hashFloat32", "runtime.hashFloat64", "runtime.hashString":
+		return true
+	}
+	return false
+}
+
+func stripUnusedHashLocals(stmts []ir.Stmt) []ir.Stmt {
+	used := map[string]bool{}
+	markExpr := func(e ir.Expr) {
+		if e == nil {
+			return
+		}
+		walkExprTree(e, func(x ir.Expr) {
+			if n, ok := x.(*ir.Name); ok && n.Var != nil {
+				used[n.Var.Name] = true
+			}
+		})
+	}
+	markDest := func(d ir.Dest) {
+		if d.Var != nil {
+			used[d.Var.Name] = true
+		}
+	}
+	for _, s := range stmts {
+		switch s := s.(type) {
+		case *ir.Assign:
+			for _, d := range s.Lhs {
+				markDest(d)
+			}
+			markExpr(s.Rhs)
+		case *ir.Return:
+			for _, e := range s.Results {
+				markExpr(e)
+			}
+		case *ir.ExprStmt:
+			markExpr(s.X)
+		case *ir.If:
+			markExpr(s.Cond)
+			walkExprs(s.Then, markExpr)
+			walkExprs(s.Else, markExpr)
+		}
+	}
+	out := stmts[:0]
+	for _, s := range stmts {
+		if vd, ok := s.(*ir.VarDef); ok {
+			if vd.Var != nil && !used[vd.Var.Name] {
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 

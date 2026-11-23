@@ -421,11 +421,13 @@ func (fl *funcLower) mapLiteral(e *ast.CompositeLit, irt ir.Type) (ir.Expr, []ir
 	hint := int64(len(e.Elts))
 	tmp := fl.newVar("mlit", irt)
 	var stmts []ir.Stmt
-	stmts = append(stmts, fl.assignVar(tmp, &ir.Instr{
+	makeIn := &ir.Instr{
 		Op:   ir.OpMapMake,
 		Type: irt,
 		Args: []ir.Expr{fl.i32const(hint)},
-	}))
+		Str:  desc.TypeKey(m.Key()),
+	}
+	stmts = append(stmts, fl.assignVar(tmp, makeIn))
 	emptyIface := types.NewInterfaceType(nil, nil)
 	for _, el := range e.Elts {
 		kv, ok := el.(*ast.KeyValueExpr)

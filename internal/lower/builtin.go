@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -219,7 +220,11 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			}
 			stmts = append(stmts, hstmts...)
 		}
-		return &ir.Instr{Op: ir.OpMapMake, Type: irt, Args: []ir.Expr{hint}}, stmts, nil
+		in := &ir.Instr{Op: ir.OpMapMake, Type: irt, Args: []ir.Expr{hint}}
+		if key, _ := mapKeyElem(resTy); key != nil {
+			in.Str = desc.TypeKey(key)
+		}
+		return in, stmts, nil
 	}
 	if len(e.Args) < 2 {
 		return nil, nil, fl.errorf(e, "make needs type and length")

@@ -383,9 +383,16 @@ func (l *pkgLower) mapArray(t *types.Array) (ir.Type, error) {
 
 func (l *pkgLower) mapNamedStruct(t *types.Named) (ir.Type, error) {
 	if alias := runtimeStructAlias(t); alias != "" {
-		l.ensureChanBaseTypes()
-		if alias == "$go.hmap" || alias == "$go.mapIter" {
+		// Only pull the layouts this alias needs. Calling ensureChanBaseTypes
+		// for hmap/mapIter used to intern chan/select/sema types into every
+		// map-only module (~type-section bloat).
+		switch alias {
+		case "$go.hmap", "$go.mapIter":
 			l.ensureMapBaseTypes()
+		case "$go.g", "$go.panicObj":
+			l.ensureGType()
+		default:
+			l.ensureChanBaseTypes()
 		}
 	}
 	name := structTypeName(t)

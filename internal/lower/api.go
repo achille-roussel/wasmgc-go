@@ -93,6 +93,13 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
 	if pkg.Types == nil || pkg.Info == nil {
 		return fmt.Errorf("lower.Package: package %s is not type-checked", pkg.PkgPath)
 	}
+	// Rewrite package runtime is linked on demand by rtlink.Ensure*
+	// (EnsureSched / EnsureMaps / EnsurePanic / EnsurePrint), same as
+	// -skip-stdlib. Lowering every GOROOT runtime file here (via sync's
+	// import "runtime") would keep map/select/Frames in mutex programs.
+	if pkg.PkgPath == "runtime" && pkg.Standard {
+		return nil
+	}
 	l := &pkgLower{
 		fset:  nil, // positions reported by package path
 		files: pkg.Syntax,
