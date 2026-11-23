@@ -225,4 +225,6 @@ These names are stable. Codegen and the runtime workstream share this list.
 | `runtime.printstring` / `printint` / `printnl` | the builtins |
 | `runtime.exit(code int32)` | host exit |
 
+**M3 note.** Until M5, slice/array index failures and `growslice` overflow are emitted as Wasm `unreachable` (trap), not as calls to `runtime.panicIndex` / `runtime.growslice`. Those symbols are reserved for M5 and are not synthesized by codegen today. Temporary print stubs remain in codegen (same as M2) until stream F lands `std/src/runtime`.
+
 `runtime.GOMAXPROCS` returns 1. `runtime.NumGoroutine` returns the count of goroutines that have been started and have not returned. `runtime.KeepAlive` is a call the escape pass treats as a use. `runtime.GC` is a no-op: the host collects when it collects.

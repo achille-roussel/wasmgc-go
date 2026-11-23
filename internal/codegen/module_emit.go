@@ -201,3 +201,48 @@ func (g *gen) emitFunc(f *ir.Func) (wasm.Code, error) {
 	}
 	return wasm.CodeFrom(fe.locals, fe.enc), nil
 }
+
+
+func (g *gen) addDeclarativeRefFuncs() {
+	seen := map[uint32]bool{}
+	var idxs []uint32
+	add := func(name string) {
+		idx, ok := g.funcs[name]
+		if !ok || seen[idx] {
+			return
+		}
+		seen[idx] = true
+		idxs = append(idxs, idx)
+	}
+	for _, f := range g.m.Funcs {
+		walkExprs(f.Body, func(e ir.Expr) {
+			if in, ok := e.(*ir.Instr); ok && in.Op == ir.OpRefFunc {
+				add(in.Func)
+			}
+		})
+	}
+	for _, gl := range g.m.Globals {
+		if gl.Init != nil {
+			walkInit(gl.Init, func(e ir.Expr) {
+				if in, ok := e.(*ir.Instr); ok && in.Op == ir.OpRefFunc {
+					add(in.Func)
+				}
+			})
+		}
+	}
+	if len(idxs) > 0 {
+		g.wm.AddDeclarativeFuncs(idxs...)
+	}
+}
+
+func walkInit(e ir.Expr, fn func(ir.Expr)) {
+	if e == nil {
+		return
+	}
+	fn(e)
+	if in, ok := e.(*ir.Instr); ok {
+		for _, a := range in.Args {
+			walkInit(a, fn)
+		}
+	}
+}

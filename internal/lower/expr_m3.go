@@ -102,7 +102,8 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				if err != nil {
 					return nil, nil, err
 				}
-				return fl.constVal(c.Val(), ty)
+				ex, err := fl.constVal(c.Val(), ty)
+				return ex, nil, err
 			}
 		}
 		return nil, nil, fl.errorf(e, "unsupported selector")

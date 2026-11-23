@@ -123,17 +123,19 @@ func (g *gen) build() error {
 	if g.needsMemory {
 		g.emitMemory()
 	}
-	if err := g.emitGlobals(); err != nil {
-		return err
-	}
-	if err := g.emitData(); err != nil {
-		return err
-	}
+	// Declare funcs before globals so class singletons can use ref.func in init.
 	if err := g.declareFuncs(); err != nil {
 		return err
 	}
 	// Always consider print intrinsics: rtlink body-less decls, or synth when missing.
 	if err := g.ensurePrintStubs(); err != nil {
+		return err
+	}
+	g.addDeclarativeRefFuncs()
+	if err := g.emitGlobals(); err != nil {
+		return err
+	}
+	if err := g.emitData(); err != nil {
 		return err
 	}
 	if err := g.emitFuncBodies(); err != nil {

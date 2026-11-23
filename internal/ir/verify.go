@@ -199,10 +199,12 @@ func (v *verifier) region(r Region) {
 				v.errorf(r.Cond.GetPos(), "if condition must be i32, got %s", ct)
 			}
 		}
+		// Outer temps are readable in both arms (they lower to function locals).
+		// Temps defined inside an arm do not escape: each arm gets a fresh clone.
 		saved := v.temps
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		v.region(r.Then)
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		if r.Else != nil {
 			v.region(r.Else)
 		}

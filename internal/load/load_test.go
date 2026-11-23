@@ -125,3 +125,20 @@ func TestWriteFakeGOROOT(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadUndottedModule(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module hello\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := load.Load(load.Config{Dir: dir, Pattern: "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prog.Main == nil || prog.Main.Name != "main" {
+		t.Fatalf("main: %+v", prog.Main)
+	}
+}
