@@ -131,7 +131,8 @@
       "notes": "Simple scalar Index; avoids switch-case side effects"
     },
     "internal/strconv": {
-      "tier": "vendor"
+      "tier": "vendor",
+      "overlays": ["deps.go"]
     },
     "internal/fmtsort": {
       "tier": "vendor"

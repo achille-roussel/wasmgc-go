@@ -56,6 +56,7 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 		prog:     prog,
 		types:    map[string]*typeRec{},
 		itabs:    map[string]*itabRec{},
+		ifaces:   map[string]bool{},
 		wrappers: map[string]bool{},
 		equals:   map[string]bool{},
 		boxes:    map[string]bool{},
@@ -103,6 +104,7 @@ type gen struct {
 	prog     *load.Program
 	types    map[string]*typeRec
 	itabs    map[string]*itabRec
+	ifaces   map[string]bool // iface keys needed for OpIfaceCall (itabtype)
 	wrappers map[string]bool
 	equals   map[string]bool
 	boxes    map[string]bool
@@ -209,7 +211,12 @@ func (g *gen) scanModule() {
 					// equality uses descriptors already registered via makes
 				}
 			case ir.OpIfaceCall:
-				// itabs registered via make
+				// Need itabtype layout even when no concrete itab was made yet
+				// (e.g. type-assert to Formatter then call Format).
+				if in.Global != "" {
+					g.ifaces[in.Global] = true
+					g.needTypeKey(in.Global)
+				}
 			}
 		})
 	}
@@ -388,7 +395,8 @@ func (g *gen) emitAll() error {
 	if err := g.emitDispatchEq(); err != nil {
 		return err
 	}
-	// Group itabs by iface for Wasm type.
+	// Group itabs by iface for Wasm type; also emit itabtypes for ifaces that
+	// are only called (OpIfaceCall) without a concrete make.
 	ifaceMethods := map[string][]*types.Func{}
 	for _, it := range g.itabs {
 		if it.iface == nil && it.ifaceKey == "error" {
@@ -406,6 +414,24 @@ func (g *gen) emitAll() error {
 		}
 		ifaceMethods[it.ifaceKey] = ms
 		it.typeName = "$go.itabtype." + sanitize(it.ifaceKey)
+	}
+	for ifaceKey := range g.ifaces {
+		if _, ok := ifaceMethods[ifaceKey]; ok {
+			continue
+		}
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil && ifaceKey == "error" {
+			iface = errorInterface()
+		}
+		if iface == nil || iface.Empty() {
+			continue
+		}
+		n := iface.NumMethods()
+		ms := make([]*types.Func, n)
+		for i := 0; i < n; i++ {
+			ms[i] = iface.Method(i)
+		}
+		ifaceMethods[ifaceKey] = ms
 	}
 	for ifaceKey, ms := range ifaceMethods {
 		if err := g.emitItabType(ifaceKey, ms); err != nil {
@@ -1021,7 +1047,7 @@ func TypeKey(t types.Type) string {
 	case *types.Named:
 		pkg := ""
 		if t.Obj().Pkg() != nil {
-			pkg = t.Obj().Pkg().Name() + "."
+			pkg = pkgIRPrefix(t.Obj().Pkg()) + "."
 		}
 		suffix := ""
 		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
@@ -1070,13 +1096,24 @@ func TypeGlobal(t types.Type) string {
 	return "$go.type." + TypeKey(t)
 }
 
+func pkgIRPrefix(pkg *types.Package) string {
+	if pkg == nil {
+		return "main"
+	}
+	if pkg.Name() == "main" {
+		return "main"
+	}
+	path := pkg.Path()
+	if path == "" || path == pkg.Name() {
+		return pkg.Name()
+	}
+	return strings.ReplaceAll(path, "/", ".")
+}
+
 func methodIRName(fn *types.Func) string {
 	sig := fn.Type().(*types.Signature)
 	recv := sig.Recv()
-	pkg := "main"
-	if fn.Pkg() != nil {
-		pkg = fn.Pkg().Name()
-	}
+	pkg := pkgIRPrefix(fn.Pkg())
 	if recv == nil {
 		return pkg + "." + fn.Name()
 	}

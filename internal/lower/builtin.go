@@ -3,6 +3,7 @@ package lower
 import (
 	"go/ast"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -38,7 +39,8 @@ func (fl *funcLower) builtinName(e *ast.CallExpr) string {
 
 func (fl *funcLower) isBuiltinCall(e *ast.CallExpr) bool {
 	switch fl.builtinName(e) {
-	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover", "close", "delete", "clear":
+	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover", "close", "delete", "clear",
+		"complex", "real", "imag", "min", "max", "copy":
 		return true
 	}
 	return false
@@ -145,6 +147,18 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 	case "clear":
 		st, err := fl.builtinClear(e)
 		return nil, st, err
+	case "complex":
+		return fl.builtinComplex(e, want)
+	case "real":
+		return fl.builtinRealImag(e, "real", want)
+	case "imag":
+		return fl.builtinRealImag(e, "imag", want)
+	case "min":
+		return fl.builtinMinMax(e, true, want)
+	case "max":
+		return fl.builtinMinMax(e, false, want)
+	case "copy":
+		return fl.builtinCopy(e, want)
 	case "panic":
 		return nil, nil, fl.errorf(e, "panic used as value")
 	case "print", "println":
@@ -152,6 +166,230 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 	default:
 		return nil, nil, fl.errorf(e, "unknown builtin")
 	}
+}
+
+func (fl *funcLower) ensureComplexType(name string, elem ir.Type) {
+	fl.pkg.mod.InternType(&ir.TypeDef{
+		Name: name, Kind: ir.TypeStruct, Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "real", Type: elem, Mut: true},
+			{Name: "imag", Type: elem, Mut: true},
+		},
+	})
+}
+
+func (fl *funcLower) builtinCopy(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) != 2 {
+		return nil, nil, fl.errorf(e, "copy wants 2 args")
+	}
+	dstTy := fl.typeOf(e.Args[0])
+	srcTy := fl.typeOf(e.Args[1])
+	// []T and string→[]byte both lower to slice structs.
+	dstIR, err := fl.mapType(dstTy)
+	if err != nil {
+		return nil, nil, fl.errorf(e.Args[0], "%v", err)
+	}
+	srcIR, err := fl.mapType(srcTy)
+	if err != nil {
+		return nil, nil, fl.errorf(e.Args[1], "%v", err)
+	}
+	dst, stmts, err := fl.expr(e.Args[0], dstIR)
+	if err != nil {
+		return nil, nil, err
+	}
+	src, st, err := fl.expr(e.Args[1], srcIR)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, st...)
+
+	dstName, dstArr := sliceParts(dstIR)
+	srcName, srcArr := sliceParts(srcIR)
+	if dstName == "" || srcName == "" {
+		// string source: treat as $go.string → copy into []byte
+		if r, ok := srcIR.(*ir.Ref); ok && r.Named == "$go.string" {
+			srcName, srcArr = "$go.string", "$go.bytes"
+		}
+		if r, ok := dstIR.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.slice.") {
+			dstName, dstArr = sliceParts(dstIR)
+		}
+	}
+	if dstArr == "" {
+		return nil, nil, fl.errorf(e, "copy: unsupported dst type")
+	}
+	if srcArr == "" {
+		srcArr = dstArr
+	}
+
+	dstV := fl.newVar("cdst", dstIR)
+	srcV := fl.newVar("csrc", srcIR)
+	nV := fl.newVar("cn", ir.TypeI32)
+	stmts = append(stmts,
+		fl.assignVar(dstV, dst),
+		fl.assignVar(srcV, src),
+	)
+
+	// n = min(len(dst), len(src))
+	dstLen := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "len", Args: []ir.Expr{fl.useVar(dstV)}}
+	var srcLen ir.Expr
+	if r, ok := srcIR.(*ir.Ref); ok && r.Named == "$go.string" {
+		srcLen = &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}
+	} else {
+		srcLen = &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}
+	}
+	stmts = append(stmts, fl.assignVar(nV, dstLen))
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{srcLen, fl.useVar(nV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(nV, srcLen)}},
+		Else: &ir.Seq{},
+	})
+
+	dstData := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}}
+	dstOff := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}}
+	srcData := &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}}
+	srcOff := &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}}
+
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(nV)}},
+		Then: &ir.Seq{},
+		Else: &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{dstData}},
+				dstOff,
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{srcData}},
+				srcOff,
+				fl.useVar(nV),
+			},
+		}}}},
+	})
+	_ = want
+	_ = dstName
+	_ = srcName
+	return fl.useVar(nV), stmts, nil
+}
+
+func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) < 1 {
+		return nil, nil, fl.errorf(e, "min/max wants at least 1 arg")
+	}
+	resTy := fl.typeOf(e)
+	irt, err := fl.mapType(resTy)
+	if err != nil {
+		irt = want
+	}
+	if want != nil {
+		irt = want
+	}
+	cur, stmts, err := fl.expr(e.Args[0], irt)
+	if err != nil {
+		return nil, nil, err
+	}
+	unsigned := isUnsigned(resTy)
+	width := irNumWidth(irt)
+	for _, arg := range e.Args[1:] {
+		y, st, err := fl.expr(arg, irt)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+		var lt ir.Op
+		switch width {
+		case ir.I64:
+			if unsigned {
+				lt = ir.OpI64LtU
+			} else {
+				lt = ir.OpI64LtS
+			}
+		case ir.F32:
+			lt = ir.OpF32Lt
+		case ir.F64:
+			lt = ir.OpF64Lt
+		default:
+			if unsigned {
+				lt = ir.OpI32LtU
+			} else {
+				lt = ir.OpI32LtS
+			}
+		}
+		// min: y < cur → y; max: cur < y → y
+		var pickY ir.Expr
+		if isMin {
+			pickY = &ir.Instr{Op: lt, Args: []ir.Expr{y, cur}}
+		} else {
+			pickY = &ir.Instr{Op: lt, Args: []ir.Expr{cur, y}}
+		}
+		// Var (not Temp): assigned in both outer init and Then branch.
+		// VarDef comes from lowerFunc preamble via extraLocals.
+		sel := fl.newVar("mm", irt)
+		stmts = append(stmts, fl.assignVar(sel, cur))
+		stmts = append(stmts, &ir.If{
+			Cond: pickY,
+			Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(sel, y)}},
+			Else: &ir.Seq{},
+		})
+		cur = fl.useVar(sel)
+	}
+	return cur, stmts, nil
+}
+
+func (fl *funcLower) builtinComplex(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) != 2 {
+		return nil, nil, fl.errorf(e, "complex wants 2 args")
+	}
+	resTy := fl.typeOf(e)
+	name := "$go.complex128"
+	elem := ir.TypeF64
+	if b, ok := types.Unalias(resTy).(*types.Basic); ok && b.Kind() == types.Complex64 {
+		name = "$go.complex64"
+		elem = ir.TypeF32
+	}
+	if want != nil {
+		if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex64" {
+			name = "$go.complex64"
+			elem = ir.TypeF32
+		}
+	}
+	fl.ensureComplexType(name, elem)
+	re, stmts, err := fl.expr(e.Args[0], elem)
+	if err != nil {
+		return nil, nil, err
+	}
+	im, stmts2, err := fl.expr(e.Args[1], elem)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, stmts2...)
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: name},
+		Args: []ir.Expr{re, im},
+	}, stmts, nil
+}
+
+func (fl *funcLower) builtinRealImag(e *ast.CallExpr, field string, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if len(e.Args) != 1 {
+		return nil, nil, fl.errorf(e, "%s wants 1 arg", field)
+	}
+	argTy := fl.typeOf(e.Args[0])
+	name := "$go.complex128"
+	elem := ir.TypeF64
+	if b, ok := types.Unalias(argTy).Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+		name = "$go.complex64"
+		elem = ir.TypeF32
+	}
+	fl.ensureComplexType(name, elem)
+	x, stmts, err := fl.expr(e.Args[0], &ir.Ref{Named: name})
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = want
+	return &ir.Instr{
+		Op:    ir.OpStructGet,
+		Type:  &ir.Ref{Named: name},
+		Field: field,
+		Args:  []ir.Expr{x},
+	}, stmts, nil
 }
 
 func (fl *funcLower) builtinClose(e *ast.CallExpr) ([]ir.Stmt, error) {

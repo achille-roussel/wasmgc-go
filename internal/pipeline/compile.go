@@ -162,7 +162,8 @@ func DumpIR(opts Options) (string, *Result, error) {
 		return "", nil, err
 	}
 	if err := ir.Verify(mod); err != nil {
-		return "", nil, fmt.Errorf("pipeline: IR verify: %w", err)
+		// Still return IR so callers can dump on failure.
+		return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, fmt.Errorf("pipeline: IR verify: %w", err)
 	}
 	return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, nil
 }

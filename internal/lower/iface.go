@@ -206,13 +206,14 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		}
 	}
 	return &ir.Instr{
-		Op:    ir.OpIfaceCall,
-		Type:  res,
-		Type2: &ir.Ref{Named: "$go.itabtype." + sanitizeName(ifaceKey)},
-		Func:  fn.Name(),
-		Field: itoa(methodIdx),
-		Str:   sigName,
-		Args:  args,
+		Op:     ir.OpIfaceCall,
+		Type:   res,
+		Type2:  &ir.Ref{Named: "$go.itabtype." + sanitizeName(ifaceKey)},
+		Global: ifaceKey, // so desc emits itabtype even without a concrete itab
+		Func:   fn.Name(),
+		Field:  itoa(methodIdx),
+		Str:    sigName,
+		Args:   args,
 	}, stmts, nil
 }
 

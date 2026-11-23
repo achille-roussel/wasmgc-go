@@ -23,6 +23,7 @@ type pkgLower struct {
 	subst mono.Subst // active while lowering a specialization
 
 	initCount int
+	initLower *funcLower                  // shared across package var inits
 	globals   map[types.Object]*ir.Global // package-level vars
 }
 
@@ -52,12 +53,18 @@ func (l *pkgLower) lower() error {
 					if err != nil {
 						return l.errorf(name, "%v", err)
 					}
-					gname := l.pkg.Name() + "." + name.Name
+					gname := pkgIRPrefix(l.pkg) + "." + name.Name
 					g := &ir.Global{Name: gname, Typ: ty, Mut: true}
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
 					if vs.Values != nil && i < len(vs.Values) {
-						fl := l.newInitLower()
+						// One shared init lowerer so temp/var names stay unique
+						// across all package-level var initializers (they become
+						// a single init.N function).
+						if l.initLower == nil {
+							l.initLower = l.newInitLower()
+						}
+						fl := l.initLower
 						ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
 						if err != nil {
 							return err
@@ -102,8 +109,18 @@ func (l *pkgLower) lower() error {
 
 	if len(initStmts) > 0 {
 		name := l.initName()
-		body := &ir.Seq{Stmts: append(initStmts, &ir.Return{})}
-		l.mod.Funcs = append(l.mod.Funcs, &ir.Func{Name: name, Body: body})
+		var preamble []ir.Stmt
+		if l.initLower != nil {
+			for _, v := range l.initLower.extraLocals {
+				preamble = append(preamble, &ir.VarDef{Var: v})
+			}
+		}
+		body := &ir.Seq{Stmts: append(preamble, append(initStmts, &ir.Return{})...)}
+		locals := []*ir.Var(nil)
+		if l.initLower != nil {
+			locals = l.initLower.extraLocals
+		}
+		l.mod.Funcs = append(l.mod.Funcs, &ir.Func{Name: name, Locals: locals, Body: body})
 		l.meta.initOrder = append(l.meta.initOrder, name)
 	}
 
@@ -151,7 +168,7 @@ func (l *pkgLower) newInitLower() *funcLower {
 		fset:   l.fset,
 		info:   l.info,
 		mod:    l.mod,
-		irName: l.pkg.Name() + ".init",
+		irName: pkgIRPrefix(l.pkg) + ".init",
 		vars:   map[types.Object]*ir.Var{},
 		labels: map[string]*labelTargets{},
 	}
@@ -160,12 +177,28 @@ func (l *pkgLower) newInitLower() *funcLower {
 func (l *pkgLower) initName() string {
 	n := l.initCount
 	l.initCount++
-	pkg := l.pkg.Name()
-	return pkg + ".init." + strconv.Itoa(n)
+	return pkgIRPrefix(l.pkg) + ".init." + strconv.Itoa(n)
 }
 
 func (l *pkgLower) funcName(name string) string {
-	return l.pkg.Name() + "." + name
+	return pkgIRPrefix(l.pkg) + "." + name
+}
+
+// pkgIRPrefix is the IR qualifier for funcs/globals/types of pkg.
+// Packages whose Path differs from Name (unicode/utf8, internal/strconv) use a
+// sanitized path so internal/strconv and strconv do not collide on "strconv".
+func pkgIRPrefix(pkg *types.Package) string {
+	if pkg == nil {
+		return "main"
+	}
+	if pkg.Name() == "main" {
+		return "main"
+	}
+	path := pkg.Path()
+	if path == "" || path == pkg.Name() {
+		return pkg.Name()
+	}
+	return strings.ReplaceAll(path, "/", ".")
 }
 
 func (l *pkgLower) funcIRName(fd *ast.FuncDecl) string {

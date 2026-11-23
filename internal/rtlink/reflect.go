@@ -27,30 +27,11 @@ func EnsureReflect(mod *ir.Module, rewriteDir string) error {
 		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime reflect helpers")
 	}
 
-	files := []string{"rtype.go", "map.go"}
-	if mod.LookupFunc("runtime.fastrand") == nil {
-		files = append(files, "rand.go")
-	}
-	needFatal := mod.LookupFunc("runtime.throw") == nil
-	needPanic := mod.LookupFunc("runtime.panicUncomparable") == nil &&
-		mod.LookupFunc("runtime.deferRun") == nil
-	needPanicIndex := mod.LookupFunc("runtime.panicIndex") == nil
-	needPrint := mod.LookupFunc("runtime.printstring") == nil
-	needStreq := mod.LookupFunc("runtime.stringeq") == nil
-	if needFatal {
-		files = append(files, "fatal.go", "bridge.go")
-	}
-	if needPanic {
-		files = append(files, "panic.go")
-	}
-	if needPanicIndex {
-		files = append(files, "panic_index.go")
-	}
-	if needPrint || needFatal {
-		files = append(files, "print.go")
-	}
-	if needStreq && !needPrint && !needFatal {
-		files = append(files, "stringeq.go")
+	// Source set must typecheck as a fresh package: map.go calls fastrand/throw,
+	// fatal calls printstring/exit. Include those even if already linked in IR.
+	files := []string{
+		"rtype.go", "map.go", "rand.go",
+		"fatal.go", "bridge.go", "print.go", "stringeq.go",
 	}
 
 	var filenames []string
@@ -73,18 +54,45 @@ func EnsureReflect(mod *ir.Module, rewriteDir string) error {
 	if err != nil {
 		return fmt.Errorf("rtlink: typecheck reflect runtime: %w", err)
 	}
-	// Maps may already be linked by EnsureMaps; strip so we can re-append
-	// with rtype.go in one package set.
+	// Strip anything we are about to re-append (maps/print/rand/fatal may already
+	// be present from EnsureMaps / EnsurePrint).
 	stripMapFuncs(mod)
-	if needPrint || needFatal {
-		stripPrintFuncs(mod)
-	}
+	stripPrintFuncs(mod)
+	stripReflectSupport(mod)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower reflect runtime: %w", err)
 	}
 	fillFloatBits(mod)
 	specializeMapHashes(mod)
 	return nil
+}
+
+// stripReflectSupport removes rand/fatal/exit symbols and fastrandState so
+// AppendFiles can re-emit them without duplicate global/func errors.
+func stripReflectSupport(mod *ir.Module) {
+	names := map[string]bool{
+		"runtime.fastrand":  true,
+		"runtime.fastrandn": true,
+		"runtime.throw":     true,
+		"runtime.fatal":     true,
+		"runtime.exit":      true,
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if names[f.Name] || strings.HasPrefix(f.Name, "runtime.init.") {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+	gout := mod.Globals[:0]
+	for _, g := range mod.Globals {
+		if g.Name == "runtime.fastrandState" {
+			continue
+		}
+		gout = append(gout, g)
+	}
+	mod.Globals = gout
 }
 
 func scanReflectNeeds(mod *ir.Module) bool {

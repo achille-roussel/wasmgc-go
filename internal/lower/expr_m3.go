@@ -97,13 +97,21 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 }
 
 func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	ptr, stmts, err := fl.expr(e.X, nil)
+	ptrTy, _ := fl.mapType(fl.typeOf(e.X))
+	ptr, stmts, err := fl.expr(e.X, ptrTy)
 	if err != nil {
 		return nil, nil, err
 	}
 	ty := want
 	if ty == nil {
 		ty, _ = fl.mapType(fl.typeOf(e))
+	}
+	// Materialize pointer into a typed local so RuntimeOps expandDeref sees
+	// $go.ptr.* (struct.get Type is the container, not the field type).
+	if r, ok := ptrTy.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
+		v := fl.newVar("pd", ptrTy)
+		stmts = append(stmts, fl.assignVar(v, ptr))
+		ptr = fl.useVar(v)
 	}
 	return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{ptr}, Type: ty}, stmts, nil
 }
@@ -213,11 +221,37 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	if isSlice(xt) {
 		return &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{base, idx}, Type: ty}, stmts, nil
 	}
-	if isArray(xt) {
-		// Array index via addr+deref of elem, or direct — use slice.get-like high op
-		// Represent as addr elem + deref.
-		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base, idx}, Field: "elem", Str: "elem"}
-		return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{addr}, Type: ty}, stmts, nil
+	if isArray(xt) || isPtrToArray(xt) {
+		// Value read: array.get (structs/refs included). Address-of uses OpAddr elsewhere.
+		arrName := ""
+		elemT := xt
+		if isPtrToArray(xt) {
+			if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
+				elemT = p.Elem()
+			}
+		}
+		if irt, err := fl.mapType(elemT); err == nil {
+			if r, ok := irt.(*ir.Ref); ok {
+				arrName = r.Named
+			}
+		}
+		at := ty
+		if arrName != "" {
+			at = &ir.Ref{Named: arrName}
+		}
+		op := ir.OpArrayGet
+		switch arrName {
+		case "$go.bytes":
+			op = ir.OpArrayGetU // uint8/byte → i32
+		case "$go.i16s":
+			// Signedness from element Go type.
+			if et := arrayElemType(elemT); et != nil && isUnsigned(et) {
+				op = ir.OpArrayGetU
+			} else {
+				op = ir.OpArrayGetS
+			}
+		}
+		return &ir.Instr{Op: op, Args: []ir.Expr{base, idx}, Type: at}, stmts, nil
 	}
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)
 }

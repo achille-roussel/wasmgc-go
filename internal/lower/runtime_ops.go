@@ -113,6 +113,12 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 		rr.Body = body
 		return &rr, nil
 	case *ir.If:
+		// Cond before Then/Else so preamble stmts dominate the branch and any
+		// shared expr trees are expanded once in order.
+		cond, pre, err := rt.rewriteExpr(r.Cond, n)
+		if err != nil {
+			return nil, err
+		}
 		then, err := rt.lowerRegion(r.Then, n)
 		if err != nil {
 			return nil, err
@@ -123,10 +129,6 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 			if err != nil {
 				return nil, err
 			}
-		}
-		cond, pre, err := rt.rewriteExpr(r.Cond, n)
-		if err != nil {
-			return nil, err
 		}
 		iff := &ir.If{Cond: cond, Then: then, Else: elseR, Pos: r.Pos}
 		if len(pre) == 0 {
@@ -268,18 +270,28 @@ func (rt *runtimeLower) rewriteExpr(e ir.Expr, n *int) (ir.Expr, []ir.Stmt, erro
 			return &ir.Name{Raw: t.Name, Temp: t}, stmts, nil
 		}
 		if e.Op.IsHigh() {
-			tname := rt.fresh("h")
 			ty := e.Type
 			if ty == nil {
-				ty = ir.TypeI32
+				switch e.Op {
+				case ir.OpAddr:
+					ty = &ir.Ref{Null: true, Named: "$go.ptr.i32"}
+				case ir.OpMakeSlice, ir.OpSliceAppend, ir.OpSliceSlice, ir.OpMapMake:
+					ty = &ir.Ref{Null: true, Heap: ir.HeapAny}
+				default:
+					ty = ir.TypeI32
+				}
 			}
-			t := &ir.Temp{Name: tname, Typ: ty}
-			assign := &ir.Assign{Lhs: []ir.Dest{{Temp: t, Name: tname}}, Rhs: e}
+			// Use a Var, not a Temp: expanders (append, etc.) often assign the
+			// result inside both sides of an if, and temps cannot cross regions.
+			v := rt.newVar("h", ty)
+			assign := &ir.Assign{Lhs: []ir.Dest{{Var: v, Name: v.Name}}, Rhs: e}
 			stmts, err := rt.expandHighAssign(assign, e, n)
 			if err != nil {
 				return nil, nil, err
 			}
-			return &ir.Name{Raw: tname, Temp: t}, stmts, nil
+			out := []ir.Stmt{&ir.VarDef{Var: v}}
+			out = append(out, stmts...)
+			return &ir.Name{Raw: v.Name, Var: v}, out, nil
 		}
 		var pre []ir.Stmt
 		for i, a := range e.Args {
@@ -1147,7 +1159,11 @@ func (rt *runtimeLower) addrClassKey(in *ir.Instr, base ir.Expr) (container, fie
 }
 
 func structTypeOf(base ir.Expr) string {
-	switch b := base.(type) {
+	return exprRefType(base)
+}
+
+func exprRefType(e ir.Expr) string {
+	switch b := e.(type) {
 	case *ir.Name:
 		if b.Var != nil {
 			if r, ok := b.Var.Typ.(*ir.Ref); ok {
@@ -1172,33 +1188,27 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	if err != nil {
 		return nil, err
 	}
-	// Object pointer (*Struct): value is the ref itself for reads of the object;
-	// scalar fat ptr: call_ref get.
+	// Object pointer (*Struct): the pointer value IS the struct ref.
+	// Do not key off in.Type alone (result): fat-ptr deref to a struct element
+	// also has result type $go.struct.* but must call_ref get.
 	kind := "i32"
 	ptrType := "$go.ptr.i32"
-	if r, ok := in.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
-		// Dereferencing *Struct yields the struct ref — ptr IS the value.
+	ptrTyp := exprRefType(in.Args[0])
+	if ptrTyp == "" {
+		ptrTyp = exprRefType(ptr)
+	}
+	switch {
+	case strings.HasPrefix(ptrTyp, "$go.ptr."):
+		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
+		ptrType = ptrTyp
+	case strings.HasPrefix(ptrTyp, "$go.struct."), strings.HasPrefix(ptrTyp, "$go.array."):
+		// Object pointer: the ref is the value.
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ptr})
 		return pre, nil
-	}
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Var != nil {
-			if r, ok := nm.Var.Typ.(*ir.Ref); ok {
-				if strings.HasPrefix(r.Named, "$go.struct.") {
-					pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ptr})
-					return pre, nil
-				}
-				if strings.HasPrefix(r.Named, "$go.ptr.") {
-					kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-					ptrType = r.Named
-				}
-			}
-		}
-		if nm.Temp != nil {
-			if r, ok := nm.Temp.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
-				kind = strings.TrimPrefix(r.Named, "$go.ptr.")
-				ptrType = r.Named
-			}
+	default:
+		if r, ok := in.Type.(*ir.Ref); ok && r.Named != "" && !strings.HasPrefix(r.Named, "$go.ptr.") {
+			kind = "ref"
+			ptrType = "$go.ptr.ref"
 		}
 	}
 	rt.ensureFatPtr(kind)
@@ -1211,14 +1221,16 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	getFn := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.class." + kind}, Field: "get", Args: []ir.Expr{&ir.Name{Temp: clT, Raw: clT.Name}}}
 	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
 	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}}}
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{
-			Op:   ir.OpCallRef,
-			Type: &ir.Ref{Named: "$go.get." + kind},
-			Args: []ir.Expr{base, index, getFn},
-		},
+	loaded := ir.Expr(&ir.Instr{
+		Op:   ir.OpCallRef,
+		Type: &ir.Ref{Named: "$go.get." + kind},
+		Args: []ir.Expr{base, index, getFn},
 	})
+	// $go.get.ref returns anyref; cast to the concrete result type.
+	if kind == "ref" && in.Type != nil {
+		loaded = &ir.Instr{Op: ir.OpRefCast, Type: in.Type, Args: []ir.Expr{loaded}}
+	}
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: loaded})
 	return pre, nil
 }
 
@@ -1323,6 +1335,10 @@ func (rt *runtimeLower) classGlobal(container, field, kind string) string {
 	getFn := rt.ensureAccessor(container, field, kind, true)
 	setFn := rt.ensureAccessor(container, field, kind, false)
 
+	// Idempotent across multiple RuntimeOps passes (pipeline runs twice).
+	if rt.mod.LookupGlobal(gname) != nil {
+		return gname
+	}
 	init := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.class." + kind},
@@ -1355,6 +1371,10 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 		return name
 	}
 	rt.accessors[name] = true
+	// Already emitted by a prior RuntimeOps pass.
+	if rt.mod.LookupFunc(name) != nil {
+		return name
+	}
 	rt.ensureFatPtr(kind)
 
 	var val ir.Type = ir.TypeI32

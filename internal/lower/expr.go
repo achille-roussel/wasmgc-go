@@ -127,29 +127,69 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 	case constant.String:
 		return &ir.Instr{Op: ir.OpStringLit, Str: constant.StringVal(v)}, nil
 	case constant.Int:
+		if want != nil && irNumWidth(want) == ir.F64 {
+			f, _ := constant.Float64Val(constant.ToFloat(v))
+			return fl.f64const(f), nil
+		}
+		if want != nil && irNumWidth(want) == ir.F32 {
+			f, _ := constant.Float64Val(constant.ToFloat(v))
+			return fl.f32const(f), nil
+		}
 		if want != nil && irNumWidth(want) == ir.I64 {
-			i, _ := constant.Int64Val(v)
-			if !okInt64(v) {
-				u, _ := constant.Uint64Val(v)
+			if i, ok := constant.Int64Val(v); ok {
+				return fl.i64const(i), nil
+			}
+			if u, ok := constant.Uint64Val(v); ok {
 				return fl.i64const(int64(u)), nil
 			}
-			return fl.i64const(i), nil
+			// Bigger than uint64 (math tables): keep low 64 bits.
+			w := constant.BinaryOp(v, token.AND, constant.MakeUint64(^uint64(0)))
+			u, _ := constant.Uint64Val(w)
+			return fl.i64const(int64(u)), nil
 		}
-		i, ok := constant.Int64Val(v)
-		if !ok {
-			u, ok := constant.Uint64Val(v)
-			if !ok {
-				return nil, fmt.Errorf("integer constant out of range")
-			}
+		if i, ok := constant.Int64Val(v); ok {
+			return fl.i32const(i), nil
+		}
+		if u, ok := constant.Uint64Val(v); ok {
 			return fl.i32const(int64(int32(u))), nil
 		}
-		return fl.i32const(i), nil
+		w := constant.BinaryOp(v, token.AND, constant.MakeUint64(0xffffffff))
+		u, _ := constant.Uint64Val(w)
+		return fl.i32const(int64(int32(u))), nil
 	case constant.Float:
 		f, _ := constant.Float64Val(v)
 		if want != nil && irNumWidth(want) == ir.F32 {
 			return fl.f32const(f), nil
 		}
 		return fl.f64const(f), nil
+	case constant.Complex:
+		// Stored complex is a struct of two floats (docs/design/03).
+		re, _ := constant.Float64Val(constant.Real(v))
+		im, _ := constant.Float64Val(constant.Imag(v))
+		name := "$go.complex128"
+		reEx, imEx := fl.f64const(re), fl.f64const(im)
+		if want != nil {
+			if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex64" {
+				name = "$go.complex64"
+				reEx, imEx = fl.f32const(re), fl.f32const(im)
+			}
+		}
+		elem := ir.TypeF64
+		if name == "$go.complex64" {
+			elem = ir.TypeF32
+		}
+		fl.pkg.mod.InternType(&ir.TypeDef{
+			Name: name, Kind: ir.TypeStruct, Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "real", Type: elem, Mut: true},
+				{Name: "imag", Type: elem, Mut: true},
+			},
+		})
+		return &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: name},
+			Args: []ir.Expr{reEx, imEx},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported constant kind %v", v.Kind())
 	}
@@ -235,6 +275,11 @@ func (fl *funcLower) shortCircuit(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error)
 		return nil, nil, err
 	}
 	out = append(out, lstmts...)
+	// Materialize left into a local so Cond and Then/Else do not share one
+	// Instr tree (RuntimeOps mutates Instrs in place when expanding high ops).
+	leftV := fl.newVar("scL", ir.TypeI32)
+	out = append(out, fl.assignVar(leftV, left))
+	leftRef := fl.useVar(leftV)
 
 	rightSeq := &ir.Seq{}
 	right, rstmts, err := fl.boolExpr(e.Y)
@@ -244,14 +289,14 @@ func (fl *funcLower) shortCircuit(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error)
 	rightSeq.Stmts = append(rightSeq.Stmts, rstmts...)
 	rightSeq.Stmts = append(rightSeq.Stmts, fl.assignVar(res, right))
 
-	leftSeq := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, left)}}
+	leftSeq := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, leftRef)}}
 
 	if e.Op == token.LAND {
 		// if left { res = right } else { res = left(=false) }
-		out = append(out, &ir.If{Cond: left, Then: rightSeq, Else: leftSeq})
+		out = append(out, &ir.If{Cond: leftRef, Then: rightSeq, Else: leftSeq})
 	} else {
 		// if left { res = left(=true) } else { res = right }
-		out = append(out, &ir.If{Cond: left, Then: leftSeq, Else: rightSeq})
+		out = append(out, &ir.If{Cond: leftRef, Then: leftSeq, Else: rightSeq})
 	}
 	return fl.useVar(res), out, nil
 }
@@ -595,12 +640,87 @@ func binOp(op token.Token, width ir.NumKind, unsigned bool) (ir.Op, error) {
 	return 0, fmt.Errorf("unsupported binary op %v for width %v", op, width)
 }
 
+// unsafeBuiltinCall lowers unsafe.Sizeof / Alignof / Offsetof to constants
+// using the wasmgc size table (docs/design/05). ok=false means not an unsafe builtin.
+func (fl *funcLower) unsafeBuiltinCall(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
+	sel, ok := e.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	pn, ok := fl.info.Uses[id].(*types.PkgName)
+	if !ok || pn.Imported() == nil || pn.Imported().Path() != "unsafe" {
+		return nil, nil, false, nil
+	}
+	b, ok := fl.info.Uses[sel.Sel].(*types.Builtin)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	if len(e.Args) != 1 {
+		return nil, nil, true, fl.errorf(e, "unsafe.%s wants 1 arg", b.Name())
+	}
+	arg := e.Args[0]
+	tv, ok := fl.info.Types[arg]
+	if !ok || tv.Type == nil {
+		return nil, nil, true, fl.errorf(arg, "unsafe.%s: no type", b.Name())
+	}
+	argTy := tv.Type
+	if len(fl.pkg.subst) > 0 {
+		argTy = fl.pkg.subst.Apply(argTy)
+	}
+	argTy = types.Unalias(argTy)
+	if mono.ContainsTypeParam(argTy) {
+		return nil, nil, true, fl.errorf(arg, "unsafe.%s: unsubstituted type param", b.Name())
+	}
+	var n int64
+	switch b.Name() {
+	case "Sizeof":
+		n = Sizes.Sizeof(argTy)
+	case "Alignof":
+		n = Sizes.Alignof(argTy)
+	case "Offsetof":
+		s, ok := arg.(*ast.SelectorExpr)
+		if !ok {
+			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof requires selector")
+		}
+		seln := fl.info.Selections[s]
+		if seln == nil {
+			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: no selection")
+		}
+		st, ok := seln.Recv().Underlying().(*types.Struct)
+		if !ok {
+			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: not a struct field")
+		}
+		fields := make([]*types.Var, st.NumFields())
+		for i := 0; i < st.NumFields(); i++ {
+			fields[i] = st.Field(i)
+		}
+		offs := Sizes.Offsetsof(fields)
+		idx := seln.Index()
+		if len(idx) == 0 || idx[len(idx)-1] >= len(offs) {
+			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: bad index")
+		}
+		n = offs[idx[len(idx)-1]]
+	default:
+		return nil, nil, false, nil
+	}
+	_ = want
+	// uintptr is i32 on wasmgc.
+	return fl.i32const(n), nil, true, nil
+}
+
 func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	if fl.isConversion(e) {
 		return fl.conversion(e, want)
 	}
 	if fl.isBuiltinCall(e) {
 		return fl.builtinAsValue(e, want)
+	}
+	if ex, stmts, ok, err := fl.unsafeBuiltinCall(e, want); ok || err != nil {
+		return ex, stmts, err
 	}
 	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
 		if sel, isIface := fl.ifaceMethod(fun); isIface {
@@ -800,6 +920,28 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 			return &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}}, stmts, nil
 		}
 	}
+	// string(rune) / string(byte) / string(int…)
+	if isString(dst) && isInteger(src) {
+		ex, st, err := fl.intToString(x, src)
+		return ex, append(stmts, st...), err
+	}
+	// string ↔ []byte / [N]byte (docs/design/03: allocate+copy; share for now).
+	if isString(dst) && (isSlice(src) || isArray(src) || isPtrToArray(src)) {
+		ex, st, err := fl.bytesToString(x, src, srcIR)
+		return ex, append(stmts, st...), err
+	}
+	if (isSlice(dst) || isArray(dst)) && isString(src) {
+		ex, st, err := fl.stringToBytes(x, dst, dstIR)
+		return ex, append(stmts, st...), err
+	}
+	// complex64 ↔ complex128: promote/demote real and imag parts.
+	if isComplex(src) && isComplex(dst) {
+		ex, st, err := fl.complexConvert(x, src, dst, srcIR, dstIR)
+		return ex, append(stmts, st...), err
+	}
+	if !isNumericIR(srcIR) || !isNumericIR(dstIR) {
+		return nil, nil, fl.errorf(e, "unsupported conversion %s → %s", src, dst)
+	}
 	conv, err := numericConv(srcIR, dstIR, isUnsigned(src), isUnsigned(dst))
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
@@ -808,6 +950,136 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		return x, stmts, nil
 	}
 	return &ir.Instr{Op: conv, Args: []ir.Expr{x}}, stmts, nil
+}
+
+func isNumericIR(t ir.Type) bool {
+	_, ok := t.(*ir.NumType)
+	return ok
+}
+
+// bytesToString builds a $go.string header from a []byte / [N]byte value.
+// Shares backing (elision); mutation of the source after conversion is UB here.
+func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir.Expr, []ir.Stmt, error) {
+	var stmts []ir.Stmt
+	if isSlice(src) {
+		st := srcIR
+		if _, ok := st.(*ir.Ref); !ok {
+			st = &ir.Ref{Null: true, Named: "$go.slice.i8"}
+		}
+		data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
+		off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
+		len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: typeString,
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{data}},
+				off, len_,
+			},
+		}, stmts, nil
+	}
+	// [N]byte / *[N]byte: whole array is the data, off=0, len=N.
+	n := int64(0)
+	if a, ok := types.Unalias(src).Underlying().(*types.Array); ok {
+		n = a.Len()
+	} else if p, ok := types.Unalias(src).Underlying().(*types.Pointer); ok {
+		if a, ok := types.Unalias(p.Elem()).Underlying().(*types.Array); ok {
+			n = a.Len()
+		}
+	}
+	arr := x
+	if isPtrToArray(src) {
+		// already the array ref
+	}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: typeString,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{arr}},
+			fl.i32const(0),
+			fl.i32const(n),
+		},
+	}, stmts, nil
+}
+
+func (fl *funcLower) stringToBytes(x ir.Expr, dst types.Type, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {
+	// Share string backing as a []byte slice header.
+	st := typeString
+	data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
+	off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
+	len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
+	sliceTy := dstIR
+	if _, ok := sliceTy.(*ir.Ref); !ok {
+		sliceTy = &ir.Ref{Null: true, Named: "$go.slice.i8"}
+	}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: sliceTy,
+		Args: []ir.Expr{data, off, len_, len_}, // cap = len
+	}, nil, nil
+}
+
+// intToString lowers string(r) via unicode/utf8.AppendRune then []byte→string.
+func (fl *funcLower) intToString(x ir.Expr, src types.Type) (ir.Expr, []ir.Stmt, error) {
+	var stmts []ir.Stmt
+	// Widen to i32 rune.
+	r := x
+	if irNumWidth(mustMapBasic(src)) == ir.I64 {
+		r = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{x}}
+	}
+	nilSlice := &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.slice.i8"}}
+	call := &ir.Instr{
+		Op:   ir.OpCall,
+		Func: "unicode.utf8.AppendRune",
+		Args: []ir.Expr{nilSlice, r},
+		Type: &ir.Ref{Null: true, Named: "$go.slice.i8"},
+	}
+	tmp := fl.newVar("rs", &ir.Ref{Null: true, Named: "$go.slice.i8"})
+	stmts = append(stmts, fl.assignVar(tmp, call))
+	ex, st, err := fl.bytesToString(fl.useVar(tmp), types.NewSlice(types.Typ[types.Byte]), &ir.Ref{Null: true, Named: "$go.slice.i8"})
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, st...)
+	return ex, stmts, nil
+}
+
+func mustMapBasic(t types.Type) ir.Type {
+	if b, ok := types.Unalias(t).Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Int64, types.Uint64:
+			return ir.TypeI64
+		}
+	}
+	return ir.TypeI32
+}
+
+func (fl *funcLower) complexConvert(x ir.Expr, src, dst types.Type, srcIR, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {
+	srcName, srcElem := "$go.complex128", ir.TypeF64
+	if b, ok := types.Unalias(src).Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+		srcName, srcElem = "$go.complex64", ir.TypeF32
+	}
+	dstName, dstElem := "$go.complex128", ir.TypeF64
+	if b, ok := types.Unalias(dst).Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+		dstName, dstElem = "$go.complex64", ir.TypeF32
+	}
+	fl.ensureComplexType(srcName, srcElem)
+	fl.ensureComplexType(dstName, dstElem)
+	re := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: srcName}, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: srcName}, Field: "imag", Args: []ir.Expr{x}}
+	if srcElem != dstElem {
+		var op ir.Op
+		if srcElem == ir.TypeF32 {
+			op = ir.OpF64PromoteF32
+		} else {
+			op = ir.OpF32DemoteF64
+		}
+		re = &ir.Instr{Op: op, Args: []ir.Expr{re}}
+		im = &ir.Instr{Op: op, Args: []ir.Expr{im}}
+	}
+	_ = srcIR
+	_ = dstIR
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: &ir.Ref{Named: dstName},
+		Args: []ir.Expr{re, im},
+	}, nil, nil
 }
 
 func isUnsafePointer(t types.Type) bool {
@@ -1095,7 +1367,7 @@ func (fl *funcLower) resolveCallee(e *ast.CallExpr) (name string, results []ir.T
 		if pkg == nil {
 			return "", nil, fl.errorf(fun, "builtin %s not lowered here", fun.Name)
 		}
-		return pkg.Name() + "." + fn.Name(), results, nil
+		return pkgIRPrefix(pkg) + "." + fn.Name(), results, nil
 	case *ast.SelectorExpr:
 		return fl.resolveMethodCallee(e, fun)
 	default:
@@ -1108,10 +1380,11 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 	if sel == nil {
 		// Package-qualified function: pkg.Func
 		if id, ok := fun.X.(*ast.Ident); ok {
-			if obj, ok := fl.info.Uses[id].(*types.PkgName); ok {
-				fn, ok := fl.info.Uses[fun.Sel].(*types.Func)
+			if _, ok := fl.info.Uses[id].(*types.PkgName); ok {
+				selObj := fl.info.Uses[fun.Sel]
+				fn, ok := selObj.(*types.Func)
 				if !ok {
-					return "", nil, fl.errorf(fun, "not a function")
+					return "", nil, fl.errorf(fun, "not a function: %s.%s obj=%T", id.Name, fun.Sel.Name, selObj)
 				}
 				sig := fn.Type().(*types.Signature)
 				for i := 0; i < sig.Results().Len(); i++ {
@@ -1121,7 +1394,7 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 					}
 					results = append(results, ty)
 				}
-				return obj.Imported().Name() + "." + fn.Name(), results, nil
+				return pkgIRPrefix(fn.Pkg()) + "." + fn.Name(), results, nil
 			}
 		}
 		return "", nil, fl.errorf(fun, "not a method selection")
@@ -1155,16 +1428,9 @@ func methodIRName(fn *types.Func) string {
 	sig := fn.Type().(*types.Signature)
 	recv := sig.Recv()
 	if recv == nil {
-		pkg := "main"
-		if fn.Pkg() != nil {
-			pkg = fn.Pkg().Name()
-		}
-		return pkg + "." + fn.Name()
+		return pkgIRPrefix(fn.Pkg()) + "." + fn.Name()
 	}
-	pkg := "main"
-	if fn.Pkg() != nil {
-		pkg = fn.Pkg().Name()
-	}
+	pkg := pkgIRPrefix(fn.Pkg())
 	rt := recv.Type()
 	ptr := false
 	if p, ok := types.Unalias(rt).(*types.Pointer); ok {

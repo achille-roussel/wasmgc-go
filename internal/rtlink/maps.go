@@ -136,23 +136,26 @@ func stripMapFuncs(mod *ir.Module) {
 }
 
 // fillFloatBits replaces empty f32bits/f64bits bodies with reinterpret.
+// Also fills internal.strconv.float*bits / float*frombits (deps.go overlay).
 func fillFloatBits(mod *ir.Module) {
-	if f := mod.LookupFunc("runtime.f32bits"); f != nil && emptyBody(f) {
+	fillReinterpret := func(name string, op ir.Op) {
+		f := mod.LookupFunc(name)
+		if f == nil || !emptyBody(f) || len(f.Params) != 1 {
+			return
+		}
 		p := f.Params[0]
 		f.Body = &ir.Seq{Stmts: []ir.Stmt{
 			&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpI32ReinterpretF32, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+				&ir.Instr{Op: op, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
 			}},
 		}}
 	}
-	if f := mod.LookupFunc("runtime.f64bits"); f != nil && emptyBody(f) {
-		p := f.Params[0]
-		f.Body = &ir.Seq{Stmts: []ir.Stmt{
-			&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpI64ReinterpretF64, Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
-			}},
-		}}
-	}
+	fillReinterpret("runtime.f32bits", ir.OpI32ReinterpretF32)
+	fillReinterpret("runtime.f64bits", ir.OpI64ReinterpretF64)
+	fillReinterpret("internal.strconv.float32bits", ir.OpI32ReinterpretF32)
+	fillReinterpret("internal.strconv.float64bits", ir.OpI64ReinterpretF64)
+	fillReinterpret("internal.strconv.float32frombits", ir.OpF32ReinterpretI32)
+	fillReinterpret("internal.strconv.float64frombits", ir.OpF64ReinterpretI64)
 }
 
 // hashHelperFuncs are the per-type mapKeyHash branches (and their callees).

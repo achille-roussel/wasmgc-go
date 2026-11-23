@@ -186,7 +186,7 @@ func (l *pkgLower) freshClosName(prefix string) string {
 		l.meta = metaOf(l.mod)
 	}
 	l.meta.closSeq++
-	return l.pkg.Name() + "." + prefix + "." + strconv.Itoa(l.meta.closSeq)
+	return pkgIRPrefix(l.pkg) + "." + prefix + "." + strconv.Itoa(l.meta.closSeq)
 }
 
 func (l *pkgLower) ensureClosType(caps []captureInfo) (string, error) {
@@ -567,7 +567,7 @@ func (l *pkgLower) funcIRNameOf(fn *types.Func) string {
 	if fn.Type().(*types.Signature).Recv() != nil {
 		return methodIRName(fn)
 	}
-	return fn.Pkg().Name() + "." + fn.Name()
+	return pkgIRPrefix(fn.Pkg()) + "." + fn.Name()
 }
 
 // emitTopLevelClosWrapper emits a function (clos, args...) that ignores clos

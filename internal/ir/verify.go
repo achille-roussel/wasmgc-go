@@ -291,7 +291,11 @@ func (v *verifier) stmt(s Stmt) {
 		v.region(s)
 	case *VarDef:
 		if _, ok := v.vars[s.Var.Name]; ok {
-			v.errorf(s.Pos, "duplicate var %s", s.Var.Name)
+			fn := "?"
+			if v.fn != nil {
+				fn = v.fn.Name
+			}
+			v.errorf(s.Pos, "duplicate var %s in %s", s.Var.Name, fn)
 			return
 		}
 		if IsPacked(s.Var.Typ) {
@@ -356,7 +360,11 @@ func (v *verifier) stmt(s Stmt) {
 		}
 	case *Return:
 		if len(s.Results) != len(v.fn.Results) {
-			v.errorf(s.Pos, "return has %d values, function wants %d", len(s.Results), len(v.fn.Results))
+			fn := "?"
+			if v.fn != nil {
+				fn = v.fn.Name
+			}
+			v.errorf(s.Pos, "return has %d values, function wants %d in %s", len(s.Results), len(v.fn.Results), fn)
 		}
 		for i, e := range s.Results {
 			got := v.exprType(e)

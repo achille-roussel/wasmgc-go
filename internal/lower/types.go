@@ -559,10 +559,7 @@ func structTypeName(t *types.Named) string {
 	if name := runtimeStructAlias(t); name != "" {
 		return name
 	}
-	pkg := "main"
-	if t.Obj().Pkg() != nil {
-		pkg = t.Obj().Pkg().Name()
-	}
+	pkg := pkgIRPrefix(t.Obj().Pkg())
 	return "$go.struct." + pkg + "." + t.Obj().Name() + mono.NamedIRSuffix(t)
 }
 
@@ -676,7 +673,9 @@ func fatPtrKind(elem types.Type) (string, error) {
 			return "f32", nil
 		case types.Float64:
 			return "f64", nil
-		case types.String:
+		case types.String,
+			types.Complex64, types.Complex128, types.UntypedComplex:
+			// Stored as $go.complex{64,128} struct refs (docs/design/03).
 			return "ref", nil
 		}
 	case *types.Slice, *types.Pointer, *types.Map, *types.Chan, *types.Signature, *types.Interface:
@@ -781,6 +780,15 @@ func isString(t types.Type) bool {
 	return b.Info()&types.IsString != 0
 }
 
+func isComplex(t types.Type) bool {
+	t = types.Unalias(t)
+	b, ok := t.Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	return b.Info()&types.IsComplex != 0
+}
+
 func isFloat(t types.Type) bool {
 	t = types.Unalias(t)
 	b, ok := t.Underlying().(*types.Basic)
@@ -800,6 +808,22 @@ func isArray(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Array)
 	return ok
+}
+
+func isPtrToArray(t types.Type) bool {
+	p, ok := types.Unalias(t).Underlying().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	_, ok = types.Unalias(p.Elem()).Underlying().(*types.Array)
+	return ok
+}
+
+func arrayElemType(t types.Type) types.Type {
+	if a, ok := types.Unalias(t).Underlying().(*types.Array); ok {
+		return a.Elem()
+	}
+	return nil
 }
 
 func isStruct(t types.Type) bool {
