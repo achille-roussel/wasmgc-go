@@ -1,0 +1,6 @@
+func main.main() {
+  %0 = string "hello, world"
+  call runtime.printstring(%0)
+  call runtime.printnl()
+  return
+}
