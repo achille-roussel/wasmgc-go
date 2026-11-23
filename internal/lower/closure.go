@@ -568,13 +568,15 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 			}
 			// Cells are allocated in the function preamble with the zero value.
 			// Assignments that ran before ensureLocalCell (e.g. `ch := make(…)`
-			// before `go func(){ … ch … }`) only updated the plain local. Sync
-			// the local into the cell immediately before capture so the child
-			// sees the current value.
+			// before `go func(){ … ch … }`) only updated the plain local — those
+			// set plainDirty. Sync local→cell only when dirty so the child sees
+			// that value. Do not sync when the cell is already authoritative
+			// (closures wrote through it); a stale local would wipe them
+			// (e.g. allFields = append(allFields, f) inside a loop of func lits).
 			// Skip when vars[obj] is the cell itself (nested closure child that
 			// already bound the capture as a cell local — syncing would write
 			// the cell ref into field v).
-			if v := fl.vars[c.obj]; v != nil && v != cv {
+			if v := fl.vars[c.obj]; v != nil && v != cv && fl.plainDirty[c.obj] {
 				cellTy := cv.Typ.(*ir.Ref).Named
 				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
 					Op:    ir.OpStructSet,
@@ -582,6 +584,7 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 					Field: "v",
 					Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
 				}})
+				delete(fl.plainDirty, c.obj)
 			}
 			args = append(args, fl.useVar(cv))
 		} else {
@@ -921,6 +924,17 @@ func (fl *funcLower) markAssigned(obj types.Object) {
 	fl.pkg.meta.cellVars[obj] = true
 }
 
+// markPlainDirty records that obj was written via the plain local (not a cell).
+func (fl *funcLower) markPlainDirty(obj types.Object) {
+	if obj == nil {
+		return
+	}
+	if fl.plainDirty == nil {
+		fl.plainDirty = map[types.Object]bool{}
+	}
+	fl.plainDirty[obj] = true
+}
+
 // readVar returns the IR expr for reading a local, going through a cell if boxed.
 func (fl *funcLower) readVar(obj types.Object) (ir.Expr, error) {
 	if fl.cells != nil {
@@ -945,6 +959,8 @@ func (fl *funcLower) writeVar(obj types.Object, rhs ir.Expr) ([]ir.Stmt, error) 
 	if fl.cells != nil {
 		if cv, ok := fl.cells[obj]; ok {
 			cellTy := cv.Typ.(*ir.Ref).Named
+			// Cell is authoritative; plain local is stale until a plain write.
+			delete(fl.plainDirty, obj)
 			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 				Op:    ir.OpStructSet,
 				Type:  &ir.Ref{Named: cellTy},

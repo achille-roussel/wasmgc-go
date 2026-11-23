@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"strings"
@@ -561,21 +562,7 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	case *types.Struct:
 		return fl.structLit(e, ut, irt)
 	case *types.Array:
-		var args []ir.Expr
-		var stmts []ir.Stmt
-		elemWant, _ := fl.mapType(ut.Elem())
-		for _, el := range e.Elts {
-			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				el = kv.Value
-			}
-			ex, st, err := fl.expr(el, elemWant)
-			if err != nil {
-				return nil, nil, err
-			}
-			stmts = append(stmts, st...)
-			args = append(args, ex)
-		}
-		return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+		return fl.arrayLit(e, ut, irt)
 	case *types.Map:
 		return fl.mapLiteral(e, irt)
 	default:
@@ -585,6 +572,71 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 
 // structLitField lowers a composite-literal field value, boxing into an
 // interface when the field type is an interface.
+// arrayLit lowers [N]T{...}, including keyed indices (e.g. [256]Kind{'{': '{'}).
+// Missing slots are zero so const packing / array.new_fixed have length N.
+func (fl *funcLower) arrayLit(e *ast.CompositeLit, at *types.Array, irt ir.Type) (ir.Expr, []ir.Stmt, error) {
+	n := int(at.Len())
+	if n < 0 {
+		n = 0
+	}
+	elemWant, err := fl.mapType(at.Elem())
+	if err != nil {
+		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	args := make([]ir.Expr, n)
+	for i := 0; i < n; i++ {
+		z, err := fl.zeroValue(elemWant)
+		if err != nil {
+			return nil, nil, err
+		}
+		args[i] = z
+	}
+	var stmts []ir.Stmt
+	next := 0
+	for _, el := range e.Elts {
+		idx := next
+		val := el
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			val = kv.Value
+			c, ok := fl.constInt(kv.Key)
+			if !ok {
+				return nil, nil, fl.errorf(kv.Key, "array literal key must be a constant integer")
+			}
+			if c < 0 || int(c) >= n {
+				return nil, nil, fl.errorf(kv.Key, "array literal index %d out of bounds [0:%d]", c, n)
+			}
+			idx = int(c)
+		} else if next >= n {
+			return nil, nil, fl.errorf(el, "array literal has too many elements")
+		}
+		ex, st, err := fl.expr(val, elemWant)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+		args[idx] = ex
+		next = idx + 1
+	}
+	return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+}
+
+func (fl *funcLower) constInt(e ast.Expr) (int64, bool) {
+	if e == nil {
+		return 0, false
+	}
+	tv, ok := fl.info.Types[e]
+	if !ok || tv.Value == nil {
+		return 0, false
+	}
+	if v, exact := constant.Int64Val(tv.Value); exact {
+		return v, true
+	}
+	if v, exact := constant.Uint64Val(tv.Value); exact && v <= uint64(^uint64(0)>>1) {
+		return int64(v), true
+	}
+	return 0, false
+}
+
 func (fl *funcLower) structLitField(val ast.Expr, fieldTy types.Type) (ir.Expr, []ir.Stmt, error) {
 	if isIface(fieldTy) && !isIface(fl.typeOf(val)) && !isNilIdent(val) {
 		return fl.convertToIface(val, fl.typeOf(val), fieldTy, typeIface)

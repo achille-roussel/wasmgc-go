@@ -174,6 +174,16 @@ func ReflectSetBoxF64(data unsafe.Pointer, v float64)
 // ReflectSetBoxString writes v into a $go.box.string data word.
 func ReflectSetBoxString(data unsafe.Pointer, v string)
 
+// ReflectNewRefBox allocates a $go.box.ref holding v (may be nil).
+// Used by reflect.New for map/slice/iface so Elem().Set is addressable.
+func ReflectNewRefBox(v unsafe.Pointer) unsafe.Pointer
+
+// ReflectSetBoxRef writes v into a $go.box.ref data word.
+func ReflectSetBoxRef(data unsafe.Pointer, v unsafe.Pointer)
+
+// ReflectUnboxRef reads the anyref from a $go.box.ref data word.
+func ReflectUnboxRef(data unsafe.Pointer) unsafe.Pointer
+
 // ReflectMakeMap allocates an empty hmap (all map types share one layout).
 func ReflectMakeMap() unsafe.Pointer {
 	return unsafe.Pointer(makemap(0))

@@ -225,8 +225,9 @@ const (
 	flagRO flag = 1 << iota
 	flagIndir
 	flagAddr
-	flagField // Set via setField(base, slot, …)
-	flagIndex // Set via setIndex(base, slot, …)
+	flagField  // Set via setField(base, slot, …)
+	flagIndex  // Set via setIndex(base, slot, …)
+	flagRefBox // data is $go.box.ref holding a map/slice/iface/chan/func/pointer
 )
 
 func (v Value) Kind() Kind {
@@ -250,8 +251,13 @@ func (v Value) IsNil() bool {
 		return false
 	}
 	switch v.Kind() {
-	case Pointer, Interface, Slice, Map, Chan, Func, UnsafePointer:
+	case Pointer:
+		if v.flag&flagRefBox != 0 {
+			return false // box pointer is always non-nil
+		}
 		return v.data == nil
+	case Interface, Slice, Map, Chan, Func, UnsafePointer:
+		return v.dataWord() == nil
 	}
 	return false
 }
@@ -283,7 +289,11 @@ func (v Value) Elem() Value {
 		}
 		et := runtime.ReflectPtrElem(runtime.ReflectExtra(v.typ.rt))
 		// Pointee of New(t) / *T is always addressable.
-		return Value{typ: wrap(et), data: v.data, flag: flagAddr}
+		fl := flagAddr
+		if v.flag&flagRefBox != 0 {
+			fl |= flagRefBox
+		}
+		return Value{typ: wrap(et), data: v.data, flag: fl}
 	case Interface:
 		if v.data == nil {
 			return Value{}
@@ -364,6 +374,9 @@ func (v Value) dataWord() unsafe.Pointer {
 	}
 	if v.flag&flagIndex != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
 		return runtime.ReflectCallIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot)
+	}
+	if v.flag&flagRefBox != 0 && v.Kind() != Pointer {
+		return runtime.ReflectUnboxRef(v.data)
 	}
 	return v.data
 }
@@ -463,7 +476,7 @@ func (v Value) MapRange() *MapIter {
 	if v.Kind() != Map {
 		panic("reflect: MapRange of non-map type")
 	}
-	keys, vals := runtime.ReflectMapPairs(v.data)
+	keys, vals := runtime.ReflectMapPairs(v.dataWord())
 	extra := runtime.ReflectExtra(v.typ.rt)
 	return &MapIter{
 		keys: keys,
@@ -487,10 +500,11 @@ func (v Value) MapIndex(key Value) Value {
 	if v.Kind() != Map {
 		panic("reflect: MapIndex of non-map type")
 	}
-	if v.data == nil {
+	d := v.dataWord()
+	if d == nil {
 		return Value{}
 	}
-	val, ok := runtime.ReflectMapAccess(v.data, key.Interface())
+	val, ok := runtime.ReflectMapAccess(d, key.Interface())
 	if !ok {
 		return Value{}
 	}
@@ -541,8 +555,26 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 		if v.flag&(flagField|flagIndex) == 0 {
 			runtime.ReflectSetBoxString(v.data, runtime.ReflectString(boxed))
 		}
-	case Struct, Slice, Map, Pointer, Interface, Array:
-		// Composites: Set through flagField/flagIndex parents.
+	case Struct:
+		// Whole addressable struct from New().Elem(): shallow-copy fields
+		// into the existing object (encoding/json Marshal needs this).
+		src := Value{typ: v.typ, data: boxed}
+		n := v.NumField()
+		for i := 0; i < n; i++ {
+			df := v.Field(i)
+			if !df.CanSet() {
+				continue
+			}
+			df.Set(src.Field(i))
+		}
+	case Map, Slice, Pointer, Interface, Chan, Func:
+		if v.flag&flagRefBox != 0 {
+			runtime.ReflectSetBoxRef(v.data, boxed)
+			return
+		}
+		// Composites without a box: Set through flagField/flagIndex parents.
+	case Array:
+		// Whole array Set from New().Elem() is not yet wired.
 	}
 }
 
@@ -790,7 +822,14 @@ func New(t Type) Value {
 	}
 	data := runtime.ReflectNew(r.rt)
 	pt := asRtype(PointerTo(t))
-	return Value{typ: pt, data: data}
+	fl := flag(0)
+	switch t.Kind() {
+	case Map, Slice, Interface, Chan, Func:
+		// Zero is a null ref; box it so New(t).Elem() is addressable and Set works.
+		data = runtime.ReflectNewRefBox(data)
+		fl = flagRefBox
+	}
+	return Value{typ: pt, data: data, flag: fl}
 }
 
 func MakeSlice(typ Type, len, cap int) Value {

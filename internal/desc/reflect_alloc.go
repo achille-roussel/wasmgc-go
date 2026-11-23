@@ -27,6 +27,73 @@ func (g *gen) fillReflectSetBoxString() {
 	g.fillReflectSetBox("runtime.ReflectSetBoxString", "$go.box.string", &ir.Ref{Named: "$go.string"})
 }
 
+func (g *gen) fillReflectSetBoxRef() {
+	f := g.mod.LookupFunc("runtime.ReflectSetBoxRef")
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureBoxRef()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	g.fillReflectSetBox("runtime.ReflectSetBoxRef", "$go.box.ref", anyT)
+}
+
+func (g *gen) fillReflectNewRefBox() {
+	name := "runtime.ReflectNewRefBox"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureBoxRef()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	v := &ir.Var{Name: "v", Typ: anyT}
+	boxTy := &ir.Ref{Named: "$go.box.ref"}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.Return{Results: []ir.Expr{&ir.Instr{
+			Op:   ir.OpRefCast,
+			Type: anyT,
+			Args: []ir.Expr{&ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: boxTy,
+				Args: []ir.Expr{&ir.Name{Raw: "v", Var: v}},
+			}},
+		}}},
+	}}
+	g.replaceBody(name, []*ir.Var{v}, []ir.Type{anyT}, body)
+}
+
+func (g *gen) fillReflectUnboxRef() {
+	name := "runtime.ReflectUnboxRef"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureBoxRef()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	boxTy := &ir.Ref{Named: "$go.box.ref"}
+	b := &ir.Var{Name: "b", Typ: boxTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: b},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefNull, Type: anyT},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: b}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpStructGet, Type: boxTy, Field: "v",
+					Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
+				}}},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{data}, []ir.Type{anyT}, body)
+}
+
 // ensureBoxString interns the mutable string holder for reflect.New(string)
 // / SetString. Kept out of the unconditional prelude so empty_main stays 208.
 func (g *gen) ensureBoxString() {
@@ -36,6 +103,19 @@ func (g *gen) ensureBoxString() {
 		Super: "$go.object",
 		Fields: []ir.Field{
 			{Name: "v", Type: &ir.Ref{Named: "$go.string"}, Mut: true},
+		},
+	})
+}
+
+// ensureBoxRef interns a mutable anyref holder for reflect.New(map/slice/…).
+func (g *gen) ensureBoxRef() {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.box.ref",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "v", Type: anyT, Mut: true},
 		},
 	})
 }

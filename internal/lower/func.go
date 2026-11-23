@@ -42,8 +42,12 @@ type funcLower struct {
 	labels        map[string]*labelTargets
 
 	// M5: closures, defer, recover.
-	cells                map[types.Object]*ir.Var
-	cellInits            []cellInit
+	cells     map[types.Object]*ir.Var
+	cellInits []cellInit
+	// plainDirty marks locals written via the plain var (not the cell) since
+	// the last cell sync. buildClosure syncs local→cell only when dirty so
+	// loop-carried closure writes to the cell are not wiped by a stale local.
+	plainDirty           map[types.Object]bool
 	hasDefer             bool
 	deferUsesList        bool
 	deferInLoop          bool

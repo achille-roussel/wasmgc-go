@@ -274,6 +274,17 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			out = append(out, defs...)
 		}
 	}
+	// Parallel assignment (a, b = b, a): evaluate every RHS before any LHS
+	// write. Pairwise assign would corrupt swaps used by slices.Sort*.
+	parallel := len(s.Lhs) > 1
+	type rhsSlot struct {
+		expr ir.Expr
+		tmp  *ir.Temp
+	}
+	var slots []rhsSlot
+	if parallel {
+		slots = make([]rhsSlot, len(s.Lhs))
+	}
 	for i := range s.Lhs {
 		want, err := fl.lhsType(s.Lhs[i])
 		if err != nil {
@@ -370,11 +381,26 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			}
 			out = append(out, stmts...)
 		}
+		if parallel {
+			tmp := fl.newTemp(want)
+			out = append(out, fl.assignTemp(tmp, rhs))
+			slots[i] = rhsSlot{expr: fl.useTemp(tmp), tmp: tmp}
+			continue
+		}
 		as, err := fl.assignTo(s.Lhs[i], rhs)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, as...)
+	}
+	if parallel {
+		for i := range s.Lhs {
+			as, err := fl.assignTo(s.Lhs[i], slots[i].expr)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, as...)
+		}
 	}
 	return out, nil
 }
@@ -493,12 +519,14 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			}
 		}
 		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
+			fl.markPlainDirty(obj)
 			return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 		}
 		v, err := fl.lookupVar(lhs)
 		if err != nil {
 			return nil, err
 		}
+		fl.markPlainDirty(obj)
 		return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 	case *ast.StarExpr:
 		ptr, stmts, err := fl.expr(lhs.X, nil)
