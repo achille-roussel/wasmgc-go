@@ -70,7 +70,49 @@ Achille answered the product questions below. The design documents are written t
 
 **Rejected.** Dual `(array v128)` representation (B); bridge-first default kernels (C); lane-build `Load*` as the shipped lowering (D).
 
-**Related, not a dependency.** Hand-written WAT assembly (`12-wasm-assembly.md`, PR #5) is the likely place for SIMD kernels that already operate on **linear-memory** bridge data (or other multi-block loops the intrinsic language cannot express). That path does not require Multibyte Array Access and does not change this decision: GC `[]byte` SIMD still waits on M11's gate. `11-simd.md` cross-links `12` without depending on it landing first.
+**Related, not a dependency.** Hand-written WAT assembly (`12-wasm-assembly.md`, §§8–12 below) is the place for SIMD kernels that already operate on **linear-memory** bridge data (or other multi-block loops the intrinsic language cannot express). That path does not require Multibyte Array Access and does not change this decision: GC `[]byte` SIMD still waits on M11's gate.
+
+## 8. Hand-written `.wat` escape hatch adopted
+
+**Decision.** Adopt hand-written Wasm assembly: body-less Go decls bound to `*_wasmgc.wat`, wasmdecl signature checks, and merge into the one module. Native Go `.s` stays rejected. Compiler intrinsics cover tiny 1–3 opcode helpers (`array.copy`, `array.len`, `ref.eq`, …); WAT is for multi-instruction kernels (bytealg, hashing, later linear-bridge SIMD, crypto).
+
+**Date.** 2026-11-23.
+
+**Rationale.** The binding model matches Go's assembler without a Go stack or ABI0/ABIInternal split (`12-wasm-assembly.md`, `prototypes/wasm-asm/`). Intrinsics alone cannot express multi-block loops cleanly; a full opcode DSL package is lower priority than a small intrinsic set plus WAT.
+
+**Rejected.** No escape hatch (intrinsics / generic Go only); delaying WAT until after SIMD / M10.
+
+## 9. Embed watgo; shell out until ready
+
+**Decision.** Parse WAT by embedding [watgo](https://github.com/eliben/watgo) (pure Go, finished-proposal dialect including GC and EH). Until watgo is vendored and wired beside `internal/wasm`, the driver may shell out to `wasm-tools parse` the same way the prototypes do.
+
+**Date.** 2026-11-23.
+
+**Rationale.** Compiler binary size is irrelevant. A hand-written subset parser underestimates GC type syntax, rec groups, and EH. Shell-out is acceptable as a temporary bridge, not the product dependency.
+
+## 10. No checked-in `.wasm` binaries in v1
+
+**Decision.** Asm source in v1 is WAT text only. Checked-in `.wasm` object files are out. A later release may accept decoded `.wasm` with wasmdecl still applied; that is not v1.
+
+**Date.** 2026-11-23.
+
+**Rationale.** WAT is reviewable and stays aligned with the `$go.*` prelude. Binaries go stale and are opaque in review.
+
+## 11. `nosuspend` default in `runtime` and `internal/bytealg`
+
+**Decision.** Asm functions in `runtime` and `internal/bytealg` default to `//go:wasmgc nosuspend` (must not call a suspending import). Opt out explicitly when a kernel must park. Other packages keep opt-in `nosuspend`.
+
+**Date.** 2026-11-23.
+
+**Rationale.** Leaf kernels that accidentally import `park` / `gosched` / `js.Await` are hard to spot in WAT. Default-deny in the hot packages matches the role of those files.
+
+## 12. Temporary `wasm-merge` allowed for M6 hash kernels
+
+**Decision.** M6 map hashing may ship optional WAT kernels through a temporary Binaryen `wasm-merge` path in the driver (std kernels only) before the in-tree merger in `internal/wasm` lands. Maps must still compile and pass with generic Go / intrinsics when that path is absent. The in-tree merger remains the product end state; `wasm-ld` / tool-conventions objects stay out.
+
+**Date.** 2026-11-23.
+
+**Rationale.** The prototype proved GC type fusion via `wasm-merge` (`prototypes/wasm-asm/`). Allowing it unblocks early hash kernels without coupling map correctness to finishing the merger. Feature-flag footguns (`--enable-gc`, `--enable-reference-types`, multivalue) stay documented in `12`.
 
 ## Follow-ons (not open product choices)
 
@@ -79,4 +121,4 @@ Achille answered the product questions below. The design documents are written t
 
 ## Open
 
-Nothing from the SIMD study remains open after decision 7. Other studies may append questions here.
+Nothing from the SIMD study or the Wasm-assembly study remains open after decisions 7–12. Other studies may append questions here.

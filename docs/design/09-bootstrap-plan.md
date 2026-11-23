@@ -58,7 +58,7 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 ### M6 — maps
 
-**Scope.** The open-addressed map, per-type hash and equal, seed, tombstones, iteration snapshot, NaN keys, interface keys, delete during range.
+**Scope.** The open-addressed map, per-type hash and equal, seed, tombstones, iteration snapshot, NaN keys, interface keys, delete during range. Generic Go / intrinsic hashing is enough for the exit. Optional `*_wasmgc.wat` hash kernels may use a temporary Binaryen `wasm-merge` path until the in-tree merger lands ([`12-wasm-assembly.md`](12-wasm-assembly.md), decision 12 in `10`); maps must still pass when that path is absent.
 
 **Exit.** The map rows of `08-testing.md`. A test that a NaN key is not found. A test that two maps with the same keys iterate from different seeds often enough that a fixed-order implementation fails the test (run the iterator start index through `fastrand` and check it is not a constant).
 

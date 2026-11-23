@@ -53,7 +53,9 @@ The loader therefore uses `go list` only as a module-aware file inventory:
 
 `go/types.Config.Sizes` is `StdSizes{WordSize: 4, MaxAlign: 4}`. Those sizes are the `unsafe.Sizeof` fiction of `05-unsafe-and-reflect.md`. They are not field offsets in a Wasm struct. The lowerer never calls `Sizes.Offsetsof` to compute a `struct.get` immediate; it uses the field index in the Wasm struct type from `03-type-mapping.md`. wasm3 had the opposite bug available: `go/types.StdSizes` still reported a string as two words while the backend passed one reference (`docs/wasm3-study/03-stdlib-and-unsafe.md`). One size table, used only for the three `unsafe` builtins, removes that split.
 
-Cgo files are a compile error naming the file. Assembly files that survive the filter are a compile error naming the file and the package; the materializer is supposed to have dropped them before a user package is compiled. A user package that ships only a `.s` implementation of a function fails here, on purpose.
+Cgo files are a compile error naming the file. Native Go assembly (`.s`) that survives the filter is a compile error naming the file and the package; the materializer is supposed to have dropped them before a user package is compiled. A user package that ships only a `.s` implementation of a function fails here, on purpose.
+
+Hand-written **Wasm** assembly (`.wat`) is a different path: body-less Go funcs bound to WAT, merged into the one module after codegen ([`12-wasm-assembly.md`](12-wasm-assembly.md), decisions 8–12). It is not enabled in M0–M5. When enabled, the loader also collects `*_wasmgc.wat` under the same build-constraint rules as Go files; asm in `runtime` / `internal/bytealg` defaults to `nosuspend`.
 
 ### The check before IR
 
@@ -129,7 +131,7 @@ The module path is `github.com/achille-roussel/wasmgc-go`.
 | `internal/lower` | AST to IR | Wasm opcodes |
 | `internal/escape` | the escape pass | codegen |
 | `internal/codegen` | IR to a Wasm module value | LEB128 details beyond what `internal/wasm` exports |
-| `internal/wasm` | binary encoding, validation-by-construction of sections | Go types |
+| `internal/wasm` | binary encoding, validation-by-construction of sections; later, merge of hand-written WAT ([`12`](12-wasm-assembly.md)) | Go types |
 | `std/src/runtime` and the other rewrites | the Go runtime the generated code calls | the compiler |
 | `lib/wasmgc.js` | imports the module expects | anything about IR |
 
