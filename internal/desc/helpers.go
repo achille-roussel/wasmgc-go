@@ -1,6 +1,8 @@
 package desc
 
 import (
+	"go/types"
+
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -27,6 +29,9 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectUnboxI64()
 	g.fillReflectUnboxF32()
 	g.fillReflectUnboxF64()
+	g.fillReflectSliceOf()
+	g.fillReflectPointerTo()
+	g.fillReflectMapOfEmpty()
 	return nil
 }
 
@@ -549,6 +554,107 @@ func (g *gen) fillReflectMapField(name, field string) {
 		&ir.Unreachable{},
 	}}
 	g.replaceBody(name, []*ir.Var{extra}, []ir.Type{&ir.Ref{Null: true, Named: "$go.type"}}, body)
+}
+
+// fillReflectSliceOf builds runtime.ReflectSliceOf(t) → descriptor for []T
+// via a dense id dispatch over types present after closeUniverse.
+func (g *gen) fillReflectSliceOf() {
+	g.fillReflectCtorByElemID("runtime.ReflectSliceOf", func(elem *typeRec) *typeRec {
+		if elem.goType == nil {
+			return nil
+		}
+		want := TypeKey(types.NewSlice(elem.goType))
+		return g.types[want]
+	})
+}
+
+func (g *gen) fillReflectPointerTo() {
+	g.fillReflectCtorByElemID("runtime.ReflectPointerTo", func(elem *typeRec) *typeRec {
+		if elem.goType == nil {
+			return nil
+		}
+		want := TypeKey(types.NewPointer(elem.goType))
+		return g.types[want]
+	})
+}
+
+func (g *gen) fillReflectMapOfEmpty() {
+	empty := types.NewStruct(nil, nil)
+	g.fillReflectCtorByElemID("runtime.ReflectMapOfEmpty", func(elem *typeRec) *typeRec {
+		if elem.goType == nil || !types.Comparable(elem.goType) {
+			return nil
+		}
+		want := TypeKey(types.NewMap(elem.goType, empty))
+		return g.types[want]
+	})
+}
+
+// fillReflectCtorByElemID replaces a body-less runtime helper that maps an
+// element/key descriptor to a constructed type descriptor by dense id.
+func (g *gen) fillReflectCtorByElemID(name string, lookup func(*typeRec) *typeRec) {
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	t := &ir.Var{Name: "t", Typ: typeTy}
+	nullT := &ir.Instr{Op: ir.OpRefNull, Type: typeTy}
+	idV := &ir.Var{Name: "id", Typ: ir.TypeI32}
+
+	// Build id → result global mapping from known descriptors.
+	type arm struct {
+		id     int32
+		global string
+	}
+	var arms []arm
+	keys := make([]string, 0, len(g.types))
+	for k := range g.types {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	for _, k := range keys {
+		elem := g.types[k]
+		if elem == nil || elem.id < 0 {
+			continue
+		}
+		res := lookup(elem)
+		if res == nil || res.global == "" {
+			continue
+		}
+		arms = append(arms, arm{id: elem.id, global: res.global})
+	}
+
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{nullT}}
+	for i := len(arms) - 1; i >= 0; i-- {
+		a := arms[i]
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "id", Var: idV},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(a.id)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: a.global},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: idV},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullT}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "id", Var: idV}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id",
+					Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
+				}},
+				chain,
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{t}, []ir.Type{typeTy}, body)
 }
 
 func (g *gen) fillReflectUnboxI32() {

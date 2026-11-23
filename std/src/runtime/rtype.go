@@ -129,3 +129,15 @@ func ReflectMapKey(extra unsafe.Pointer) *Rtype
 
 // ReflectMapElem reads $go.extra.map.elem.
 func ReflectMapElem(extra unsafe.Pointer) *Rtype
+
+// ReflectSliceOf returns the descriptor for []T given T's descriptor.
+// Body-less: desc fills an id→global.get table over the closed universe.
+func ReflectSliceOf(t *Rtype) *Rtype
+
+// ReflectPointerTo returns the descriptor for *T given T's descriptor.
+// Body-less: desc fills an id→global.get table over the closed universe.
+func ReflectPointerTo(t *Rtype) *Rtype
+
+// ReflectMapOfEmpty returns the descriptor for map[K]struct{} given K's descriptor.
+// Body-less: desc fills an id→global.get table over the closed universe.
+func ReflectMapOfEmpty(key *Rtype) *Rtype

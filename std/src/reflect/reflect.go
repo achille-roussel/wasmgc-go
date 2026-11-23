@@ -344,31 +344,31 @@ func (v Value) MapKeys() []Value {
 
 func (v Value) MapIndex(key Value) Value { return Value{} }
 
-func (v Value) NumMethod() int        { return 0 }
-func (v Value) Method(int) Value      { return Value{} }
-func (v Value) CanSet() bool          { return false }
-func (v Value) Set(x Value)           {}
-func (v Value) SetBool(x bool)           {}
-func (v Value) SetInt(x int64)           {}
-func (v Value) SetUint(x uint64)         {}
-func (v Value) SetFloat(x float64)       {}
-func (v Value) SetComplex(x complex128)  {}
-func (v Value) SetString(x string)       {}
-func (v Value) SetBytes(x []byte)        {}
-func (v Value) SetCap(n int)             {}
-func (v Value) SetLen(n int)             {}
-func (v Value) SetPointer(x unsafe.Pointer) {}
-func (v Value) CanComplex() bool         { return false }
-func (v Value) CanFloat() bool           { return false }
-func (v Value) CanInt() bool             { return false }
-func (v Value) CanUint() bool            { return false }
+func (v Value) NumMethod() int                    { return 0 }
+func (v Value) Method(int) Value                  { return Value{} }
+func (v Value) CanSet() bool                      { return false }
+func (v Value) Set(x Value)                       {}
+func (v Value) SetBool(x bool)                    {}
+func (v Value) SetInt(x int64)                    {}
+func (v Value) SetUint(x uint64)                  {}
+func (v Value) SetFloat(x float64)                {}
+func (v Value) SetComplex(x complex128)           {}
+func (v Value) SetString(x string)                {}
+func (v Value) SetBytes(x []byte)                 {}
+func (v Value) SetCap(n int)                      {}
+func (v Value) SetLen(n int)                      {}
+func (v Value) SetPointer(x unsafe.Pointer)       {}
+func (v Value) CanComplex() bool                  { return false }
+func (v Value) CanFloat() bool                    { return false }
+func (v Value) CanInt() bool                      { return false }
+func (v Value) CanUint() bool                     { return false }
 func (v Value) OverflowComplex(x complex128) bool { return false }
 func (v Value) OverflowFloat(x float64) bool      { return false }
 func (v Value) OverflowInt(x int64) bool          { return false }
 func (v Value) OverflowUint(x uint64) bool        { return false }
-func (v Value) Convert(t Type) Value     { return Value{} }
-func (v Value) Slice(i, j int) Value     { return Value{} }
-func (v Value) Slice3(i, j, k int) Value { return Value{} }
+func (v Value) Convert(t Type) Value              { return Value{} }
+func (v Value) Slice(i, j int) Value              { return Value{} }
+func (v Value) Slice3(i, j, k int) Value          { return Value{} }
 func (v Value) FieldByIndex(index []int) Value {
 	v2 := v
 	for _, i := range index {
@@ -417,11 +417,30 @@ func ValueOf(i any) Value {
 	return Value{typ: wrap(runtime.ReflectType(i)), data: runtime.ReflectData(i)}
 }
 
-func PointerTo(t Type) Type           { return t }
-func PtrTo(t Type) Type               { return PointerTo(t) }
-func SliceOf(t Type) Type             { return t }
-func ArrayOf(n int, t Type) Type      { return t }
-func MapOf(key, elem Type) Type       { return &rtype{kind: uint8(Map), str: "map"} }
+func PointerTo(t Type) Type {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return t
+	}
+	return wrap(runtime.ReflectPointerTo(r.rt))
+}
+func PtrTo(t Type) Type { return PointerTo(t) }
+func SliceOf(t Type) Type {
+	r := asRtype(t)
+	if r == nil || r.rt == nil {
+		return t
+	}
+	return wrap(runtime.ReflectSliceOf(r.rt))
+}
+func ArrayOf(n int, t Type) Type { return t }
+func MapOf(key, elem Type) Type {
+	k := asRtype(key)
+	e := asRtype(elem)
+	if k != nil && k.rt != nil && e != nil && e.Kind() == Struct && e.NumField() == 0 {
+		return wrap(runtime.ReflectMapOfEmpty(k.rt))
+	}
+	return &rtype{kind: uint8(Map), str: "map"}
+}
 func ChanOf(dir ChanDir, t Type) Type { return t }
 func StructOf(fields []StructField) Type {
 	return &rtype{kind: uint8(Struct), str: "struct"}
@@ -431,14 +450,14 @@ func FuncOf(in, out []Type, variadic bool) Type {
 }
 func TypeFor[T any]() Type { return TypeOf((*T)(nil)).Elem() }
 
-func Zero(t Type) Value                   { return Value{typ: asRtype(t)} }
-func New(t Type) Value                    { return Value{} }
+func Zero(t Type) Value                      { return Value{typ: asRtype(t)} }
+func New(t Type) Value                       { return Value{} }
 func MakeSlice(typ Type, len, cap int) Value { return Value{} }
-func MakeMap(typ Type) Value              { return Value{} }
-func MakeMapWithSize(typ Type, n int) Value { return Value{} }
-func Append(s Value, x ...Value) Value    { return s }
-func Copy(dst, src Value) int             { return 0 }
-func DeepEqual(a, b any) bool             { return a == b }
+func MakeMap(typ Type) Value                 { return Value{} }
+func MakeMapWithSize(typ Type, n int) Value  { return Value{} }
+func Append(s Value, x ...Value) Value       { return s }
+func Copy(dst, src Value) int                { return 0 }
+func DeepEqual(a, b any) bool                { return a == b }
 
 // rtype implements Type. When rt != nil it is backed by $go.type.
 type rtype struct {
@@ -582,11 +601,11 @@ func (t *rtype) Field(i int) StructField {
 	}
 }
 
-func (t *rtype) NumIn() int                  { return 0 }
-func (t *rtype) NumOut() int                 { return 0 }
-func (t *rtype) In(i int) Type               { return nil }
-func (t *rtype) Out(i int) Type              { return nil }
-func (t *rtype) Implements(Type) bool        { return false }
+func (t *rtype) NumIn() int           { return 0 }
+func (t *rtype) NumOut() int          { return 0 }
+func (t *rtype) In(i int) Type        { return nil }
+func (t *rtype) Out(i int) Type       { return nil }
+func (t *rtype) Implements(Type) bool { return false }
 func (t *rtype) AssignableTo(u Type) bool {
 	return t != nil && u != nil && t.Kind() == u.Kind()
 }

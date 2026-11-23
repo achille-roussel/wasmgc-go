@@ -74,24 +74,24 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 }
 
 type typeRec struct {
-	key      string
-	goType   types.Type // may be nil for synthetic
-	global   string
-	id       int32
-	kind     int
-	name     string
+	key        string
+	goType     types.Type // may be nil for synthetic
+	global     string
+	id         int32
+	kind       int
+	name       string
 	comparable bool
-	ptrElem  string // type key of element for pointers
+	ptrElem    string // type key of element for pointers
 }
 
 type itabRec struct {
-	key       string // full itab global name
-	ifaceKey  string
-	concKey   string
-	iface     *types.Interface
-	concrete  types.Type
-	typeName  string // Wasm itab struct type name
-	methods   []methodSlot
+	key      string // full itab global name
+	ifaceKey string
+	concKey  string
+	iface    *types.Interface
+	concrete types.Type
+	typeName string // Wasm itab struct type name
+	methods  []methodSlot
 }
 
 type methodSlot struct {
@@ -324,6 +324,51 @@ func (g *gen) collectFromProgram() {
 		}
 		if tr := g.types[it.ifaceKey]; tr != nil && tr.goType == nil && it.iface != nil {
 			tr.goType = it.iface
+		}
+	}
+	g.closeUniverse()
+}
+
+// closeUniverse extends the descriptor set with one constructor step:
+// *T, []T, and map[T]struct{} for every comparable T already in B.
+// See docs/design/05-unsafe-and-reflect.md (universe U = B ∪ …).
+func (g *gen) closeUniverse() {
+	type pair struct {
+		key string
+		typ types.Type
+	}
+	var base []pair
+	for key, tr := range g.types {
+		if tr.goType == nil {
+			continue
+		}
+		base = append(base, pair{key: key, typ: tr.goType})
+	}
+	empty := types.NewStruct(nil, nil)
+	for _, p := range base {
+		t := p.typ
+		// *T
+		ptr := types.NewPointer(t)
+		pk := TypeKey(ptr)
+		g.needTypeKey(pk)
+		if tr := g.types[pk]; tr != nil && tr.goType == nil {
+			tr.goType = ptr
+		}
+		// []T
+		sl := types.NewSlice(t)
+		sk := TypeKey(sl)
+		g.needTypeKey(sk)
+		if tr := g.types[sk]; tr != nil && tr.goType == nil {
+			tr.goType = sl
+		}
+		// map[T]struct{} when T is comparable
+		if types.Comparable(t) {
+			m := types.NewMap(t, empty)
+			mk := TypeKey(m)
+			g.needTypeKey(mk)
+			if tr := g.types[mk]; tr != nil && tr.goType == nil {
+				tr.goType = m
+			}
 		}
 	}
 }
@@ -1192,6 +1237,15 @@ func TypeKey(t types.Type) string {
 		return "[]" + TypeKey(t.Elem())
 	case *types.Array:
 		return fmt.Sprintf("[%d]%s", t.Len(), TypeKey(t.Elem()))
+	case *types.Map:
+		return "map[" + TypeKey(t.Key()) + "]" + TypeKey(t.Elem())
+	case *types.Struct:
+		if t.NumFields() == 0 {
+			return "struct{}"
+		}
+		return strings.ReplaceAll(t.String(), " ", "_")
+	case *types.Chan:
+		return strings.ReplaceAll(t.String(), " ", "_")
 	default:
 		return strings.ReplaceAll(t.String(), " ", "_")
 	}
@@ -1551,6 +1605,20 @@ func kindFromKey(key string) (kind int, name string, comparable bool) {
 	}
 	if strings.HasPrefix(key, "[]") {
 		return KindSlice, key, false
+	}
+	if strings.HasPrefix(key, "map[") {
+		return KindMap, key, false
+	}
+	if strings.HasPrefix(key, "chan ") || strings.HasPrefix(key, "chan_") ||
+		strings.HasPrefix(key, "<-chan") || strings.HasPrefix(key, "chan<-") {
+		return KindChan, key, true
+	}
+	if strings.HasPrefix(key, "[") {
+		// [N]T array
+		return KindArray, key, true
+	}
+	if key == "struct{}" || strings.HasPrefix(key, "struct{") {
+		return KindStruct, key, true
 	}
 	return KindStruct, key, true
 }
