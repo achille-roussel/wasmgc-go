@@ -1044,7 +1044,7 @@ func TestM7SizeBudgets(t *testing.T) {
 		want int
 	}{
 		{"empty_main", 208},
-		{"println", 1031},
+		{"println", 1277}, // float/complex print helpers live in print.go
 	} {
 		dir := t.TempDir()
 		srcDir := filepath.Join("testdata", tc.name)
