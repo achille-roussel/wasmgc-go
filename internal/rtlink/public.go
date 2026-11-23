@@ -21,10 +21,17 @@ var publicStubSyms = []string{
 	"runtime.Callers",
 	"runtime.CallersFrames",
 	"runtime.Stack",
+	"runtime.NumCPU",
+	"runtime.Breakpoint",
+	"runtime.ReadMemStats",
+	"runtime.MemProfile",
 	"runtime.(*Func).Name",
 	"runtime.(*Func).Entry",
 	"runtime.(*Func).FileLine",
 	"runtime.(*Frames).Next",
+	"runtime.(*MemProfileRecord).InUseBytes",
+	"runtime.(*MemProfileRecord).InUseObjects",
+	"runtime.(*MemProfileRecord).Stack",
 }
 
 // EnsurePublic links thin public runtime stubs (GC, Caller, Stack, …) when
