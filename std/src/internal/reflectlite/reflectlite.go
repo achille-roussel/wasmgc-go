@@ -288,7 +288,19 @@ func (t *rtype) Comparable() bool {
 	switch t.Kind() {
 	case Slice, Map, Func:
 		return false
+	case Array:
+		return t.Elem().Comparable()
+	case Struct:
+		n := t.NumField()
+		for i := 0; i < n; i++ {
+			ft := t.Field(i).Type
+			if ft == nil || !ft.Comparable() {
+				return false
+			}
+		}
+		return true
 	}
+	// Basics, pointers, interfaces, chans: comparable.
 	return true
 }
 

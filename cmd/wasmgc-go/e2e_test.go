@@ -79,6 +79,15 @@ func TestM3NewIntE2E(t *testing.T) {
 	runM2(t, "new_int", "3\n", 16384)
 }
 
+// TestIfaceUnwrapAssertE2E: error → .(interface{Unwrap() error}) and the
+// matching type-switch arm need assert-site itabs (desc.synthesizeAssertItabs).
+func TestIfaceUnwrapAssertE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "iface_unwrap_assert", "inner\ninner\n", 32768)
+}
+
 func runM2(t *testing.T, name, wantStdout string, maxSize int) {
 	t.Helper()
 	dir := t.TempDir()

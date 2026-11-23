@@ -58,6 +58,7 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 		types:    map[string]*typeRec{},
 		itabs:    map[string]*itabRec{},
 		ifaces:   map[string]bool{},
+		asserts:  map[string]bool{},
 		wrappers: map[string]bool{},
 		equals:   map[string]bool{},
 		boxes:    map[string]bool{},
@@ -66,6 +67,7 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 	g.scanModule()
 	if prog != nil {
 		g.collectFromProgram()
+		g.synthesizeAssertItabs()
 	}
 	if err := g.emitAll(); err != nil {
 		return err
@@ -106,6 +108,7 @@ type gen struct {
 	types    map[string]*typeRec
 	itabs    map[string]*itabRec
 	ifaces   map[string]bool // iface keys needed for OpIfaceCall (itabtype)
+	asserts  map[string]bool // iface keys that are OpIfaceAssert destinations
 	wrappers map[string]bool
 	equals   map[string]bool
 	boxes    map[string]bool
@@ -212,6 +215,14 @@ func (g *gen) scanModule() {
 			case ir.OpIfaceAssert:
 				if in.Global != "" {
 					g.needTypeKey(in.Global) // type key
+					// iface→iface asserts (and iface type-switch arms) need
+					// $go.itab.<J>.@.<C> globals for every live concrete C that
+					// implements J. OpIfaceMake alone only emits itabs for the
+					// conversion site's interface, not assert destinations.
+					if strings.HasPrefix(in.Str, "iface") {
+						g.asserts[in.Global] = true
+						g.ifaces[in.Global] = true
+					}
 				}
 			case ir.OpChanRecv, ir.OpChanSend:
 				// Typed moves / comma-ok unbox need the element descriptor
@@ -340,6 +351,69 @@ func (g *gen) collectFromProgram() {
 		}
 	}
 	g.closeUniverse()
+}
+
+// synthesizeAssertItabs emits itabs for iface→iface assert targets.
+// expandIfaceToIfaceAssert scans $go.itab.<J>.@.* globals; without these,
+// asserts like err.(interface{Unwrap() error}) always fail.
+func (g *gen) synthesizeAssertItabs() {
+	if len(g.asserts) == 0 {
+		return
+	}
+	type conc struct {
+		key string
+		typ types.Type
+	}
+	seen := map[string]bool{}
+	var concretes []conc
+	for _, it := range g.itabs {
+		if it.concKey == "" || it.concrete == nil || seen[it.concKey] {
+			continue
+		}
+		seen[it.concKey] = true
+		concretes = append(concretes, conc{key: it.concKey, typ: it.concrete})
+	}
+	assertKeys := make([]string, 0, len(g.asserts))
+	for k := range g.asserts {
+		assertKeys = append(assertKeys, k)
+	}
+	sortStrings(assertKeys)
+	for _, ifaceKey := range assertKeys {
+		if ifaceKey == "any" || ifaceKey == "interface{}" {
+			continue
+		}
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil || iface.Empty() {
+			continue
+		}
+		if tr := g.types[ifaceKey]; tr != nil && tr.goType == nil {
+			tr.goType = iface
+		}
+		var ifaceTy types.Type = iface
+		if tr := g.types[ifaceKey]; tr != nil && tr.goType != nil {
+			ifaceTy = tr.goType
+		}
+		for _, c := range concretes {
+			if !types.Implements(c.typ, iface) {
+				continue
+			}
+			name := ItabGlobal(ifaceTy, c.typ)
+			// ItabGlobal uses TypeKey(ifaceTy); for anonymous interfaces that
+			// matches ifaceKey. If a Named wrapper diverges, force the assert key.
+			if TypeKey(ifaceTy) != ifaceKey {
+				name = "$go.itab." + ifaceKey + ".@." + c.key
+			}
+			g.needItabFromName(name)
+			if it := g.itabs[name]; it != nil {
+				if it.concrete == nil {
+					it.concrete = c.typ
+				}
+				if it.iface == nil {
+					it.iface = iface
+				}
+			}
+		}
+	}
 }
 
 // closeUniverse extends the descriptor set with one constructor step:
@@ -1572,6 +1646,12 @@ func Sanitize(s string) string {
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, " ", "_")
 	s = strings.ReplaceAll(s, "{}", "empty")
+	// Anonymous iface keys include braces/parens (e.g. interface{Unwrap() error}).
+	s = strings.ReplaceAll(s, "{", "_")
+	s = strings.ReplaceAll(s, "}", "_")
+	s = strings.ReplaceAll(s, "(", "_")
+	s = strings.ReplaceAll(s, ")", "_")
+	s = strings.ReplaceAll(s, ",", "_")
 	return s
 }
 

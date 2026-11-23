@@ -2177,11 +2177,17 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 					fl.vars[obj] = v
 				}
 				if len(cc.List) == 1 && !nilCase {
+					assertStr := "concrete,ok"
+					if isIface(caseTy) {
+						// Interface case: convert via itab rewrite, not concrete
+						// type-identity (errors.Is switches on Unwrap interfaces).
+						assertStr = "iface,ok"
+					}
 					assert := &ir.Instr{
 						Op:     ir.OpIfaceAssert,
 						Type:   irTy,
 						Global: desc.TypeKey(caseTy),
-						Str:    "concrete,ok",
+						Str:    assertStr,
 						I32:    1,
 						Args:   []ir.Expr{fl.useVar(ifaceV)},
 					}
@@ -2223,11 +2229,16 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 			} else {
 				ct := fl.typeOf(texpr)
 				key := desc.TypeKey(ct)
+				testStr := "test"
+				if isIface(ct) {
+					// Match when the dynamic concrete implements the case iface.
+					testStr = "iface,test"
+				}
 				cmp = &ir.Instr{
 					Op:     ir.OpIfaceAssert,
 					Type:   ir.TypeI32,
 					Global: key,
-					Str:    "test",
+					Str:    testStr,
 					Args:   []ir.Expr{fl.useVar(ifaceV)},
 				}
 			}
