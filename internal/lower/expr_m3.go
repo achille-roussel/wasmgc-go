@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -75,6 +76,14 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 	case *ast.StarExpr:
 		// &*p → p
 		return fl.expr(x.X, want)
+	case *ast.CompositeLit:
+		// &T{...} — composite is already a heap object; *Struct is the same ref.
+		return fl.compositeLit(x, want)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return fl.addrOf(x.X, want)
+		}
+		return nil, nil, fl.errorf(x, "cannot take address of %T", x)
 	default:
 		return nil, nil, fl.errorf(x, "cannot take address of %T", x)
 	}
@@ -342,6 +351,16 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 	case *ir.Ref:
 		if t.Named == "$go.string" {
 			return &ir.Instr{Op: ir.OpStringLit, Str: ""}, nil
+		}
+		if t.Named == "$go.complex64" || t.Named == "$go.complex128" {
+			fl.pkg.mod.InternType(&ir.TypeDef{
+				Name: t.Named, Kind: ir.TypeStruct, Super: "$go.object",
+				Fields: []ir.Field{
+					{Name: "real", Type: ir.TypeF64, Mut: true},
+					{Name: "imag", Type: ir.TypeF64, Mut: true},
+				},
+			})
+			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	default:

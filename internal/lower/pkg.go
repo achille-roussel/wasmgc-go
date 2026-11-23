@@ -54,7 +54,7 @@ func (l *pkgLower) lower() error {
 					l.globals[obj] = g
 					if vs.Values != nil && i < len(vs.Values) {
 						fl := l.newInitLower()
-						ex, stmts, err := fl.expr(vs.Values[i], ty)
+						ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
 						if err != nil {
 							return err
 						}

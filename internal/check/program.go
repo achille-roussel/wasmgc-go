@@ -1,6 +1,8 @@
 package check
 
 import (
+	"go/types"
+
 	"github.com/achille-roussel/wasmgc-go/internal/load"
 )
 
@@ -39,6 +41,11 @@ func Check(prog *load.Program, opts Options) ([]Diagnostic, error) {
 			if opts.VetFail {
 				d.Severity = SeverityError
 			}
+			diags = append(diags, d)
+		}
+		reach := ReachableFuncs([]*types.Package{pkg.Types}, pkg.Info, pkg.Syntax)
+		for _, d := range CheckReflectConstructors(prog.Fset, pkg.Info, pkg.Syntax, reach) {
+			d.Severity = SeverityError
 			diags = append(diags, d)
 		}
 	}

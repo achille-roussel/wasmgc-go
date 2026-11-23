@@ -41,14 +41,25 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Struct:
 		// Anonymous struct.
 		return l.mapAnonStruct(t)
+	case *types.Interface:
+		return typeIface, nil
 	case *types.Signature:
-		return nil, fmt.Errorf("function type not supported as value in M3: %s", t)
+		// Opaque funcref — enough for reflectlite.Swapper's result type; calling
+		// through an arbitrary func value is not supported until closures land.
+		return &ir.Ref{Null: true, Heap: ir.HeapFunc}, nil
 	case *types.Tuple:
 		return nil, fmt.Errorf("tuple type not a single value: %s", t)
+	case *types.Map:
+		return nil, fmt.Errorf("map type not supported until M6: %s", t)
+	case *types.Chan:
+		return nil, fmt.Errorf("chan type not supported until M7: %s", t)
 	default:
-		return nil, fmt.Errorf("unsupported type in M3: %s", t)
+		return nil, fmt.Errorf("unsupported type in M4: %s", t)
 	}
 }
+
+// typeIface is (ref null $go.iface) — nil interface is a null ref (03).
+var typeIface = &ir.Ref{Null: true, Named: "$go.iface"}
 
 func (fl *funcLower) mapType(t types.Type) (ir.Type, error) {
 	return fl.pkg.mapType(t)
@@ -68,6 +79,9 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 		return ir.TypeF64, nil
 	case types.String:
 		return typeString, nil
+	case types.UnsafePointer:
+		// unsafe.Pointer is anyref (05-unsafe-and-reflect).
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 	case types.UntypedBool:
 		return ir.TypeI32, nil
 	case types.UntypedInt, types.UntypedRune:
@@ -78,8 +92,10 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 		return typeString, nil
 	case types.UntypedNil:
 		return nil, fmt.Errorf("untyped nil needs a typed context")
-	case types.Complex64, types.Complex128, types.UntypedComplex:
-		return nil, fmt.Errorf("complex numbers not supported in M3")
+	case types.Complex64:
+		return &ir.Ref{Null: true, Named: "$go.complex64"}, nil
+	case types.Complex128, types.UntypedComplex:
+		return &ir.Ref{Null: true, Named: "$go.complex128"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported basic type %s", t)
 	}

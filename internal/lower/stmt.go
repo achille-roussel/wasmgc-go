@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -44,11 +45,11 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 	case *ast.ForStmt:
 		return fl.forStmt(s, "")
 	case *ast.RangeStmt:
-		return nil, fl.errorf(s, "range not supported in M1/M2")
+		return fl.rangeStmt(s, "")
 	case *ast.SwitchStmt:
 		return fl.switchStmt(s, "")
 	case *ast.TypeSwitchStmt:
-		return nil, fl.errorf(s, "type switch not supported in M1/M2")
+		return fl.typeSwitchStmt(s)
 	case *ast.BranchStmt:
 		return fl.branchStmt(s)
 	case *ast.LabeledStmt:
@@ -93,16 +94,31 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 			fl.extraLocals = append(fl.extraLocals, v)
 			// VarDef is emitted once in lowerFunc preamble.
 			if vs.Values != nil && i < len(vs.Values) {
-				ex, stmts, err := fl.expr(vs.Values[i], ty)
+				ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignVar(v, ex))
+			} else if needsZeroInit(ty) {
+				z, err := fl.zeroValue(ty)
+				if err != nil {
+					return nil, fl.errorf(name, "%v", err)
+				}
+				out = append(out, fl.assignVar(v, z))
 			}
 		}
 	}
 	return out, nil
+}
+
+func needsZeroInit(ty ir.Type) bool {
+	r, ok := ty.(*ir.Ref)
+	if !ok {
+		return false
+	}
+	// Non-nullable refs have no Wasm default; initialize to the Go zero value.
+	return !r.Null && r.Heap == 0 && r.Named != ""
 }
 
 func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
@@ -166,7 +182,17 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 		} else {
 			var stmts []ir.Stmt
 			var err error
-			rhs, stmts, err = fl.expr(s.Rhs[i], want)
+			dstGo := fl.typeOf(s.Lhs[i])
+			if dstGo == nil {
+				if id, ok := s.Lhs[i].(*ast.Ident); ok {
+					if obj := fl.info.Defs[id]; obj != nil {
+						dstGo = obj.Type()
+					} else if obj := fl.info.Uses[id]; obj != nil {
+						dstGo = obj.Type()
+					}
+				}
+			}
+			rhs, stmts, err = fl.coerceExpr(s.Rhs[i], dstGo, want)
 			if err != nil {
 				return nil, err
 			}
@@ -182,10 +208,6 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 }
 
 func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
-	call, ok := s.Rhs[0].(*ast.CallExpr)
-	if !ok {
-		return nil, fl.errorf(s, "multi-value assignment requires a call")
-	}
 	var out []ir.Stmt
 	if s.Tok == token.DEFINE {
 		for _, lhs := range s.Lhs {
@@ -199,6 +221,13 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			}
 			out = append(out, defs...)
 		}
+	}
+	if ta, ok := s.Rhs[0].(*ast.TypeAssertExpr); ok {
+		return fl.multiAssignTypeAssert(s, ta, out)
+	}
+	call, ok := s.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return nil, fl.errorf(s, "multi-value assignment requires a call or type assert")
 	}
 	resultTypes := make([]ir.Type, len(s.Lhs))
 	for i, lhs := range s.Lhs {
@@ -220,6 +249,43 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 		}
 		out = append(out, as...)
 	}
+	return out, nil
+}
+
+func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssertExpr, out []ir.Stmt) ([]ir.Stmt, error) {
+	if len(s.Lhs) != 2 {
+		return nil, fl.errorf(s, "type assert comma-ok wants 2 LHS")
+	}
+	ex, stmts, err := fl.typeAssert(ta, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, stmts...)
+	// Materialize two results: value and ok.
+	valTy, err := fl.lhsType(s.Lhs[0])
+	if err != nil {
+		return nil, err
+	}
+	okTy := ir.TypeI32
+	vt := fl.newTemp(valTy)
+	ot := fl.newTemp(okTy)
+	out = append(out, &ir.Assign{
+		Lhs: []ir.Dest{
+			{Temp: vt, Name: vt.Name},
+			{Temp: ot, Name: ot.Name},
+		},
+		Rhs: ex,
+	})
+	as0, err := fl.assignTo(s.Lhs[0], fl.useTemp(vt))
+	if err != nil {
+		return nil, err
+	}
+	as1, err := fl.assignTo(s.Lhs[1], fl.useTemp(ot))
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, as0...)
+	out = append(out, as1...)
 	return out, nil
 }
 
@@ -350,10 +416,14 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 	var results []ir.Expr
 	for i, r := range s.Results {
 		var want ir.Type
+		var dstGo types.Type
 		if i < len(fl.results) {
 			want = fl.results[i]
 		}
-		ex, stmts, err := fl.expr(r, want)
+		if fl.sig != nil && i < fl.sig.Results().Len() {
+			dstGo = fl.sig.Results().At(i).Type()
+		}
+		ex, stmts, err := fl.coerceExpr(r, dstGo, want)
 		if err != nil {
 			return nil, err
 		}
@@ -479,7 +549,7 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 	case *ast.SwitchStmt:
 		return fl.switchStmt(body, name)
 	case *ast.RangeStmt:
-		return nil, fl.errorf(s, "range not supported in M1/M2")
+		return fl.rangeStmt(body, name)
 	default:
 		breakL := "$" + name
 		fl.labels[name] = &labelTargets{breakLabel: breakL}
@@ -494,6 +564,113 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 		}
 		return []ir.Stmt{&ir.Block{Name: breakL, Body: &ir.Seq{Stmts: stmts}}}, nil
 	}
+}
+
+// rangeStmt lowers for-range over slices (and arrays) to an index loop.
+// Maps/chans/strings wait for later milestones.
+func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
+	xType := fl.typeOf(s.X)
+	if xType == nil {
+		return nil, fl.errorf(s.X, "range: no type")
+	}
+	u := xType.Underlying()
+	switch u.(type) {
+	case *types.Slice, *types.Array:
+		// ok
+	default:
+		return nil, fl.errorf(s.X, "range over %s not supported in M4", xType)
+	}
+	xIR, err := fl.mapType(xType)
+	if err != nil {
+		return nil, fl.errorf(s.X, "%v", err)
+	}
+	x, xstmts, err := fl.expr(s.X, xIR)
+	if err != nil {
+		return nil, err
+	}
+	var out []ir.Stmt
+	out = append(out, xstmts...)
+	xv := fl.newVar("rng", xIR)
+	out = append(out, fl.assignVar(xv, x))
+
+	lenEx := &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(xv)}}
+	lenV := fl.newVar("rlen", ir.TypeI32)
+	out = append(out, fl.assignVar(lenV, lenEx))
+
+	i := fl.newVar("ri", ir.TypeI32)
+	out = append(out, fl.assignVar(i, fl.i32const(0)))
+
+	// Bind range vars if present.
+	var keyObj, valObj types.Object
+	if s.Key != nil {
+		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
+			keyObj = fl.info.Defs[id]
+			if keyObj != nil {
+				fl.vars[keyObj] = i
+			}
+		}
+	}
+	var valVar *ir.Var
+	if s.Value != nil {
+		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
+			valObj = fl.info.Defs[id]
+			if valObj != nil {
+				vt, err := fl.mapType(valObj.Type())
+				if err != nil {
+					return nil, fl.errorf(s.Value, "%v", err)
+				}
+				valVar = &ir.Var{Name: id.Name, Typ: vt}
+				fl.vars[valObj] = valVar
+				fl.extraLocals = append(fl.extraLocals, valVar)
+			}
+		}
+	}
+	_ = keyObj
+
+	var breakL, contL, loopL string
+	if goLabel != "" {
+		breakL = "$" + goLabel + ".break"
+		contL = "$" + goLabel + ".cont"
+		loopL = "$" + goLabel
+		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
+	} else {
+		breakL = fl.freshLabel("break")
+		contL = fl.freshLabel("cont")
+		loopL = fl.freshLabel("L")
+	}
+	fl.breakStack = append(fl.breakStack, breakL)
+	fl.continueStack = append(fl.continueStack, contL)
+	defer func() {
+		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
+		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
+		if goLabel != "" {
+			delete(fl.labels, goLabel)
+		}
+	}()
+
+	bodySeq := &ir.Seq{}
+	// if i >= len { br break }
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
+		Label: breakL,
+		Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
+	})
+	if valVar != nil {
+		elem := &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
+	}
+	inner, err := fl.stmtBlock(s.Body)
+	if err != nil {
+		return nil, err
+	}
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Block{Name: contL, Body: inner})
+	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(i, &ir.Instr{
+		Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(1)},
+	}))
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
+
+	loop := &ir.Loop{Name: loopL, Body: bodySeq}
+	out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{loop}}})
+	return out, nil
 }
 
 func (fl *funcLower) branchStmt(s *ast.BranchStmt) ([]ir.Stmt, error) {
@@ -812,4 +989,182 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 		return seq.Stmts, nil
 	}
 	return []ir.Stmt{r}, nil
+}
+
+func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
+	var out []ir.Stmt
+	if s.Init != nil {
+		init, err := fl.stmt(s.Init)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, init...)
+	}
+	// Assign form: switch x := v.(type)  or  switch v.(type)
+	var tagExpr ast.Expr
+	var bind *ast.Ident
+	switch a := s.Assign.(type) {
+	case *ast.ExprStmt:
+		ta, ok := a.X.(*ast.TypeAssertExpr)
+		if !ok || ta.Type != nil {
+			return nil, fl.errorf(s, "bad type switch assign")
+		}
+		tagExpr = ta.X
+	case *ast.AssignStmt:
+		if len(a.Lhs) != 1 || len(a.Rhs) != 1 {
+			return nil, fl.errorf(s, "bad type switch assign")
+		}
+		id, ok := a.Lhs[0].(*ast.Ident)
+		if !ok {
+			return nil, fl.errorf(s, "bad type switch bind")
+		}
+		bind = id
+		ta, ok := a.Rhs[0].(*ast.TypeAssertExpr)
+		if !ok || ta.Type != nil {
+			return nil, fl.errorf(s, "bad type switch rhs")
+		}
+		tagExpr = ta.X
+	default:
+		return nil, fl.errorf(s, "unsupported type switch assign %T", s.Assign)
+	}
+
+	ifaceEx, stmts, err := fl.expr(tagExpr, typeIface)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, stmts...)
+	ifaceV := fl.newVar("ts", typeIface)
+	out = append(out, fl.assignVar(ifaceV, ifaceEx))
+
+	// If-else chain implements case exclusivity; no outer break block needed
+	// (a trailing br after return left functions with results failing validation).
+	breakL := fl.freshLabel("tsbreak")
+	fl.breakStack = append(fl.breakStack, breakL)
+	defer func() { fl.breakStack = fl.breakStack[:len(fl.breakStack)-1] }()
+
+	var build func(i int) (ir.Region, error)
+	build = func(i int) (ir.Region, error) {
+		if i >= len(s.Body.List) {
+			return &ir.Seq{}, nil
+		}
+		cc := s.Body.List[i].(*ast.CaseClause)
+		bodySeq := &ir.Seq{}
+		// Bind variable for this case when present.
+		if bind != nil && bind.Name != "_" {
+			var caseTy types.Type
+			if len(cc.List) == 1 {
+				caseTy = fl.typeOf(cc.List[0])
+			} else if len(cc.List) == 0 {
+				caseTy = fl.typeOf(tagExpr) // default: interface type
+			}
+			if caseTy != nil {
+				irTy, err := fl.mapType(caseTy)
+				if err != nil {
+					return nil, err
+				}
+				v := &ir.Var{Name: bind.Name, Typ: irTy}
+				// Shadow per-case — use unique IR name.
+				v.Name = bind.Name + "_" + itoa(i)
+				fl.extraLocals = append(fl.extraLocals, v)
+				obj := fl.info.Defs[bind]
+				if obj != nil {
+					fl.vars[obj] = v
+				}
+				if len(cc.List) == 1 {
+					assert := &ir.Instr{
+						Op:     ir.OpIfaceAssert,
+						Type:   irTy,
+						Global: desc.TypeKey(caseTy),
+						Str:    "concrete,ok",
+						I32:    1,
+						Args:   []ir.Expr{fl.useVar(ifaceV)},
+					}
+					// Only use value; ok checked by case guard.
+					vt := fl.newTemp(irTy)
+					ot := fl.newTemp(ir.TypeI32)
+					bodySeq.Stmts = append(bodySeq.Stmts, &ir.Assign{
+						Lhs: []ir.Dest{{Temp: vt, Name: vt.Name}, {Temp: ot, Name: ot.Name}},
+						Rhs: assert,
+					})
+					bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(v, fl.useTemp(vt)))
+				} else {
+					bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(v, fl.useVar(ifaceV)))
+				}
+			}
+		}
+		for _, st := range cc.Body {
+			ss, err := fl.stmt(st)
+			if err != nil {
+				return nil, err
+			}
+			bodySeq.Stmts = append(bodySeq.Stmts, ss...)
+		}
+		if !regionEndsWithReturn(bodySeq) {
+			bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: breakL})
+		}
+
+		if len(cc.List) == 0 {
+			// default
+			return bodySeq, nil
+		}
+		// Match: any of the listed types.
+		var cond ir.Expr
+		for j, texpr := range cc.List {
+			ct := fl.typeOf(texpr)
+			key := desc.TypeKey(ct)
+			cmp := &ir.Instr{
+				Op:     ir.OpIfaceAssert,
+				Type:   ir.TypeI32,
+				Global: key,
+				Str:    "test",
+				Args:   []ir.Expr{fl.useVar(ifaceV)},
+			}
+			if j == 0 {
+				cond = cmp
+			} else {
+				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, cmp}}
+			}
+		}
+		elseR, err := build(i + 1)
+		if err != nil {
+			return nil, err
+		}
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodySeq, Else: elseR}}}, nil
+	}
+	// Find default and non-default order: Go evaluates in order; default last in chain.
+	var cases []*ast.CaseClause
+	var def *ast.CaseClause
+	for _, st := range s.Body.List {
+		cc := st.(*ast.CaseClause)
+		if len(cc.List) == 0 {
+			def = cc
+		} else {
+			cases = append(cases, cc)
+		}
+	}
+	ordered := append([]*ast.CaseClause{}, cases...)
+	if def != nil {
+		ordered = append(ordered, def)
+	}
+	orig := s.Body.List
+	s.Body.List = make([]ast.Stmt, len(ordered))
+	for i, c := range ordered {
+		s.Body.List[i] = c
+	}
+	r, err := build(0)
+	s.Body.List = orig
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, &ir.Block{Name: breakL, Body: r})
+	return out, nil
+}
+
+func regionEndsWithReturn(r ir.Region) bool {
+	seq, ok := r.(*ir.Seq)
+	if !ok || len(seq.Stmts) == 0 {
+		return false
+	}
+	_, ok = seq.Stmts[len(seq.Stmts)-1].(*ir.Return)
+	return ok
 }

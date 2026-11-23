@@ -60,7 +60,13 @@
       "notes": "AnyOverlap shared-backing test"
     },
     "errors": {
-      "tier": "vendor"
+      "tier": "overlay",
+      "overlays": [
+        "errors.go",
+        "wrap.go",
+        "join.go"
+      ],
+      "notes": "M4: New/Is/Unwrap without reflectlite walk; Join stub"
     },
     "strconv": {
       "tier": "vendor"

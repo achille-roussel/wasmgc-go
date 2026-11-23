@@ -38,6 +38,8 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 		return nil, nil, fl.errorf(e, "function literals not supported in M3")
 	case *ast.StarExpr:
 		return fl.starExpr(e, want)
+	case *ast.TypeAssertExpr:
+		return fl.typeAssert(e, want, false)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported expression %T", e)
 	}
@@ -238,6 +240,37 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	}
 	if e.Op == token.ADD && isString(fl.typeOf(e)) {
 		return fl.stringConcat(e)
+	}
+	if e.Op == token.EQL || e.Op == token.NEQ {
+		xt, yt := fl.typeOf(e.X), fl.typeOf(e.Y)
+		if isIface(xt) || isIface(yt) ||
+			(isNilIdent(e.X) && isIface(yt)) ||
+			(isNilIdent(e.Y) && isIface(xt)) {
+			return fl.ifaceCompare(e, e.Op)
+		}
+		// pointer/ref == nil → ref.is_null
+		if isNilIdent(e.Y) && xt != nil {
+			if irt, err := fl.mapType(xt); err == nil {
+				if _, ok := irt.(*ir.Ref); ok {
+					return fl.refNilCompare(e.X, irt, e.Op)
+				}
+			}
+		}
+		if isNilIdent(e.X) && yt != nil {
+			if irt, err := fl.mapType(yt); err == nil {
+				if _, ok := irt.(*ir.Ref); ok {
+					return fl.refNilCompare(e.Y, irt, e.Op)
+				}
+			}
+		}
+		// ref.eq for comparable pointer / string refs
+		if xt != nil {
+			if irt, err := fl.mapType(xt); err == nil {
+				if r, ok := irt.(*ir.Ref); ok && r.Named != "" && r.Named != "$go.string" {
+					return fl.refCompare(e, e.Op)
+				}
+			}
+		}
 	}
 
 	xt := fl.typeOf(e.X)
@@ -512,6 +545,20 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if fl.isBuiltinCall(e) {
 		return fl.builtinAsValue(e, want)
 	}
+	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if sel, isIface := fl.ifaceMethod(fun); isIface {
+			ex, stmts, err := fl.ifaceCall(e, fun, sel)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ex.(*ir.Instr).Type == nil {
+				return nil, nil, fl.errorf(e, "interface method returns no results")
+			}
+			t := fl.newTemp(ex.(*ir.Instr).Type)
+			stmts = append(stmts, fl.assignTemp(t, ex))
+			return fl.useTemp(t), stmts, nil
+		}
+	}
 	name, results, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -526,8 +573,6 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if err != nil {
 		return nil, nil, err
 	}
-	// Nest call as expression when possible (matches fib.ir style for nested ops;
-	// calls that produce values used in larger exprs still get a temp at assign sites).
 	t := fl.newTemp(results[0])
 	call := &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
 	stmts = append(stmts, fl.assignTemp(t, call))
@@ -546,9 +591,22 @@ func (fl *funcLower) isConversion(e *ast.CallExpr) bool {
 func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	dst := fl.typeOf(e)
 	src := fl.typeOf(e.Args[0])
+	if isIface(dst) {
+		return fl.convertToIface(e.Args[0], src, dst, typeIface)
+	}
+	if isIface(src) && !isIface(dst) {
+		return fl.typeAssert(&ast.TypeAssertExpr{X: e.Args[0], Type: e.Fun}, want, false)
+	}
 	dstIR, err := fl.mapType(dst)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	// (*T)(nil) / (func)(nil) → null ref of the destination type.
+	if isUntypedNil(src) {
+		if _, ok := dstIR.(*ir.Ref); ok {
+			return &ir.Instr{Op: ir.OpRefNull, Type: dstIR}, nil, nil
+		}
+		return nil, nil, fl.errorf(e, "nil conversion to non-ref type %s", dst)
 	}
 	srcIR, err := fl.mapType(src)
 	if err != nil {
@@ -569,6 +627,35 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		return x, stmts, nil
 	}
 	return &ir.Instr{Op: conv, Args: []ir.Expr{x}}, stmts, nil
+}
+
+func (fl *funcLower) refCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	x, xstmts, err := fl.expr(e.X, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	eq := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{x, y}}
+	if op == token.NEQ {
+		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
+	}
+	return eq, stmts, nil
+}
+
+func (fl *funcLower) refNilCompare(x ast.Expr, typ ir.Type, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	ex, stmts, err := fl.expr(x, typ)
+	if err != nil {
+		return nil, nil, err
+	}
+	isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ex}}
+	if op == token.NEQ {
+		isnull = &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{isnull}}
+	}
+	return isnull, stmts, nil
 }
 
 func numericConv(src, dst ir.Type, srcU, dstU bool) (ir.Op, error) {
@@ -653,6 +740,30 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 	if fl.isConversion(e) {
 		return nil, nil, fl.errorf(e, "conversion used as statement")
 	}
+	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if sel, isIface := fl.ifaceMethod(fun); isIface {
+			ex, st, err := fl.ifaceCall(e, fun, sel)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, st...)
+			in := ex.(*ir.Instr)
+			var results []ir.Type
+			if in.Type != nil {
+				results = []ir.Type{in.Type}
+			}
+			if !asValue {
+				if len(results) == 0 {
+					stmts = append(stmts, &ir.ExprStmt{X: in})
+				} else {
+					t := fl.newTemp(results[0])
+					stmts = append(stmts, fl.assignTemp(t, in))
+				}
+				return results, stmts, nil
+			}
+			return results, stmts, nil
+		}
+	}
 	name, results, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -705,6 +816,11 @@ func (fl *funcLower) callMaterialize(e *ast.CallExpr, resultTypes []ir.Type) ([]
 }
 
 func (fl *funcLower) callAsExpr(e *ast.CallExpr, resultTypes []ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if sel, isIface := fl.ifaceMethod(fun); isIface {
+			return fl.ifaceCall(e, fun, sel)
+		}
+	}
 	name, _, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -786,6 +902,15 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 	return name, results, nil
 }
 
+// ifaceMethod reports whether the call is through an interface receiver.
+func (fl *funcLower) ifaceMethod(fun *ast.SelectorExpr) (*types.Selection, bool) {
+	sel := fl.info.Selections[fun]
+	if sel == nil || sel.Kind() != types.MethodVal {
+		return nil, false
+	}
+	return sel, isIface(fl.typeOf(fun.X))
+}
+
 func methodIRName(fn *types.Func) string {
 	sig := fn.Type().(*types.Signature)
 	recv := sig.Recv()
@@ -856,16 +981,19 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 	_ = paramOff
 	for i, a := range e.Args {
 		var want ir.Type
+		var dstGo types.Type
 		if sig != nil && i < sig.Params().Len() {
+			dstGo = sig.Params().At(i).Type()
 			var err error
-			want, err = fl.mapType(sig.Params().At(i).Type())
+			want, err = fl.mapType(dstGo)
 			if err != nil {
 				return nil, nil, fl.errorf(a, "%v", err)
 			}
 		} else if t := fl.typeOf(a); t != nil {
+			dstGo = t
 			want, _ = fl.mapType(t)
 		}
-		ex, st, err := fl.expr(a, want)
+		ex, st, err := fl.coerceExpr(a, dstGo, want)
 		if err != nil {
 			return nil, nil, err
 		}
