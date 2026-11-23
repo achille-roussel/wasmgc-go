@@ -1259,13 +1259,14 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
 			return apply(sig)
 		}
-	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr:
+	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr, *ast.TypeAssertExpr:
+		// Includes f.(func(T))(x) — Interface().(func(...))(...) and similar.
 		tv := fl.info.Types[fun]
 		if tv.Type == nil {
 			return nil
 		}
 		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-			return sig
+			return apply(sig)
 		}
 	}
 	return nil

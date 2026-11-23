@@ -1444,9 +1444,64 @@ func TypeKey(t types.Type) string {
 		return strings.ReplaceAll(t.String(), " ", "_")
 	case *types.Chan:
 		return strings.ReplaceAll(t.String(), " ", "_")
+	case *types.Signature:
+		// Param/result names are not part of Go type identity; omit them so
+		// func(x int) int and func(int) int share one descriptor (needed for
+		// Interface().(func(...))(...) and similar type-assert callees).
+		return signatureTypeKey(t)
 	default:
 		return strings.ReplaceAll(t.String(), " ", "_")
 	}
+}
+
+// signatureTypeKey is TypeKey for *types.Signature without parameter names.
+// Mirrors go/types.WriteSignature shape so keys stay stable vs prior String()-based keys.
+func signatureTypeKey(sig *types.Signature) string {
+	var b strings.Builder
+	b.WriteString("func")
+	if recv := sig.Recv(); recv != nil {
+		b.WriteByte('(')
+		b.WriteString(TypeKey(recv.Type()))
+		b.WriteByte(')')
+	}
+	b.WriteByte('(')
+	params := sig.Params()
+	for i := 0; i < params.Len(); i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if sig.Variadic() && i == params.Len()-1 {
+			b.WriteString("...")
+			pt := params.At(i).Type()
+			if sl, ok := types.Unalias(pt).Underlying().(*types.Slice); ok {
+				b.WriteString(TypeKey(sl.Elem()))
+			} else {
+				b.WriteString(TypeKey(pt))
+			}
+			continue
+		}
+		b.WriteString(TypeKey(params.At(i).Type()))
+	}
+	b.WriteByte(')')
+	results := sig.Results()
+	switch results.Len() {
+	case 0:
+		// func(...)
+	case 1:
+		b.WriteByte(' ')
+		b.WriteString(TypeKey(results.At(0).Type()))
+	default:
+		b.WriteString(" (")
+		for i := 0; i < results.Len(); i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(TypeKey(results.At(i).Type()))
+		}
+		b.WriteByte(')')
+	}
+	// Match historical TypeKey(String()) spacing: spaces → underscores.
+	return strings.ReplaceAll(b.String(), " ", "_")
 }
 
 // ItabGlobal returns the IR global name for (iface, concrete).

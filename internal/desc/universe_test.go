@@ -46,6 +46,27 @@ func TestTypeKeyMapEmptyStruct(t *testing.T) {
 	}
 }
 
+func TestTypeKeySignatureIgnoresParamNames(t *testing.T) {
+	intT := types.Typ[types.Int]
+	named := types.NewSignatureType(nil, nil, nil,
+		types.NewTuple(types.NewVar(0, nil, "x", intT)),
+		types.NewTuple(types.NewVar(0, nil, "", intT)),
+		false,
+	)
+	anon := types.NewSignatureType(nil, nil, nil,
+		types.NewTuple(types.NewVar(0, nil, "", intT)),
+		types.NewTuple(types.NewVar(0, nil, "", intT)),
+		false,
+	)
+	gotNamed, gotAnon := TypeKey(named), TypeKey(anon)
+	if gotNamed != gotAnon {
+		t.Fatalf("named=%q anon=%q, want identical keys", gotNamed, gotAnon)
+	}
+	if gotAnon != "func(int)_int" {
+		t.Fatalf("TypeKey=%q, want func(int)_int", gotAnon)
+	}
+}
+
 func TestCloseUniverse(t *testing.T) {
 	mod := &ir.Module{}
 	g := &gen{

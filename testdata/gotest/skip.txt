@@ -468,10 +468,10 @@ recover.go — compile error: build: load: typecheck
 recover1.go — compile error: build: load: typecheck
 recover2.go — wasm validate/compile error
 recover3.go — compile error: IR verify: temp used outside defining region
-reflectmethod1.go — compile error: lower: unsupported callee *ast.TypeAssertExpr
+reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod2.go — compile error: build: load: typecheck
-reflectmethod3.go — compile error: lower: unsupported callee *ast.TypeAssertExpr
-reflectmethod4.go — compile error: lower: unsupported callee *ast.TypeAssertExpr
+reflectmethod3.go — runtime: reflect.Type/Value.Method stub returns zero Value
+reflectmethod4.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod5.go — compile error: codegen
 reflectmethod6.go — compile error: build: load: typecheck
 reflectmethod7.go — compile error: build: load: typecheck

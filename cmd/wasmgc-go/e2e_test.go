@@ -112,6 +112,14 @@ func TestIfaceUnwrapAssertE2E(t *testing.T) {
 	runM2(t, "iface_unwrap_assert", "inner\ninner\n", 32768)
 }
 
+// TestTypeAssertCalleeE2E: f.(func(T))(x) — TypeAssertExpr as call Fun.
+func TestTypeAssertCalleeE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "typeassert_callee", "42\n", 32768)
+}
+
 func runM2(t *testing.T, name, wantStdout string, maxSize int) {
 	t.Helper()
 	dir := t.TempDir()
