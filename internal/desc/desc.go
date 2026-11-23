@@ -347,6 +347,18 @@ func (g *gen) closeUniverse() {
 	empty := types.NewStruct(nil, nil)
 	for _, p := range base {
 		t := p.typ
+		// Skip runtime layout aliases and other runtime package types: their
+		// Wasm shapes ($go.hmap, $go.semaEntry, …) are owned by lower/rtlink
+		// and are not part of the user-visible reflect universe U.
+		if n, ok := types.Unalias(t).(*types.Named); ok {
+			if runtimeStructAliasName(n) != "" {
+				continue
+			}
+			if obj := n.Obj(); obj != nil && obj.Pkg() != nil &&
+				(obj.Pkg().Path() == "runtime" || obj.Pkg().Name() == "runtime") {
+				continue
+			}
+		}
 		// *T
 		ptr := types.NewPointer(t)
 		pk := TypeKey(ptr)

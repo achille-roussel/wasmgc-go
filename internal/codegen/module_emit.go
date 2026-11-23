@@ -48,6 +48,10 @@ var hostImportIR = []struct {
 	{"runtime.goschedImport", "runtime.gosched", false},
 	{"runtime.scheduleTimer", "runtime.scheduleTimer", false},
 	{"runtime.clearTimer", "runtime.clearTimer", false},
+	{"runtime.walltime", "runtime.walltime", false},
+	{"runtime.nanotime", "runtime.nanotime", false},
+	{"runtime.getArgc", "runtime.getArgc", false},
+	{"runtime.getArg", "runtime.getArg", false},
 }
 
 // alwaysSchedImportSigs are Wasm types for the always-on scheduler imports
@@ -99,7 +103,15 @@ func (g *gen) needsHostImport(irName string) bool {
 	if f == nil || !emptyPrintBody(f) {
 		return false
 	}
-	return g.callsHost(irName)
+	if g.callsHost(irName) {
+		return true
+	}
+	// getArg is only invoked from the getArgString codegen fill (reverse bridge).
+	if irName == "runtime.getArg" {
+		gs := g.m.LookupFunc("runtime.getArgString")
+		return gs != nil && emptyPrintBody(gs) && g.callsHost("runtime.getArgString")
+	}
+	return false
 }
 
 func (g *gen) callsHost(name string) bool {
@@ -249,6 +261,9 @@ func (g *gen) emitFuncBodies() error {
 			continue
 		case f.Name == "syscall.writeHost" && g.fillWriteHost:
 			g.wm.AddCode(g.bodyWriteHost())
+			continue
+		case f.Name == "runtime.getArgString" && g.fillGetArgString:
+			g.wm.AddCode(g.bodyGetArgString())
 			continue
 		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
 			if g.hasEH {

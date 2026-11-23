@@ -50,11 +50,23 @@ func (g *gen) ensurePrintStubs() error {
 	if f := g.m.LookupFunc("syscall.writeHost"); f != nil && emptyPrintBody(f) {
 		g.fillWriteHost = true
 	}
-	if !needString && !needInt && !needNL && !g.fillWriteHost {
+	if f := g.m.LookupFunc("runtime.getArgString"); f != nil && emptyPrintBody(f) {
+		g.fillGetArgString = true
+	}
+	if !needString && !needInt && !needNL && !g.fillWriteHost && !g.fillGetArgString {
 		return nil
 	}
-	if !g.hasWrite || !g.hasMemory {
+	if g.fillGetArgString && !g.hasMemory {
+		return fmt.Errorf("codegen: getArgString requires linear memory")
+	}
+	if g.fillGetArgString && !g.hostImported["runtime.getArg"] {
+		return fmt.Errorf("codegen: getArgString requires go.runtime.getArg import")
+	}
+	if (needString || needInt || needNL || g.fillWriteHost) && (!g.hasWrite || !g.hasMemory) {
 		return fmt.Errorf("codegen: print stubs require memory and go.runtime.write")
+	}
+	if !needString && !needInt && !needNL && !g.fillWriteHost {
+		return nil
 	}
 	strRef := wasm.Ref(wasm.TypeIndexHeap(g.types.ByName["$go.string"]))
 

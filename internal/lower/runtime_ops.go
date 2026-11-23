@@ -486,9 +486,11 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		pre = append(pre, pre2...)
 	}
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+	alloc, allocPre := rt.allocArray(arrName, capEx)
+	pre = append(pre, allocPre...)
 	pre = append(pre, &ir.Assign{
 		Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-		Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{capEx}},
+		Rhs: alloc,
 	})
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
@@ -504,6 +506,48 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		},
 	})
 	return pre, nil
+}
+
+// allocArray allocates an array of arrName with the given length. Uses
+// array.new with a zero init when elements are non-defaultable (e.g.
+// (ref $go.string)); otherwise array.new_default.
+func (rt *runtimeLower) allocArray(arrName string, size ir.Expr) (ir.Expr, []ir.Stmt) {
+	if arrName == "$go.array.go.string" {
+		bytesT := &ir.Temp{Name: rt.fresh("ebytes"), Typ: &ir.Ref{Named: "$go.bytes"}}
+		strT := &ir.Temp{Name: rt.fresh("estr"), Typ: &ir.Ref{Named: "$go.string"}}
+		stmts := []ir.Stmt{
+			&ir.Assign{
+				Lhs: []ir.Dest{{Temp: bytesT, Name: bytesT.Name}},
+				Rhs: &ir.Instr{
+					Op:   ir.OpArrayNewDefault,
+					Type: &ir.Ref{Named: "$go.bytes"},
+					Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}},
+				},
+			},
+			&ir.Assign{
+				Lhs: []ir.Dest{{Temp: strT, Name: strT.Name}},
+				Rhs: &ir.Instr{
+					Op:   ir.OpStructNew,
+					Type: &ir.Ref{Named: "$go.string"},
+					Args: []ir.Expr{
+						&ir.Name{Temp: bytesT, Raw: bytesT.Name},
+						&ir.Const{Op: ir.OpI32Const, I64: 0},
+						&ir.Const{Op: ir.OpI32Const, I64: 0},
+					},
+				},
+			},
+		}
+		return &ir.Instr{
+			Op:   ir.OpArrayNew,
+			Type: &ir.Ref{Named: arrName},
+			Args: []ir.Expr{&ir.Name{Temp: strT, Raw: strT.Name}, size},
+		}, stmts
+	}
+	return &ir.Instr{
+		Op:   ir.OpArrayNewDefault,
+		Type: &ir.Ref{Named: arrName},
+		Args: []ir.Expr{size},
+	}, nil
 }
 
 func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {
@@ -953,12 +997,13 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	}
 	pre = append(pre, assignV(sl, sliceEx))
 	// nil slice: treat as empty (len=0,cap=0,off=0, fresh zero-length array).
-	nilSeq := &ir.Seq{Stmts: []ir.Stmt{
+	nilAlloc, nilAllocPre := rt.allocArray(arrName, &ir.Const{Op: ir.OpI32Const, I64: 0})
+	nilSeq := &ir.Seq{Stmts: append(append([]ir.Stmt{}, nilAllocPre...),
 		assignV(lenV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
 		assignV(capV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
 		assignV(offV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
-		assignV(dataV, &ir.Instr{Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}),
-	}}
+		assignV(dataV, nilAlloc),
+	)}
 	nonNil := &ir.Seq{Stmts: []ir.Stmt{
 		assignV(lenV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{useV(sl)}}),
 		assignV(capV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{useV(sl)}}),
@@ -1006,9 +1051,9 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{useV(ncapV), useV(nlenV)}},
 		Then: &ir.Seq{Stmts: rt.panicSliceB()},
 	})
-	growSeq.Stmts = append(growSeq.Stmts, assignV(ndataV, &ir.Instr{
-		Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{useV(ncapV)},
-	}))
+	growAlloc, growAllocPre := rt.allocArray(arrName, useV(ncapV))
+	growSeq.Stmts = append(growSeq.Stmts, growAllocPre...)
+	growSeq.Stmts = append(growSeq.Stmts, assignV(ndataV, growAlloc))
 	growSeq.Stmts = append(growSeq.Stmts, &ir.ExprStmt{X: &ir.Instr{
 		Op: ir.OpArrayCopy, Type: &ir.Ref{Named: arrName}, Type2: &ir.Ref{Named: arrName},
 		Args: []ir.Expr{nnData(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, nnData(dataV), useV(offV), useV(lenV)},

@@ -92,7 +92,7 @@
     },
     "time": {
       "tier": "rewrite",
-      "notes": "M7 minimal: Duration/Time/Sleep/After; Sleep via runtime.TimeSleep"
+      "notes": "M9: Now/Since/Sub via runtime.Walltime; Sleep via TimeSleep; vendor later"
     },
     "sort": {
       "tier": "vendor"
@@ -175,7 +175,7 @@
     },
     "os": {
       "tier": "rewrite",
-      "notes": "M9 expands; placeholder stdio so fmt type-checks under wasmgc (upstream needs js&&wasm)"
+      "notes": "M9: Args from host getArgc/getArg; Write returns PathError/ENOSYS; stdio via syscall"
     },
     "plugin": {
       "tier": "out"

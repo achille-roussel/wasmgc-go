@@ -2,6 +2,10 @@ package runtime
 
 // Timers (docs/design/04). time.Sleep and time.Timer share scheduleTimer /
 // clearTimer host imports. Fire path is a macrotask that calls ready(id).
+//
+// Clocks are body-less host imports (07): walltime → (sec i64, nsec i32),
+// nanotime → i64. Codegen imports them only when called so empty_main stays
+// at the size budget.
 
 // timeSleep parks until ns nanoseconds elapse (linkname for time.Sleep).
 func timeSleep(ns int64) {
@@ -27,10 +31,14 @@ func scheduleTimer(id, lo, hi int32)
 // clearTimer is go.runtime.clearTimer(id).
 func clearTimer(id int32)
 
-// nanotime / walltime: prefer host imports when wasmimport lands; scaffolds
-// keep the stubs in runtime.go until then. Override here with real names.
+// walltime is go.runtime.walltime() -> (i64, i32).
+func walltime() (sec int64, nsec int32)
 
-// nanotimeImport / walltimeImport are placeholders until wasmimport clocks
-// land. Stub bodies avoid empty-result funcs in the Wasm code section.
-func nanotimeImport() int64                  { return 0 }
-func walltimeImport() (sec int64, nsec int32) { return 0, 0 }
+// nanotime is go.runtime.nanotime() -> i64.
+func nanotime() int64
+
+// Walltime is the exported entry for package time's Now.
+func Walltime() (sec int64, nsec int32) { return walltime() }
+
+// Nanotime is the exported monotonic clock for package time / sync.
+func Nanotime() int64 { return nanotime() }

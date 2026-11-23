@@ -767,6 +767,12 @@ func runM8Host(t *testing.T, name string) {
 // JSPI is always required (no opt-out).
 func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 	t.Helper()
+	runM8Args(t, name, wantStdout, maxSize, nil)
+}
+
+// runM8Args is runM8 with optional program args after "--".
+func runM8Args(t *testing.T, name, wantStdout string, maxSize int, progArgs []string) {
+	t.Helper()
 	if !jspiAvailable(t) {
 		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
 	}
@@ -800,7 +806,12 @@ func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 		t.Fatalf("%s.wasm size %d exceeds budget %d", name, len(wasm), maxSize)
 	}
 
-	cmd = exec.Command(exe, "run", "-goroot", goroot, ".")
+	runArgs := []string{"run", "-goroot", goroot, "."}
+	if len(progArgs) > 0 {
+		runArgs = append(runArgs, "--")
+		runArgs = append(runArgs, progArgs...)
+	}
+	cmd = exec.Command(exe, runArgs...)
 	cmd.Dir = dir
 	env := os.Environ()
 	env = append(env, "PATH="+jspiNodePATH())
@@ -823,6 +834,29 @@ func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 	if stdout.String() != wantStdout {
 		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
 	}
+}
+
+// --- M9: time.Now, os.Args, os.Write (docs/design/07, 09) ---
+
+func TestM9TimeNowE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_time_now", "1\n", 0)
+}
+
+func TestM9OsArgsE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8Args(t, "m9_os_args", "hello\n", 0, []string{"hello", "world"})
+}
+
+func TestM9OsWriteE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_os_write", "1\n", 0)
 }
 
 func TestM7SizeBudgets(t *testing.T) {

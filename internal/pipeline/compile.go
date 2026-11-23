@@ -198,6 +198,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsureSched(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	if err := rtlink.EnsureArgs(mod, rewriteDir); err != nil {
+		return nil, err
+	}
 	if err := rtlink.EnsureMaps(mod, rewriteDir); err != nil {
 		return nil, err
 	}
