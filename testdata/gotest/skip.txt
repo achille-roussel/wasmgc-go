@@ -11,7 +11,6 @@ abi/convT64_criteria.go — output mismatch
 abi/defer_recover_results.go — wasm validate/compile error
 abi/idata.go — unsupported: unsafe
 abi/leaf2.go — output mismatch
-abi/map.go — compile error: codegen
 abi/method_wrapper.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*S).M p…
 abi/named_results.go — compile error: codegen
 abi/named_return_stuff.go — compile error: codegen
@@ -124,7 +123,6 @@ fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug352.go — runtime error
 fixedbugs/bug356.go — wasm validate/compile error
 fixedbugs/bug364.go — wasm validate/compile error
-fixedbugs/bug370.go — compile error: codegen
 fixedbugs/bug401.go — wasm validate/compile error
 fixedbugs/bug433.go — runtime error
 fixedbugs/bug434.go — runtime error
@@ -136,12 +134,9 @@ fixedbugs/bug446.go — failed: panic: dummy1 != 1
 fixedbugs/bug454.go — compile error: lower: range over *[10]int not supported
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
-fixedbugs/bug483.go — compile error: codegen
-fixedbugs/bug484.go — compile error: codegen
 fixedbugs/bug491.go — compile error: lower: print of type complex128 not supported in M3 (need string or int)
 fixedbugs/bug494.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*MyInt)…
 fixedbugs/bug499.go — failed: build: pipeline: IR verify: cannot assign refnull $go.hmap to var h1 of type i32 in main.main pipeli…
-fixedbugs/bug500.go — compile error: codegen
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/gcc65755.go — compile error: codegen
@@ -157,7 +152,6 @@ fixedbugs/issue1304.go — runtime error
 fixedbugs/issue13160.go — compile error: build: load: typecheck
 fixedbugs/issue13162.go — runtime error
 fixedbugs/issue14553.go — wasm validate/compile error
-fixedbugs/issue14591.go — compile error: codegen
 fixedbugs/issue14646.go — compile error: codegen
 fixedbugs/issue14651.go — wasm validate/compile error
 fixedbugs/issue14725.go — compile error: lower: untyped nil needs a typed context
@@ -190,14 +184,12 @@ fixedbugs/issue19113.go — wasm validate/compile error
 fixedbugs/issue19246.go — output mismatch
 fixedbugs/issue19710.go — compile error: lower: unsupported deferred builtin delete
 fixedbugs/issue19799.go — compile error: codegen
-fixedbugs/issue20029.go — compile error: codegen
 fixedbugs/issue20530.go — output mismatch
 fixedbugs/issue20811.go — failed: build: pipeline: IR verify: cannot assign ref $go.string to var h4 of type i32 in main.main pipeline…
 fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21687.go — output mismatch
 fixedbugs/issue21879.go — compile error: codegen
 fixedbugs/issue21887.go — output mismatch
-fixedbugs/issue21963.go — compile error: codegen
 fixedbugs/issue22083.go — could not import runtime/debug
 fixedbugs/issue22326.go — output mismatch
 fixedbugs/issue22605.go — failed: panic: interface conversion: type assertion failed
@@ -213,7 +205,6 @@ fixedbugs/issue23734.go — compile error: build: rtlink: typecheck map runtime:
 fixedbugs/issue23814.go — compile error: codegen
 fixedbugs/issue23837.go — compile error: codegen
 fixedbugs/issue24449.go — unsupported: unsafe
-fixedbugs/issue24488.go — compile error: codegen
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue24547.go — compile error: codegen
@@ -241,11 +232,9 @@ fixedbugs/issue29312.go — runtime error
 fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
 fixedbugs/issue29504.go — compile error: codegen
-fixedbugs/issue29735.go — compile error: codegen
 fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30116.go — compile error: lower: untyped nil needs a typed context text/tabwriter: lower: untyped nil needs a typed context
 fixedbugs/issue30116u.go — compile error: lower: untyped nil needs a typed context text/tabwriter: lower: untyped nil needs a typed context
-fixedbugs/issue30476.go — compile error: codegen
 fixedbugs/issue30606.go — wasm validate/compile error
 fixedbugs/issue30709.go — output mismatch
 fixedbugs/issue30977.go — compile error: codegen
@@ -311,7 +300,6 @@ fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue50671.go — failed: build: pipeline: IR verify: return value 1: have f64, want i64 in main.F pipeline: IR verify: return…
 fixedbugs/issue50672.go — compile error: lower: multi-value call used in single-value context
 fixedbugs/issue51101.go — wasm validate/compile error
-fixedbugs/issue51401.go — compile error: codegen
 fixedbugs/issue51913.go — failed: panic: FAIL
 fixedbugs/issue52072.go — compile error: codegen
 fixedbugs/issue52612.go — unsupported: unsafe
@@ -366,7 +354,6 @@ fixedbugs/issue7044.go — output mismatch
 fixedbugs/issue7083.go — could not import runtime/debug
 fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue71857.go — unsupported: unsafe
-fixedbugs/issue71932.go — compile error: codegen
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
 fixedbugs/issue72844.go — compile error: lower: range over *[4]int not supported
 fixedbugs/issue72860.go — runtime error
@@ -395,7 +382,6 @@ fixedbugs/issue79186.go — compile error: build: load: typecheck
 fixedbugs/issue79197.go — runtime error
 fixedbugs/issue79236.go — runtime error
 fixedbugs/issue79236b.go — runtime error
-fixedbugs/issue7944.go — compile error: codegen
 fixedbugs/issue79762.go — could not import runtime/debug
 fixedbugs/issue79812.go — compile error: lower: print of type float64 not supported in M3 (need string or int)
 fixedbugs/issue79886.go — failed: panic: want -2305843009213693952; got 6917529027641081856
@@ -405,7 +391,6 @@ fixedbugs/issue8004.go — compile error: build: load: typecheck
 fixedbugs/issue80127.go — runtime error
 fixedbugs/issue80188.go — compile error: codegen
 fixedbugs/issue80196.go — compile error: lower: print of type *byte not supported in M3 (need string or int)
-fixedbugs/issue8036.go — compile error: codegen
 fixedbugs/issue8039.go — compile error: lower: unsupported deferred builtin copy
 fixedbugs/issue8047.go — compile error: lower: unsupported defer call form *ast.ParenExpr
 fixedbugs/issue8047b.go — runtime error
@@ -416,7 +401,6 @@ fixedbugs/issue80517_3.go — runtime error
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue81089.go — compile error: codegen
 fixedbugs/issue8132.go — compile error: codegen
-fixedbugs/issue8155.go — compile error: codegen
 fixedbugs/issue8158.go — compile error: codegen
 fixedbugs/issue81612.go — compile error: codegen
 fixedbugs/issue81863.go — runtime error
@@ -438,7 +422,6 @@ floatcmp.go — runtime error
 for.go — output mismatch
 func5.go — compile error: lower: unsupported defer call form *ast.CallExpr
 func8.go — wasm validate/compile error
-gc.go — compile error: codegen
 gcgort.go — could not import runtime/debug
 gcstring.go — compile error: codegen
 genmeth.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …

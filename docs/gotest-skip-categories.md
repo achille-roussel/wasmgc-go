@@ -48,8 +48,8 @@ follow-up sweeps):
 | Cluster | ~N | Direction |
 |---|---:|---|
 | Unresolved method / iface call names | ~28 | Codegen of method values / wrappers |
-| Missing `runtime.GC` stub | ~26 | Thin runtime stub (no-op or host) |
-| Missing `runtime.Caller` / `Callers` | ~17 | Panic/stack metadata; ties to output mismatch |
+| Missing `runtime.GC` stub | ~26 → fewer | `rtlink.EnsurePublic` no-op stubs; real GC still pending |
+| Missing `runtime.Caller` / `Callers` | ~17 → fewer | Stub returns `ok=false` / empty frames; real PC metadata pending |
 | Unknown heap type (`$go.slice.i8`, …) | ~16 | Type registration |
 | Unknown itab global | ~11 | Itab discovery for assert sites |
 | Other `runtime.*` (`GOMAXPROCS`, `Stack`, `Goexit`, …) | ~11 | Stubs |
@@ -144,7 +144,7 @@ Order prefers unlock count and localization over size work.
 | C | Untyped nil (`append` + method-expr) | −3…17 GOROOT |
 | D | `println` float/complex | −19…39 GOROOT |
 | E | errors Unwrap/Is itabs | −5…7 stdlib |
-| F | Runtime stubs (`GC`, `Caller`/`Callers`) | −40+ GOROOT codegen |
+| F | Runtime stubs (`GC`, `Caller`/`Callers`) | **shipped thin stubs** (−17 GOROOT); real GC/PC still pending |
 | G | Panic/stack output parity | subset of 52 output mismatch |
 | H | Stdlib overlays (`runtime/debug`, `log`, …) | −31 GOROOT imports |
 | I | ring / strconv / maps.Clone edge cases | −10…20 stdlib |
