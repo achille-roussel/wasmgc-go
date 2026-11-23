@@ -42,8 +42,8 @@ closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
 complit2.go — runtime error: stack overflow in fmt equality of nested structs with any
-const.go — compile error: lower: untyped nil needs a typed context
-const4.go — compile error: lower: untyped nil needs a typed context
+const.go — IR verify: cannot assign f64 to var i of type i32 in main.ints
+const4.go — output mismatch
 const7.go — could not import io/ioutil
 convT2X.go — codegen: missing struct field
 convert.go — wasm validate/compile error
@@ -117,7 +117,7 @@ fixedbugs/bug434.go — runtime error
 fixedbugs/bug436.go — runtime error: package init order (var c = b before var a, b = foo())
 fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
-fixedbugs/bug444.go — compile error: lower: untyped nil needs a typed context
+fixedbugs/bug444.go — runtime error
 fixedbugs/bug446.go — failed: panic: dummy1 != 1
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
@@ -141,7 +141,7 @@ fixedbugs/issue13162.go — runtime error
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — compile error: codegen
 fixedbugs/issue14651.go — wasm validate/compile error
-fixedbugs/issue14725.go — compile error: lower: untyped nil needs a typed context
+fixedbugs/issue14725.go — runtime error: panic: f1 returned 0, wanted 1
 fixedbugs/issue15039.go — compile error: codegen
 fixedbugs/issue15175.go — output mismatch
 fixedbugs/issue15281.go — compile error: build: load: typecheck
@@ -150,7 +150,7 @@ fixedbugs/issue15528.go — unsupported: unsafe
 fixedbugs/issue15975.go — compile error: codegen
 fixedbugs/issue15992.go — compile error: lower: copy wants 2 args
 fixedbugs/issue16016.go — compile error: build: load: typecheck
-fixedbugs/issue16095.go — compile error: lower: untyped nil needs a typed context
+fixedbugs/issue16095.go — runtime error
 fixedbugs/issue16130.go — failed: panic: got string, expected runtime.Error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue16515.go — compile error: codegen
@@ -220,8 +220,8 @@ fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
 fixedbugs/issue29504.go — compile error: codegen
 fixedbugs/issue30041.go — compile error: build: load: typecheck
-fixedbugs/issue30116.go — compile error: lower: untyped nil needs a typed context text/tabwriter: lower: untyped nil needs a typed context
-fixedbugs/issue30116u.go — compile error: lower: untyped nil needs a typed context text/tabwriter: lower: untyped nil needs a typed context
+fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
+fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30606.go — wasm validate/compile error
 fixedbugs/issue30709.go — output mismatch
 fixedbugs/issue30977.go — compile error: codegen
@@ -305,7 +305,7 @@ fixedbugs/issue5607.go — compile error: build: rtlink: typecheck map runtime: 
 fixedbugs/issue56990.go — could not import path/filepath
 fixedbugs/issue57184.go — could not import log
 fixedbugs/issue5753.go — wasm validate/compile error
-fixedbugs/issue57823.go — compile error: lower: not a function: unsafe.SliceData obj=*types.Builtin
+fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
 fixedbugs/issue5793.go — compile error: lower: complex wants 2 args
 fixedbugs/issue5809.go — output mismatch
 fixedbugs/issue5820.go — wasm validate/compile error
@@ -489,7 +489,7 @@ strcopy.go — compile error: build: load: typecheck
 string_lit.go — compile error: codegen
 stringrange.go — output mismatch
 struct0.go — compile error: build: rtlink: typecheck map runtime: typecheck: /agent/repos/wasmgc-go/std/src/runtime/panic_index.…
-switch.go — compile error: lower: untyped nil needs a typed context
+switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — compile error: build: load: typecheck
 turing.go — compile error: codegen
 typeparam/absdiff2.go — failed: build: mono: pending main.numericAbs$complex128.Abs missing package/info mono: pending main.numericA…
@@ -546,7 +546,7 @@ typeparam/issue50690a.go — failed: build: unsubstituted type parameter T unsub
 typeparam/issue50690b.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue50690c.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
-typeparam/issue51521.go — compile error: lower: untyped nil needs a typed context
+typeparam/issue51521.go — compile error: codegen
 typeparam/issue51522a.go — wasm validate/compile error
 typeparam/issue51522b.go — wasm validate/compile error
 typeparam/issue51700.go — compile error: codegen
@@ -565,7 +565,7 @@ typeparam/map.go — failed: panic: got [1 2 3], want [1 2 3]
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
 typeparam/mdempsky/14.go — compile error: codegen
 typeparam/mdempsky/15.go — compile error: codegen
-typeparam/mdempsky/16.go — compile error: lower: untyped nil needs a typed context
+typeparam/mdempsky/16.go — wasm validate/compile error
 typeparam/mdempsky/17.go — compile error: lower: tuple type not a single value: (k any, v any)
 typeparam/mdempsky/18.go — failed: build: pipeline: IR verify: cannot assign i32 to var ok of type refnull $go.iface in main.f$int pipe…
 typeparam/mdempsky/19.go — compile error: codegen
@@ -588,7 +588,7 @@ typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (i
 typeparam/typeswitch3.go — compile error: codegen
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
 typeparam/typeswitch5.go — output mismatch
-typeparam/typeswitch7.go — compile error: lower: untyped nil needs a typed context
+typeparam/typeswitch7.go — output mismatch
 typeswitch.go — wasm validate/compile error
 typeswitch1.go — compile error: lower: variable xx has no IR local (in main.whatis)
 uintptrescapes3.go — unsupported: unsafe
