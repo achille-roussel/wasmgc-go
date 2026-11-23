@@ -6,6 +6,7 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/mono"
@@ -1276,7 +1277,7 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		ex, st, err := fl.intToString(x, src)
 		return ex, append(stmts, st...), err
 	}
-	// string ↔ []byte / [N]byte (docs/design/03: allocate+copy; share for now).
+	// string ↔ []byte / [N]byte (docs/design/03: allocate+copy).
 	// Must run before the generic ref.cast below — both are Ref IR types but
 	// $go.string and $go.slice.i8 are not Wasm subtypes of each other.
 	// Only byte-backed slices share headers; []rune needs a real decode/encode.
@@ -1330,38 +1331,66 @@ func isNumericIR(t ir.Type) bool {
 	return ok
 }
 
-// bytesToString builds a $go.string header from a []byte / [N]byte value.
-// Shares backing (elision); mutation of the source after conversion is UB here.
+// bytesToString builds a $go.string from a []byte / [N]byte value.
+// Allocates and copies (docs/design/03): encoder buffers mutate after
+// string([]byte), and sharing would rewrite retained names (json map keys).
 func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir.Expr, []ir.Stmt, error) {
 	var stmts []ir.Stmt
+	bytesTy := &ir.Ref{Null: true, Named: "$go.bytes"}
+	empty := &ir.Instr{Op: ir.OpStringLit, Str: ""}
 	if isSlice(src) {
 		st := srcIR
 		if _, ok := st.(*ir.Ref); !ok {
 			st = &ir.Ref{Null: true, Named: "$go.slice.i8"}
 		}
-		// string(nil []byte) is ""; must not struct.get on a null slice header.
-		empty := &ir.Instr{Op: ir.OpStringLit, Str: ""}
-		tmp := fl.newVar("b2s", typeString) // VarDef via extraLocals preamble
-		thenSeq := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(tmp, empty)}}
-		elseSeq := &ir.Seq{}
-		data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
-		off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
-		len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
-		// .data is already (ref $go.bytes); do not ref.as_non_null.
-		built := &ir.Instr{
-			Op:   ir.OpStructNew,
-			Type: typeString,
-			Args: []ir.Expr{data, off, len_},
-		}
-		elseSeq.Stmts = append(elseSeq.Stmts, fl.assignVar(tmp, built))
+		tmp := fl.newVar("b2s", typeString)
+		srcV := fl.newVar("b2sSrc", st)
+		lenV := fl.newVar("b2sLen", ir.TypeI32)
+		dstV := fl.newVar("b2sDst", bytesTy)
+		stmts = append(stmts, fl.assignVar(srcV, x))
+		// string(nil []byte) is "".
+		nilThen := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(tmp, empty)}}
+		nonNil := &ir.Seq{}
+		nonNil.Stmts = append(nonNil.Stmts,
+			fl.assignVar(lenV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}),
+		)
+		zeroThen := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(tmp, empty)}}
+		copyThen := &ir.Seq{}
+		copyThen.Stmts = append(copyThen.Stmts,
+			fl.assignVar(dstV, &ir.Instr{Op: ir.OpArrayNewDefault, Type: bytesTy, Args: []ir.Expr{fl.useVar(lenV)}}),
+			&ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpArrayCopy, Type: bytesTy, Type2: bytesTy,
+				Args: []ir.Expr{
+					fl.useVar(dstV),
+					fl.i32const(0),
+					&ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
+					&ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
+					fl.useVar(lenV),
+				},
+			}},
+			fl.assignVar(tmp, &ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: typeString,
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dstV)}},
+					fl.i32const(0),
+					fl.useVar(lenV),
+				},
+			}),
+		)
+		nonNil.Stmts = append(nonNil.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(lenV)}},
+			Then: zeroThen,
+			Else: copyThen,
+		})
 		stmts = append(stmts, &ir.If{
-			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{x}},
-			Then: thenSeq,
-			Else: elseSeq,
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+			Then: nilThen,
+			Else: nonNil,
 		})
 		return fl.useVar(tmp), stmts, nil
 	}
-	// [N]byte / *[N]byte: whole array is the data, off=0, len=N.
+	// [N]byte / *[N]byte: copy into a fresh $go.bytes.
 	n := int64(0)
 	if a, ok := types.Unalias(src).Underlying().(*types.Array); ok {
 		n = a.Len()
@@ -1370,15 +1399,36 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 			n = a.Len()
 		}
 	}
-	arr := x
-	if isPtrToArray(src) {
-		// already the array ref
+	if n == 0 {
+		return empty, stmts, nil
 	}
-	return &ir.Instr{
-		Op:   ir.OpStructNew,
-		Type: typeString,
-		Args: []ir.Expr{arr, fl.i32const(0), fl.i32const(n)},
-	}, stmts, nil
+	arrName := "$go.bytes"
+	if r, ok := srcIR.(*ir.Ref); ok && r.Named != "" && r.Named != "$go.bytes" {
+		// *[N]byte / [N]byte may be $go.array.* — still i8 storage for byte arrays.
+		if strings.HasPrefix(r.Named, "$go.array.") || r.Named == "$go.bytes" {
+			arrName = r.Named
+		}
+	}
+	tmp := fl.newVar("b2s", typeString)
+	dstV := fl.newVar("b2sDst", bytesTy)
+	srcArr := x
+	stmts = append(stmts,
+		fl.assignVar(dstV, &ir.Instr{Op: ir.OpArrayNewDefault, Type: bytesTy, Args: []ir.Expr{fl.i32const(n)}}),
+		&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpArrayCopy, Type: bytesTy, Type2: &ir.Ref{Named: arrName},
+			Args: []ir.Expr{fl.useVar(dstV), fl.i32const(0), srcArr, fl.i32const(0), fl.i32const(n)},
+		}},
+		fl.assignVar(tmp, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: typeString,
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dstV)}},
+				fl.i32const(0),
+				fl.i32const(n),
+			},
+		}),
+	)
+	return fl.useVar(tmp), stmts, nil
 }
 
 func (fl *funcLower) stringToBytes(x ir.Expr, dst types.Type, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {

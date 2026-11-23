@@ -228,6 +228,7 @@ const (
 	flagField  // Set via setField(base, slot, …)
 	flagIndex  // Set via setIndex(base, slot, …)
 	flagRefBox // data is $go.box.ref holding a map/slice/iface/chan/func/pointer
+	flagFatPtr // data is $go.ptr.ref; load/store through class get/set (*map, *slice, …)
 )
 
 func (v Value) Kind() Kind {
@@ -270,12 +271,42 @@ func (v Value) Interface() any {
 	if !v.IsValid() {
 		panic("reflect: call of reflect.Value.Interface on zero Value")
 	}
-	d := v.dataWord()
-	if v.Kind() == String {
-		// New(string).Elem() stores $go.box.string; re-box as a plain string.
-		return runtime.ReflectString(d)
+	// Scalars/strings may live in mutable boxes (New().Elem(), fields).
+	// Interface must return a snapshot so map storage / any assignment
+	// does not alias the box (json SetMapIndex, MapIndex round-trips).
+	switch v.Kind() {
+	case String:
+		return runtime.ReflectString(v.dataWord())
+	case Bool:
+		return v.Bool()
+	case Int:
+		return int(v.Int())
+	case Int8:
+		return int8(v.Int())
+	case Int16:
+		return int16(v.Int())
+	case Int32:
+		return int32(v.Int())
+	case Int64:
+		return v.Int()
+	case Uint:
+		return uint(v.Uint())
+	case Uint8:
+		return uint8(v.Uint())
+	case Uint16:
+		return uint16(v.Uint())
+	case Uint32:
+		return uint32(v.Uint())
+	case Uint64:
+		return v.Uint()
+	case Uintptr:
+		return uintptr(v.Uint())
+	case Float32:
+		return float32(v.Float())
+	case Float64:
+		return v.Float()
 	}
-	return runtime.ReflectIface(v.typ.rt, d)
+	return runtime.ReflectIface(v.typ.rt, v.dataWord())
 }
 
 func (v Value) Elem() Value {
@@ -288,12 +319,22 @@ func (v Value) Elem() Value {
 			return Value{}
 		}
 		et := runtime.ReflectPtrElem(runtime.ReflectExtra(v.typ.rt))
+		elem := wrap(et)
 		// Pointee of New(t) / *T is always addressable.
 		fl := flagAddr
 		if v.flag&flagRefBox != 0 {
+			// reflect.New(map/slice/…) boxes the null ref.
 			fl |= flagRefBox
+		} else {
+			// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
+			// Only these kinds use flagRefBox in New; scalars use typed boxes
+			// and structs/arrays use the object ref itself as *T.
+			switch elem.Kind() {
+			case Map, Slice, Interface, Chan, Func:
+				fl |= flagFatPtr
+			}
 		}
-		return Value{typ: wrap(et), data: v.data, flag: fl}
+		return Value{typ: elem, data: v.data, flag: fl}
 	case Interface:
 		if v.data == nil {
 			return Value{}
@@ -374,6 +415,9 @@ func (v Value) dataWord() unsafe.Pointer {
 	}
 	if v.flag&flagIndex != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
 		return runtime.ReflectCallIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot)
+	}
+	if v.flag&flagFatPtr != 0 && v.Kind() != Pointer {
+		return runtime.ReflectFatPtrGet(v.data)
 	}
 	if v.flag&flagRefBox != 0 && v.Kind() != Pointer {
 		return runtime.ReflectUnboxRef(v.data)
@@ -570,6 +614,10 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 	case Map, Slice, Pointer, Interface, Chan, Func:
 		if v.flag&flagRefBox != 0 {
 			runtime.ReflectSetBoxRef(v.data, boxed)
+			return
+		}
+		if v.flag&flagFatPtr != 0 {
+			runtime.ReflectFatPtrSet(v.data, boxed)
 			return
 		}
 		// Composites without a box: Set through flagField/flagIndex parents.

@@ -94,6 +94,133 @@ func (g *gen) fillReflectUnboxRef() {
 	g.replaceBody(name, []*ir.Var{data}, []ir.Type{anyT}, body)
 }
 
+// ensureFatPtrRefTypes interns $go.ptr.ref / class / get / set so reflect can
+// load/store through ValueOf(&mapVar) fat pointers (json Unmarshal).
+func (g *gen) ensureFatPtrRefTypes() {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	g.mod.InternType(&ir.TypeDef{
+		Name:    "$go.get.ref",
+		Kind:    ir.TypeFunc,
+		Params:  []ir.Type{anyT, ir.TypeI32},
+		Results: []ir.Type{anyT},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:   "$go.set.ref",
+		Kind:   ir.TypeFunc,
+		Params: []ir.Type{anyT, ir.TypeI32, anyT},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.class.ref",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "get", Type: &ir.Ref{Named: "$go.get.ref"}},
+			{Name: "set", Type: &ir.Ref{Named: "$go.set.ref"}},
+		},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.ptr.ref",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "class", Type: &ir.Ref{Named: "$go.class.ref"}},
+			{Name: "base", Type: anyT},
+			{Name: "index", Type: ir.TypeI32},
+		},
+	})
+}
+
+func (g *gen) fillReflectFatPtrGet() {
+	name := "runtime.ReflectFatPtrGet"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureFatPtrRefTypes()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	ptrTy := &ir.Ref{Named: "$go.ptr.ref"}
+	classTy := &ir.Ref{Named: "$go.class.ref"}
+	p := &ir.Var{Name: "p", Typ: ptrTy}
+	cl := &ir.Var{Name: "cl", Typ: classTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefNull, Type: anyT},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op:   ir.OpCallRef,
+					Type: &ir.Ref{Named: "$go.get.ref"},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+					},
+				}}},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{data}, []ir.Type{anyT}, body)
+}
+
+func (g *gen) fillReflectFatPtrSet() {
+	name := "runtime.ReflectFatPtrSet"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureFatPtrRefTypes()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	v := &ir.Var{Name: "v", Typ: anyT}
+	ptrTy := &ir.Ref{Named: "$go.ptr.ref"}
+	classTy := &ir.Ref{Named: "$go.class.ref"}
+	p := &ir.Var{Name: "p", Typ: ptrTy}
+	cl := &ir.Var{Name: "cl", Typ: classTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+				}},
+				&ir.ExprStmt{X: &ir.Instr{
+					Op:   ir.OpCallRef,
+					Type: &ir.Ref{Named: "$go.set.ref"},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Name{Raw: "v", Var: v},
+						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "set", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+					},
+				}},
+				&ir.Return{},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{data, v}, nil, body)
+}
+
 // ensureBoxString interns the mutable string holder for reflect.New(string)
 // / SetString. Kept out of the unconditional prelude so empty_main stays 208.
 func (g *gen) ensureBoxString() {

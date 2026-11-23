@@ -184,6 +184,14 @@ func ReflectSetBoxRef(data unsafe.Pointer, v unsafe.Pointer)
 // ReflectUnboxRef reads the anyref from a $go.box.ref data word.
 func ReflectUnboxRef(data unsafe.Pointer) unsafe.Pointer
 
+// ReflectFatPtrGet loads through a $go.ptr.ref fat pointer (e.g. *map, *slice).
+// Body-less: desc fills call_ref through ptr.class.get.
+func ReflectFatPtrGet(data unsafe.Pointer) unsafe.Pointer
+
+// ReflectFatPtrSet stores through a $go.ptr.ref fat pointer.
+// Body-less: desc fills call_ref through ptr.class.set.
+func ReflectFatPtrSet(data unsafe.Pointer, v unsafe.Pointer)
+
 // ReflectMakeMap allocates an empty hmap (all map types share one layout).
 func ReflectMakeMap() unsafe.Pointer {
 	return unsafe.Pointer(makemap(0))

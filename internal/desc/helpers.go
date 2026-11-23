@@ -40,6 +40,8 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectSetBoxRef()
 	g.fillReflectNewRefBox()
 	g.fillReflectUnboxRef()
+	g.fillReflectFatPtrGet()
+	g.fillReflectFatPtrSet()
 	g.fillReflectSliceOf()
 	g.fillReflectPointerTo()
 	g.fillReflectMapOfEmpty()
