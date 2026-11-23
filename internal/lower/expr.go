@@ -1409,7 +1409,9 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 		srcV := fl.newVar("b2sSrc", st)
 		lenV := fl.newVar("b2sLen", ir.TypeI32)
 		dstV := fl.newVar("b2sDst", bytesTy)
-		stmts = append(stmts, fl.assignVar(srcV, x))
+		// Entry-assign empty string so (ref $go.string) is never left
+		// uninitialized if a caller (e.g. package-var init) skips zero-init.
+		stmts = append(stmts, fl.assignVar(tmp, empty), fl.assignVar(srcV, x))
 		// string(nil []byte) is "".
 		nilThen := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(tmp, empty)}}
 		nonNil := &ir.Seq{}

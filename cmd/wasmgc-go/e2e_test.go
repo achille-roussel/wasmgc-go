@@ -914,6 +914,37 @@ func TestM10MapsKeysE2E(t *testing.T) {
 	runM8(t, "m10_maps_keys", "2\n2\n3\n", 0)
 }
 
+// TestPkgStringBytesE2E: package-level string([]byte{…}) must validate under
+// V8 (synthetic init zero-inits non-defaultable $go.string temps).
+func TestPkgStringBytesE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	// bool prints via printint → 1 for true.
+	runM2(t, "pkg_string_bytes", "2\n1\n", 0)
+}
+
+func TestSwitchFallthroughReturnE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "switch_fallthrough_return", "z\no\nother\n", 0)
+}
+
+func TestCopyNilSliceE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "copy_nil_slice", "0\n2\n", 0)
+}
+
+func TestRangeUTF8E2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "range_utf8", "97\n9786\n65533\n3\n", 0)
+}
+
 // TestM9HTTPGetE2E: http.Get of a local Node http server returns the body
 // via fetch (docs/design/09). Passes the server URL as os.Args[0].
 func TestM9HTTPGetE2E(t *testing.T) {
