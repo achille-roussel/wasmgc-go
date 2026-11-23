@@ -423,13 +423,54 @@ func runM6Exit(t *testing.T, name string, wantExit int, wantStdout, wantStderrSu
 
 func jspiAvailable(t *testing.T) bool {
 	t.Helper()
-	out, err := exec.Command("node", "-e",
-		`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`).CombinedOutput()
-	if err != nil {
-		t.Logf("JSPI unavailable: %v %s", err, out)
-		return false
+	for _, node := range jspiNodeCandidates() {
+		out, err := exec.Command(node, "-e",
+			`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`).CombinedOutput()
+		if err == nil {
+			t.Logf("JSPI available via %s", node)
+			return true
+		}
+		t.Logf("JSPI unavailable via %s: %v %s", node, err, out)
 	}
-	return true
+	return false
+}
+
+// jspiNodeCandidates lists node binaries that may expose WebAssembly.Suspending
+// (Node 25+ / 26.13.1 in CI). Prefer PATH "node", then common install locations.
+func jspiNodeCandidates() []string {
+	cands := []string{"node"}
+	if home, err := os.UserHomeDir(); err == nil {
+		cands = append(cands,
+			filepath.Join(home, ".nvm/versions/node/v26.13.1/bin/node"),
+			filepath.Join(home, ".nvm/versions/node/v26.13.0/bin/node"),
+		)
+	}
+	cands = append(cands, "/usr/local/bin/node")
+	return cands
+}
+
+// jspiNodePATH prepends a JSPI-capable node directory to PATH when found.
+func jspiNodePATH() string {
+	p := os.Getenv("PATH")
+	for _, node := range jspiNodeCandidates() {
+		if node == "node" {
+			continue
+		}
+		if _, err := os.Stat(node); err != nil {
+			continue
+		}
+		out, err := exec.Command(node, "-e",
+			`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`).CombinedOutput()
+		if err == nil {
+			dir := filepath.Dir(node)
+			if p == "" {
+				return dir
+			}
+			return dir + string(os.PathListSeparator) + p
+		}
+		_ = out
+	}
+	return p
 }
 
 func materializeGOROOT(t *testing.T, exe string) string {
@@ -487,11 +528,8 @@ func runM7(t *testing.T, name, wantStdout, wantStderrSubstr string, wantExit int
 
 	cmd = exec.Command(exe, "run", "-goroot", goroot, ".")
 	cmd.Dir = dir
-	// Prefer a Node with JSPI when available (e.g. /usr/local/bin/node 26+).
 	env := os.Environ()
-	if p := os.Getenv("PATH"); p != "" && !strings.Contains(p, "/usr/local/bin") {
-		env = append(env, "PATH=/usr/local/bin:"+p)
-	}
+	env = append(env, "PATH="+jspiNodePATH())
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -669,8 +707,12 @@ func TestM8FmtMapE2E(t *testing.T) {
 
 // runM8 builds/runs a fmt program against a materialized GOROOT.
 // maxSize > 0 enforces a names-off Wasm size budget (bytes).
+// fmt pulls sync.Mutex → Semacquire → park, so JSPI (Node 25+) is required.
 func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 	t.Helper()
+	if !jspiAvailable(t) {
+		t.Skip("JSPI (WebAssembly.Suspending) required for M8 fmt (sync.Pool/Mutex park)")
+	}
 	dir := t.TempDir()
 	srcDir := filepath.Join("testdata", name)
 	for _, n := range []string{"main.go", "go.mod"} {
@@ -703,6 +745,9 @@ func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 
 	cmd = exec.Command(exe, "run", "-goroot", goroot, ".")
 	cmd.Dir = dir
+	env := os.Environ()
+	env = append(env, "PATH="+jspiNodePATH())
+	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
