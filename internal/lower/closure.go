@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -409,6 +410,14 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 		}
 	}
 
+	// Key locals by the typechecked (pre-subst) signature objects so Uses/Defs
+	// lookups match. IR types come from the possibly-substituted sig.
+	origSig := sig
+	if tv, ok := fl.info.Types[lit]; ok && tv.Type != nil {
+		if s, ok := tv.Type.Underlying().(*types.Signature); ok {
+			origSig = s
+		}
+	}
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)
 		ty, err := child.mapType(p.Type())
@@ -421,7 +430,11 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 		}
 		v := &ir.Var{Name: name, Typ: ty}
 		child.params = append(child.params, v)
-		child.vars[p] = v
+		key := p
+		if i < origSig.Params().Len() {
+			key = origSig.Params().At(i)
+		}
+		child.vars[key] = v
 	}
 	for i := 0; i < sig.Results().Len(); i++ {
 		r := sig.Results().At(i)
@@ -433,7 +446,11 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 		if r.Name() != "" && r.Name() != "_" {
 			v := &ir.Var{Name: r.Name(), Typ: ty}
 			child.namedResults = append(child.namedResults, v)
-			child.vars[r] = v
+			key := r
+			if i < origSig.Results().Len() {
+				key = origSig.Results().At(i)
+			}
+			child.vars[key] = v
 		}
 	}
 
@@ -515,7 +532,10 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 			// before `go func(){ … ch … }`) only updated the plain local. Sync
 			// the local into the cell immediately before capture so the child
 			// sees the current value.
-			if v := fl.vars[c.obj]; v != nil {
+			// Skip when vars[obj] is the cell itself (nested closure child that
+			// already bound the capture as a cell local — syncing would write
+			// the cell ref into field v).
+			if v := fl.vars[c.obj]; v != nil && v != cv {
 				cellTy := cv.Typ.(*ir.Ref).Named
 				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
 					Op:    ir.OpStructSet,
@@ -620,12 +640,7 @@ func (l *pkgLower) emitTopLevelClosWrapper(wrapper string, fn *types.Func) error
 		results = append(results, ty)
 	}
 	call := &ir.Instr{Op: ir.OpCall, Func: target, Args: args}
-	var body ir.Region
-	if len(results) == 0 {
-		body = &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: call}, &ir.Return{}}}
-	} else {
-		body = &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{call}}}}
-	}
+	body := wrapperCallBody(call, results)
 	l.mod.Funcs = append(l.mod.Funcs, &ir.Func{
 		Name:    wrapper,
 		Params:  params,
@@ -672,7 +687,7 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 	valSig := types.NewSignatureType(nil, nil, nil, msig.Params(), msig.Results(), msig.Variadic())
 	wrapper := methodIRName(fn) + "$mval"
 	if fl.mod.LookupFunc(wrapper) == nil {
-		if err := fl.pkg.emitMethodValueWrapper(wrapper, fn, closName, capField, recvIR); err != nil {
+		if err := fl.pkg.emitMethodValueWrapper(wrapper, fn, closName, capField, recvIR, recvTy); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -693,7 +708,7 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 	return ex, stmts, nil
 }
 
-func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closName, field string, recvIR ir.Type) error {
+func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closName, field string, recvIR ir.Type, recvGo types.Type) error {
 	msig := fn.Type().(*types.Signature)
 	closParam := &ir.Var{Name: "clos", Typ: &ir.Ref{Named: closBaseName}}
 	params := []*ir.Var{closParam}
@@ -731,13 +746,33 @@ func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closNa
 		}
 		results = append(results, ty)
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
-	var body ir.Region
-	if len(results) == 0 {
-		body = &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: call}, &ir.Return{}}}
+	var call ir.Expr
+	if isIface(recvGo) {
+		iface, _ := recvGo.Underlying().(*types.Interface)
+		ifaceKey := desc.TypeKey(recvGo)
+		san := desc.Sanitize(ifaceKey)
+		idx := 0
+		if iface != nil {
+			idx = methodIndex(iface, fn)
+		}
+		var res ir.Type
+		if len(results) > 0 {
+			res = results[0]
+		}
+		call = &ir.Instr{
+			Op:     ir.OpIfaceCall,
+			Type:   res,
+			Type2:  &ir.Ref{Named: "$go.itabtype." + san},
+			Global: ifaceKey,
+			Func:   fn.Name(),
+			Field:  itoa(idx),
+			Str:    "$go.ifacefn." + san + "." + fn.Name(),
+			Args:   callArgs,
+		}
 	} else {
-		body = &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{call}}}}
+		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
 	}
+	body := wrapperCallBody(call, results)
 	l.mod.Funcs = append(l.mod.Funcs, &ir.Func{
 		Name:    wrapper,
 		Params:  params,
@@ -749,6 +784,31 @@ func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closNa
 	return err
 }
 
+// wrapperCallBody returns a body that calls then returns, materializing
+// multi-value results into temps (IR Return cannot nest a multi-result call).
+func wrapperCallBody(call ir.Expr, results []ir.Type) ir.Region {
+	switch len(results) {
+	case 0:
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: call}, &ir.Return{}}}
+	case 1:
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{call}}}}
+	default:
+		temps := make([]*ir.Temp, len(results))
+		lhs := make([]ir.Dest, len(results))
+		rets := make([]ir.Expr, len(results))
+		for i, ty := range results {
+			t := &ir.Temp{Name: "%" + strconv.Itoa(i), Typ: ty}
+			temps[i] = t
+			lhs[i] = ir.Dest{Temp: t, Name: t.Name}
+			rets[i] = &ir.Name{Raw: t.Name, Temp: t}
+		}
+		return &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Assign{Lhs: lhs, Rhs: call},
+			&ir.Return{Results: rets},
+		}}
+	}
+}
+
 // methodExpr lowers T.M (method expression) as a func value.
 func (fl *funcLower) methodExpr(fn *types.Func) (ir.Expr, []ir.Stmt, error) {
 	// Represented as a top-level-style closure whose underlying call is the method.
@@ -756,9 +816,9 @@ func (fl *funcLower) methodExpr(fn *types.Func) (ir.Expr, []ir.Stmt, error) {
 }
 
 // callFuncValue emits call_ref through a func value.
-func (fl *funcLower) callFuncValue(fun ast.Expr, args []ast.Expr, sig *types.Signature) (ir.Expr, []ir.Stmt, error) {
+func (fl *funcLower) callFuncValue(e *ast.CallExpr, sig *types.Signature) (ir.Expr, []ir.Stmt, error) {
 	fl.pkg.ensureClosBase()
-	clos, stmts, err := fl.expr(fun, &ir.Ref{Null: true, Named: closBaseName})
+	clos, stmts, err := fl.expr(e.Fun, &ir.Ref{Null: true, Named: closBaseName})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -786,26 +846,14 @@ func (fl *funcLower) callFuncValue(fun ast.Expr, args []ast.Expr, sig *types.Sig
 	stmts = append(stmts, fl.assignTemp(fnT, fnField))
 	castFn := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: funcTy}, Args: []ir.Expr{fl.useTemp(fnT)}}
 	callArgs := []ir.Expr{
-		&ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: closBaseName}, Args: []ir.Expr{
-			&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useTemp(closT)}},
-		}},
+		&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useTemp(closT)}},
 	}
-	// Actually clos is already ref null $go.clos; for call we need non-null clos of the
-	// concrete type. Use as_non_null then cast if needed. Base clos is fine for wrappers
-	// that take $go.clos; specific clos subtypes are cast at the wrapper if needed.
-	callArgs[0] = &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useTemp(closT)}}
-	for i, a := range args {
-		want, err := fl.mapType(sig.Params().At(i).Type())
-		if err != nil {
-			return nil, nil, err
-		}
-		ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-		if err != nil {
-			return nil, nil, err
-		}
-		stmts = append(stmts, astmts...)
-		callArgs = append(callArgs, ex)
+	argExprs, astmts, err := fl.lowerArgsWithSig(e, sig)
+	if err != nil {
+		return nil, nil, err
 	}
+	stmts = append(stmts, astmts...)
+	callArgs = append(callArgs, argExprs...)
 	callArgs = append(callArgs, castFn)
 	return &ir.Instr{Op: ir.OpCallRef, Type: &ir.Ref{Named: funcTy}, Args: callArgs}, stmts, nil
 }

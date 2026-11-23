@@ -9,6 +9,66 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
+// boxIRToIface wraps an already-lowered concrete value as dst interface.
+func (fl *funcLower) boxIRToIface(x ir.Expr, src, dst types.Type) ir.Expr {
+	box := boxKind(src)
+	itab := desc.ItabGlobal(dst, src)
+	return &ir.Instr{
+		Op:     ir.OpIfaceMake,
+		Type:   typeIface,
+		Global: itab,
+		Str:    "type:" + desc.TypeKey(src),
+		Field:  box,
+		Args:   []ir.Expr{x},
+	}
+}
+
+// callResultGoTypes returns the Go result types of a direct call callee.
+func (fl *funcLower) callResultGoTypes(e *ast.CallExpr) []types.Type {
+	if id := identOf(e.Fun); id != nil {
+		if obj, _ := fl.info.Uses[id].(*types.Func); obj != nil {
+			sig, _ := obj.Type().(*types.Signature)
+			if sig != nil {
+				if len(fl.pkg.subst) > 0 {
+					if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+						sig = s
+					}
+				}
+				out := make([]types.Type, sig.Results().Len())
+				for i := 0; i < sig.Results().Len(); i++ {
+					out[i] = sig.Results().At(i).Type()
+				}
+				return out
+			}
+		}
+	}
+	if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if s := fl.info.Selections[sel]; s != nil {
+			if fn, ok := s.Obj().(*types.Func); ok {
+				sig := fn.Type().(*types.Signature)
+				out := make([]types.Type, sig.Results().Len())
+				for i := 0; i < sig.Results().Len(); i++ {
+					out[i] = sig.Results().At(i).Type()
+				}
+				return out
+			}
+		}
+		if id, ok := sel.X.(*ast.Ident); ok {
+			if _, ok := fl.info.Uses[id].(*types.PkgName); ok {
+				if fn, ok := fl.info.Uses[sel.Sel].(*types.Func); ok {
+					sig := fn.Type().(*types.Signature)
+					out := make([]types.Type, sig.Results().Len())
+					for i := 0; i < sig.Results().Len(); i++ {
+						out[i] = sig.Results().At(i).Type()
+					}
+					return out
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // convertToIface boxes a concrete (or interface) value into wantIface.
 func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	if isIface(src) {
@@ -190,7 +250,8 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		return nil, nil, fl.errorf(fun, "receiver is not an interface")
 	}
 	methodIdx := methodIndex(iface, fn)
-	sigName := "$go.ifacefn." + sanitizeName(ifaceKey) + "." + fn.Name()
+	san := desc.Sanitize(ifaceKey)
+	sigName := "$go.ifacefn." + san + "." + fn.Name()
 	var res ir.Type
 	if sig.Results().Len() > 0 {
 		var err error
@@ -208,7 +269,7 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 	return &ir.Instr{
 		Op:     ir.OpIfaceCall,
 		Type:   res,
-		Type2:  &ir.Ref{Named: "$go.itabtype." + sanitizeName(ifaceKey)},
+		Type2:  &ir.Ref{Named: "$go.itabtype." + san},
 		Global: ifaceKey, // so desc emits itabtype even without a concrete itab
 		Func:   fn.Name(),
 		Field:  itoa(methodIdx),
@@ -224,22 +285,6 @@ func methodIndex(iface *types.Interface, fn *types.Func) int {
 		}
 	}
 	return 0
-}
-
-func sanitizeName(s string) string {
-	r := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
-		case '*':
-			r = append(r, []byte("ptr_")...)
-		case '.', '/', ' ', '[', ']', '{', '}':
-			r = append(r, '_')
-		default:
-			r = append(r, c)
-		}
-	}
-	return string(r)
 }
 
 func itoa(n int) string {
@@ -291,11 +336,13 @@ func (fl *funcLower) ifaceCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, [
 		return isnull, stmts, nil
 	}
 
-	x, xstmts, err := fl.expr(e.X, typeIface)
+	// Concrete operands (e.g. err != ErrRange where ErrRange is a named int)
+	// must be boxed into an interface before iface.eq.
+	x, xstmts, err := fl.ifaceCompareOperand(e.X, xt)
 	if err != nil {
 		return nil, nil, err
 	}
-	y, ystmts, err := fl.expr(e.Y, typeIface)
+	y, ystmts, err := fl.ifaceCompareOperand(e.Y, yt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -309,9 +356,21 @@ func (fl *funcLower) ifaceCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, [
 	if op == token.NEQ {
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
-	_ = xt
-	_ = yt
 	return eq, stmts, nil
+}
+
+// ifaceCompareOperand lowers one side of an interface ==/!=, boxing concretes.
+func (fl *funcLower) ifaceCompareOperand(e ast.Expr, src types.Type) (ir.Expr, []ir.Stmt, error) {
+	if src == nil || isUntypedNil(src) || isNilIdent(e) {
+		return &ir.Instr{Op: ir.OpRefNull, Type: typeIface}, nil, nil
+	}
+	if isIface(src) {
+		return fl.expr(e, typeIface)
+	}
+	// Prefer the interface type of the other side when available; empty
+	// interface is correct for error and any comparisons.
+	dst := types.Universe.Lookup("any").Type()
+	return fl.convertToIface(e, src, dst, typeIface)
 }
 
 func isNilIdent(e ast.Expr) bool {

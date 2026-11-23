@@ -1158,18 +1158,28 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	} else if isStruct(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 	} else {
-		// Scalar concrete types are stored as $go.box.{i32,i64,f32,f64}.
+		// Numeric scalars are stored as $go.box.{i32,i64,f32,f64}.
+		// Strings / named strings / slices / other refs are stored directly
+		// as the value ref (boxKind "ref"), optionally via $go.box.string.
 		boxName, elem := scalarBoxOf(wantIR)
 		if boxName == "" {
 			boxName, elem = scalarBoxOf(baseIR)
 		}
-		if boxName == "" {
+		if boxName != "" {
+			boxTy := &ir.Ref{Named: boxName}
+			boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
+			expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
+			_ = elem
+			return stmts, expr, nil
+		}
+		recvIR := wantIR
+		if _, ok := recvIR.(*ir.Ref); !ok {
+			recvIR = baseIR
+		}
+		if _, ok := recvIR.(*ir.Ref); !ok {
 			return nil, nil, fmt.Errorf("desc: cannot unbox scalar receiver %s", concrete)
 		}
-		boxTy := &ir.Ref{Named: boxName}
-		boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
-		expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
-		_ = elem
+		expr = &ir.Instr{Op: ir.OpRefCast, Type: recvIR, Args: []ir.Expr{expr}}
 		return stmts, expr, nil
 	}
 
@@ -1523,7 +1533,9 @@ func runtimeStructAliasName(t *types.Named) string {
 	}
 }
 
-func sanitize(s string) string {
+// Sanitize turns a TypeKey into a Wasm-safe type/global name fragment.
+// Lower and desc must use the same rules so itabtype / ifacefn names match.
+func Sanitize(s string) string {
 	s = strings.ReplaceAll(s, "*", "ptr_")
 	s = strings.ReplaceAll(s, "[", "arr_")
 	s = strings.ReplaceAll(s, "]", "")
@@ -1533,6 +1545,8 @@ func sanitize(s string) string {
 	s = strings.ReplaceAll(s, "{}", "empty")
 	return s
 }
+
+func sanitize(s string) string { return Sanitize(s) }
 
 func kindOf(t types.Type) int {
 	t = types.Unalias(t)

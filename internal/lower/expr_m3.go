@@ -82,24 +82,59 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 		}
 		return &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{fl.useVar(v)}, Type: ptrTy}, nil, nil
 	case *ast.SelectorExpr:
-		// &s.f or &p.f
+		// &s.f or &p.f (including promoted embedded fields).
 		if sel := fl.info.Selections[x]; sel != nil && sel.Kind() == types.FieldVal {
 			base, stmts, err := fl.expr(x.X, nil)
 			if err != nil {
 				return nil, nil, err
 			}
-			// If X is a pointer to struct, deref first for object base.
 			xt := fl.typeOf(x.X)
 			if isPointer(xt) && !isObjectPointer(xt) {
 				return nil, nil, fl.errorf(x, "cannot take address of field through fat pointer")
 			}
-			if isPointer(xt) {
-				// Object pointer: base is already the struct ref.
+			idx := sel.Index()
+			if len(idx) == 0 {
+				return nil, nil, fl.errorf(x, "empty field selection for addr")
+			}
+			cur := base
+			ty := xt
+			// Walk embedding path except the leaf field.
+			for i := 0; i < len(idx)-1; i++ {
+				st := structOf(ty)
+				if st == nil || idx[i] < 0 || idx[i] >= st.NumFields() {
+					return nil, nil, fl.errorf(x, "addr embedding index out of range")
+				}
+				fld := st.Field(idx[i])
+				stName := ""
+				if irt, err := fl.mapType(ty); err == nil {
+					stName = refTypeName(irt)
+				}
+				if stName == "" {
+					return nil, nil, fl.errorf(x, "no IR type for %s", ty)
+				}
+				cur = &ir.Instr{
+					Op:    ir.OpStructGet,
+					Type:  &ir.Ref{Named: stName},
+					Field: fld.Name(),
+					Args:  []ir.Expr{cur},
+				}
+				ty = fld.Type()
+				if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+					ty = p.Elem()
+				}
+			}
+			st := structOf(ty)
+			leaf := x.Sel.Name
+			if st != nil {
+				fi := idx[len(idx)-1]
+				if fi >= 0 && fi < st.NumFields() {
+					leaf = st.Field(fi).Name()
+				}
 			}
 			return &ir.Instr{
 				Op:    ir.OpAddr,
-				Args:  []ir.Expr{base},
-				Field: x.Sel.Name,
+				Args:  []ir.Expr{cur},
+				Field: leaf,
 				Type:  ptrTy,
 			}, stmts, nil
 		}
@@ -260,7 +295,7 @@ func structOf(t types.Type) *types.Struct {
 func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	sel := fl.info.Selections[e]
 	if sel == nil {
-		// package.Name constant or var — handled via Uses on Sel
+		// package.Name constant, var, or top-level func value — via Uses on Sel
 		if obj := fl.info.Uses[e.Sel]; obj != nil {
 			if c, ok := obj.(*types.Const); ok {
 				ty, err := fl.mapType(c.Type())
@@ -291,6 +326,10 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 						return &ir.Instr{Op: ir.OpGlobalGet, Global: gname}, nil, nil
 					}
 				}
+			}
+			// package.Func as a func value (e.g. unicode.IsSpace passed to FieldsFunc).
+			if fn, ok := obj.(*types.Func); ok {
+				return fl.topLevelFuncValue(fn)
 			}
 		}
 		return nil, nil, fl.errorf(e, "unsupported selector")
@@ -383,6 +422,8 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	}
 	if isArray(xt) || isPtrToArray(xt) {
 		// Value read: array.get (structs/refs included). Address-of uses OpAddr elsewhere.
+		// Instr.Type is the ARRAY type (codegen typeIndexOf); lenCapArgType
+		// resolves ArrayGet to the element type for len/cap.
 		arrName := ""
 		elemT := xt
 		if isPtrToArray(xt) {
@@ -553,9 +594,19 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 	var stmts []ir.Stmt
 	// Zero defaults.
 	for i := 0; i < n; i++ {
-		ft, err := fl.mapType(st.Field(i).Type())
+		ftGo := st.Field(i).Type()
+		ft, err := fl.mapType(ftGo)
 		if err != nil {
 			return nil, nil, err
+		}
+		// *NamedStruct fields share IR with T; zero is null, not empty T.
+		if p, ok := types.Unalias(ftGo).(*types.Pointer); ok {
+			if _, ok := types.Unalias(p.Elem()).(*types.Named); ok {
+				if _, ok := types.Unalias(p.Elem()).Underlying().(*types.Struct); ok {
+					vals[i] = &ir.Instr{Op: ir.OpRefNull, Type: ft}
+					continue
+				}
+			}
 		}
 		z, err := fl.zeroValue(ft)
 		if err != nil {
@@ -639,9 +690,10 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			})
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
-		// User named structs ($go.struct.*) are values: zero is an empty heap
-		// object. Nested struct fields are filled by structZero (non-null).
-		// Runtime / iface / chan / slice / clos zeros stay null refs.
+		// Named structs ($go.struct.*): T and *T share the same IR ref
+		// (Null:true). Value zero is an empty heap object; pointer zero is
+		// null and must be decided from the Go type at the call site
+		// (structLit). Here we always build a value zero.
 		if strings.HasPrefix(t.Named, "$go.struct.") {
 			if td := fl.mod.LookupType(t.Named); td != nil && td.Kind == ir.TypeStruct {
 				return fl.structZero(td, t, map[string]bool{})
@@ -657,12 +709,19 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 
 func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
 	if seen[td.Name] {
-		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+		// Avoid struct.new_default (non-defaultable string fields).
+		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	}
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
+		// Nested $go.struct refs: same-type is treated as *T (null); other
+		// types as nested values (recursive zero). T and *T share IR shape.
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			if r.Named == td.Name {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
+				continue
+			}
 			ntd := fl.mod.LookupType(r.Named)
 			if ntd != nil && ntd.Kind == ir.TypeStruct {
 				z, err := fl.structZero(ntd, r, seen)

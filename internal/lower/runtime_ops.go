@@ -824,12 +824,18 @@ func numericArrayPacker(typeName string) (elemSize int, pack func(*ir.Const) ([]
 // fields recursively allocated (same rules as funcLower.structZero).
 func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
 	if seen[td.Name] {
-		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+		// Cycle / self-pointer: null (avoid struct.new_default on strings).
+		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	}
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
+		// Same-type $go.struct field → *T (null); other types → nested value.
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			if r.Named == td.Name {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
+				continue
+			}
 			ntd := rt.mod.LookupType(r.Named)
 			if ntd != nil && ntd.Kind == ir.TypeStruct {
 				z, err := rt.structZeroExpr(ntd, r, seen)
@@ -891,6 +897,20 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 			z = &ir.Instr{Op: ir.OpStructNewDefault, Type: in.Type}
 		}
 		return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: z}}, nil
+	}
+	// *[N]T maps to the array ref itself ($go.array.*); allocate a zeroed array.
+	// Length N is carried in in.I32 from builtinNew.
+	if strings.HasPrefix(tname, "$go.array.") || tname == "$go.bytes" {
+		nElems := int64(in.I32)
+		if nElems < 0 {
+			nElems = 0
+		}
+		rhs := &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: in.Type,
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: nElems}},
+		}
+		return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: rhs}}, nil
 	}
 	// Fat pointer to scalar: allocate [1]T and build ptr.
 	kind := "i32"
@@ -1407,6 +1427,21 @@ func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
 				}
 			}
 		}
+		// array.get's Type is the ARRAY (for codegen); len/cap need the element.
+		// e.g. len(replacements[b]) where replacements is [256][]byte.
+		if (e.Op == ir.OpArrayGet || e.Op == ir.OpArrayGetU || e.Op == ir.OpArrayGetS) &&
+			e.Type != nil && mod != nil {
+			if r, ok := e.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := mod.LookupType(r.Named); td != nil && td.Elem != nil {
+					return td.Elem
+				}
+				// $go.bytes / $go.i16s → packed numeric, len of element is N/A
+				// as a container; treat as i32 (caller won't slice-len it).
+				if r.Named == "$go.bytes" || r.Named == "$go.i16s" {
+					return ir.TypeI32
+				}
+			}
+		}
 		if e.Type != nil {
 			return e.Type
 		}
@@ -1464,6 +1499,24 @@ func (rt *runtimeLower) expandAddr(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stm
 			return nil, err
 		}
 		pre = append(pre, p...)
+	}
+
+	// Slice / string headers are not array refs: unwrap to data + off+index
+	// so the fat-pointer base is the backing array (docs/design/03, 05).
+	if t := exprRefTypeMod(rt.mod, base); strings.HasPrefix(t, "$go.slice.") || t == "$go.string" {
+		st := &ir.Ref{Named: t}
+		arrName := "$go.bytes"
+		if t != "$go.string" {
+			arrName = arrayContainerOf(t)
+		}
+		dataT := &ir.Temp{Name: rt.fresh("ab"), Typ: &ir.Ref{Named: arrName}}
+		offT := &ir.Temp{Name: rt.fresh("ao"), Typ: ir.TypeI32}
+		pre = append(pre,
+			&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{base}}},
+			&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{base}}},
+		)
+		base = &ir.Name{Temp: dataT, Raw: dataT.Name}
+		index = &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, index}}
 	}
 
 	container, fieldKey := rt.addrClassKey(in, base)
@@ -1652,7 +1705,7 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	}
 	switch {
 	case strings.HasPrefix(ptrTyp, "$go.struct."):
-		return nil, fmt.Errorf("store through object pointer of whole struct not lowered")
+		return nil, fmt.Errorf("store through object pointer of whole struct not lowered (ptr=%s val=%v)", ptrTyp, exprRefTypeMod(rt.mod, in.Args[1]))
 	case strings.HasPrefix(ptrTyp, "$go.ptr."):
 		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
 		ptrType = ptrTyp

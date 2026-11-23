@@ -874,6 +874,30 @@ func TestM9ReflectMakeE2E(t *testing.T) {
 	runM8(t, "m9_reflect_make", "7\n3\n1\n", 0)
 }
 
+// --- M9: encoding/json marshal/unmarshal (docs/design/06, 09) ---
+
+func TestM9JsonStructE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_json_struct", "{\"name\":\"alice\",\"age\":30}\nalice\n30\n", 0)
+}
+
+func TestM9JsonMapStringE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m9_json_map_string", "1\n2\n2\n", 0)
+}
+
+func TestM9JsonMapIntE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	// Exercises SliceOf/MapOf in encoding/json/v2/arshal_default.go.
+	runM8(t, "m9_json_map_int", "one\ntwo\n2\n", 0)
+}
+
 // TestM9HTTPGetE2E: http.Get of a local Node http server returns the body
 // via fetch (docs/design/09). Passes the server URL as os.Args[0].
 func TestM9HTTPGetE2E(t *testing.T) {

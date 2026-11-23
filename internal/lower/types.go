@@ -357,7 +357,7 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 	case types.UntypedString:
 		return typeString, nil
 	case types.UntypedNil:
-		return nil, fmt.Errorf("untyped nil needs a typed context")
+		return nil, fmt.Errorf("untyped nil needs a typed context") // mapBasic
 	case types.Complex64:
 		return &ir.Ref{Null: true, Named: "$go.complex64"}, nil
 	case types.Complex128, types.UntypedComplex:
@@ -375,7 +375,7 @@ func (l *pkgLower) mapPointer(t *types.Pointer) (ir.Type, error) {
 			// *js.Value is not meaningful for externref; same shape as Value.
 			return ir.TypeExtern, nil
 		}
-		switch e.Underlying().(type) {
+		switch u := e.Underlying().(type) {
 		case *types.Struct:
 			// *Struct is the same ref as the struct value.
 			st, err := l.mapNamedStruct(e)
@@ -383,6 +383,10 @@ func (l *pkgLower) mapPointer(t *types.Pointer) (ir.Type, error) {
 				return nil, err
 			}
 			return st, nil
+		case *types.Array:
+			// *[N]T and named array pointers share the array ref
+			// (e.g. *byteReplacer / *[256]byte → $go.bytes).
+			return l.mapArray(u)
 		default:
 			return l.mapPointerToScalarOrRef(e.Underlying())
 		}

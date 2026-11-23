@@ -110,6 +110,15 @@ type StructField struct {
 	Anonymous bool
 }
 
+// IsExported reports whether the field is exported.
+func (f StructField) IsExported() bool {
+	if f.Name == "" {
+		return false
+	}
+	c := f.Name[0]
+	return 'A' <= c && c <= 'Z'
+}
+
 type StructTag string
 
 func (tag StructTag) Get(key string) string {
@@ -685,6 +694,39 @@ func (it *MapIter) Next() bool {
 
 func (it *MapIter) Key() Value   { return ValueOf(it.keys[it.i]) }
 func (it *MapIter) Value() Value { return ValueOf(it.vals[it.i]) }
+
+// SetIterKey assigns to v the key of iter's current map entry.
+// Equivalent to v.Set(iter.Key()) for the wasmgc MapIter snapshot.
+func (v Value) SetIterKey(iter *MapIter) {
+	v.Set(iter.Key())
+}
+
+// SetIterValue assigns to v the value of iter's current map entry.
+func (v Value) SetIterValue(iter *MapIter) {
+	v.Set(iter.Value())
+}
+
+// Indirect returns the value that v points to when v is a pointer; otherwise v.
+func Indirect(v Value) Value {
+	if v.Kind() != Pointer {
+		return v
+	}
+	return v.Elem()
+}
+
+// TypeAssert asserts that v's concrete value has type T.
+func TypeAssert[T any](v Value) (T, bool) {
+	var zero T
+	if !v.IsValid() {
+		return zero, false
+	}
+	i := v.Interface()
+	if i == nil {
+		return zero, false
+	}
+	t, ok := i.(T)
+	return t, ok
+}
 
 func TypeOf(i any) Type {
 	if i == nil {

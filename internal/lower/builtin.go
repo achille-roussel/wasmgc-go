@@ -504,7 +504,14 @@ func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		irt = want
 	}
 	// literal … Str:"new" → RuntimeOps allocates (1-elem array + fat ptr, or struct).
-	return &ir.Instr{Op: ir.OpLiteral, Type: irt, Str: "new"}, nil, nil
+	in := &ir.Instr{Op: ir.OpLiteral, Type: irt, Str: "new"}
+	// *[N]T maps to $go.array.*; record N so expandNew can array.new_default N.
+	if p, ok := types.Unalias(resTy).(*types.Pointer); ok {
+		if a, ok := types.Unalias(p.Elem()).Underlying().(*types.Array); ok {
+			in.I32 = int32(a.Len())
+		}
+	}
+	return in, nil, nil
 }
 
 func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {

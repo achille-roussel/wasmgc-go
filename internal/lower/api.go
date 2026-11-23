@@ -66,6 +66,12 @@ func PackageHighMono(pkgs []*load.Package, main *load.Package, tab *mono.Table) 
 			return nil, err
 		}
 	}
+	// Cross-package generics: EnsureFunc during later packages (e.g. slices
+	// calling cmp.Less[int]) may register instances after the origin package
+	// already finished emitMonoInstances. Drain remaining bodies now.
+	if err := emitAllPendingMono(mod, md, tab); err != nil {
+		return nil, err
+	}
 	if err := Finish(mod); err != nil {
 		return nil, err
 	}

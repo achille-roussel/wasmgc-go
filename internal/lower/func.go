@@ -238,5 +238,18 @@ func (fl *funcLower) lookupGlobal(id *ast.Ident) *ir.Global {
 	if obj == nil {
 		return nil
 	}
-	return fl.pkg.globals[obj]
+	if fl.pkg.globals != nil {
+		if g := fl.pkg.globals[obj]; g != nil {
+			return g
+		}
+	}
+	// Late mono emit (emitAllPendingMono) rebuilds pkgLower without the
+	// origin package's globals map; resolve by qualified IR name.
+	if v, ok := obj.(*types.Var); ok && v.Pkg() != nil {
+		gname := pkgIRPrefix(v.Pkg()) + "." + v.Name()
+		if g := fl.mod.LookupGlobal(gname); g != nil {
+			return g
+		}
+	}
+	return nil
 }

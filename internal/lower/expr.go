@@ -53,6 +53,20 @@ func (fl *funcLower) ident(e *ast.Ident, want ir.Type) (ir.Expr, []ir.Stmt, erro
 	if e.Name == "false" {
 		return fl.i32const(0), nil, nil
 	}
+	if e.Name == "nil" {
+		// Typed nil from context (interface, pointer, slice, map, chan, func).
+		if want != nil {
+			return &ir.Instr{Op: ir.OpRefNull, Type: want}, nil, nil
+		}
+		if tv, ok := fl.info.Types[e]; ok && tv.Type != nil && tv.Type != types.Typ[types.UntypedNil] {
+			ty, err := fl.mapType(tv.Type)
+			if err != nil {
+				return nil, nil, fl.errorf(e, "%v", err)
+			}
+			return &ir.Instr{Op: ir.OpRefNull, Type: ty}, nil, nil
+		}
+		return nil, nil, fl.errorf(e, "untyped nil needs a typed context")
+	}
 	// Constant from package / iota / const.
 	if obj, ok := fl.info.Uses[e]; ok {
 		if c, ok := obj.(*types.Const); ok {
@@ -338,6 +352,21 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	if e.Op == token.LAND || e.Op == token.LOR {
 		return fl.shortCircuit(e)
 	}
+	// Const-fold when go/types already evaluated the expression (e.g. 1<<52
+	// used as a float64 operand — shifting a float is invalid Wasm).
+	if tv, ok := fl.info.Types[e]; ok && tv.Value != nil {
+		ty := want
+		if ty == nil {
+			if t, err := fl.mapType(tv.Type); err == nil {
+				ty = t
+			}
+		}
+		if ty != nil {
+			if ex, err := fl.constVal(tv.Value, ty); err == nil {
+				return ex, nil, nil
+			}
+		}
+	}
 	if e.Op == token.ADD && isString(fl.typeOf(e)) {
 		return fl.stringConcat(e)
 	}
@@ -397,9 +426,11 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		xWant = want
 	}
 	yWant := xWant
+	var yNat ir.Type
 	if yt := fl.typeOf(e.Y); yt != nil {
 		if m, err := fl.mapType(yt); err == nil {
 			yWant = m
+			yNat = m
 		}
 	}
 	// Prefer the expression's type when it is numeric (not bool from ==/<).
@@ -413,10 +444,25 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		xWant, yWant = ir.TypeI64, ir.TypeI64
 	}
 
-	// Wasm i64 shifts take an i64 count; force the RHS to the LHS width for
-	// SHL/SHR (Go allows a smaller unsigned count type).
+	// Wasm i64 shifts take an i64 count. Lower the count at its natural
+	// (often i32) width, then extend — forcing yWant=i64 misses paths that
+	// ignore want (and double-extend when children already widened).
+	// Shifts are integer-only: ignore float want for operands (1<<52 in
+	// a float64 multiply must not lower 1 as f64.const).
 	if e.Op == token.SHL || e.Op == token.SHR {
-		yWant = xWant
+		if irNumWidth(xWant) == ir.F32 || irNumWidth(xWant) == ir.F64 || xWant == nil {
+			xWant = ir.TypeI32
+			if xt != nil {
+				if m, err := fl.mapType(xt); err == nil && (irNumWidth(m) == ir.I32 || irNumWidth(m) == ir.I64) {
+					xWant = m
+				}
+			}
+		}
+		if yNat != nil {
+			yWant = yNat
+		} else if irNumWidth(yWant) == ir.F32 || irNumWidth(yWant) == ir.F64 {
+			yWant = ir.TypeI32
+		}
 	}
 
 	x, xstmts, err := fl.expr(e.X, xWant)
@@ -430,6 +476,13 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	var stmts []ir.Stmt
 	stmts = append(stmts, xstmts...)
 	stmts = append(stmts, ystmts...)
+	if (e.Op == token.SHL || e.Op == token.SHR) && irNumWidth(xWant) == ir.I64 && irNumWidth(yWant) == ir.I32 {
+		if yt := fl.typeOf(e.Y); yt != nil && isUnsigned(yt) {
+			y = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{y}}
+		} else {
+			y = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{y}}
+		}
+	}
 
 	if e.Op == token.AND_NOT {
 		// x &^ y → x & (^y)
@@ -730,7 +783,8 @@ func binOp(op token.Token, width ir.NumKind, unsigned bool) (ir.Op, error) {
 }
 
 // unsafeBuiltinCall lowers unsafe.Sizeof / Alignof / Offsetof to constants
-// using the wasmgc size table (docs/design/05). ok=false means not an unsafe builtin.
+// and unsafe.String / Slice / SliceData / StringData to header ops (docs/design/05).
+// ok=false means not an unsafe builtin.
 func (fl *funcLower) unsafeBuiltinCall(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
 	sel, ok := e.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -748,13 +802,30 @@ func (fl *funcLower) unsafeBuiltinCall(e *ast.CallExpr, want ir.Type) (ir.Expr, 
 	if !ok {
 		return nil, nil, false, nil
 	}
+	switch b.Name() {
+	case "Sizeof", "Alignof", "Offsetof":
+		return fl.unsafeSizeofFamily(e, b.Name(), want)
+	case "SliceData":
+		return fl.unsafeSliceData(e, want)
+	case "StringData":
+		return fl.unsafeStringData(e, want)
+	case "String":
+		return fl.unsafeString(e, want)
+	case "Slice":
+		return fl.unsafeSlice(e, want)
+	default:
+		return nil, nil, false, nil
+	}
+}
+
+func (fl *funcLower) unsafeSizeofFamily(e *ast.CallExpr, name string, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
 	if len(e.Args) != 1 {
-		return nil, nil, true, fl.errorf(e, "unsafe.%s wants 1 arg", b.Name())
+		return nil, nil, true, fl.errorf(e, "unsafe.%s wants 1 arg", name)
 	}
 	arg := e.Args[0]
 	tv, ok := fl.info.Types[arg]
 	if !ok || tv.Type == nil {
-		return nil, nil, true, fl.errorf(arg, "unsafe.%s: no type", b.Name())
+		return nil, nil, true, fl.errorf(arg, "unsafe.%s: no type", name)
 	}
 	argTy := tv.Type
 	if len(fl.pkg.subst) > 0 {
@@ -762,10 +833,10 @@ func (fl *funcLower) unsafeBuiltinCall(e *ast.CallExpr, want ir.Type) (ir.Expr, 
 	}
 	argTy = types.Unalias(argTy)
 	if mono.ContainsTypeParam(argTy) {
-		return nil, nil, true, fl.errorf(arg, "unsafe.%s: unsubstituted type param", b.Name())
+		return nil, nil, true, fl.errorf(arg, "unsafe.%s: unsubstituted type param", name)
 	}
 	var n int64
-	switch b.Name() {
+	switch name {
 	case "Sizeof":
 		n = Sizes.Sizeof(argTy)
 	case "Alignof":
@@ -793,12 +864,149 @@ func (fl *funcLower) unsafeBuiltinCall(e *ast.CallExpr, want ir.Type) (ir.Expr, 
 			return nil, nil, true, fl.errorf(arg, "unsafe.Offsetof: bad index")
 		}
 		n = offs[idx[len(idx)-1]]
-	default:
-		return nil, nil, false, nil
 	}
 	_ = want
-	// uintptr is i32 on wasmgc.
 	return fl.i32const(n), nil, true, nil
+}
+
+// unsafeSliceData lowers unsafe.SliceData(s) to a fat pointer at s's off.
+func (fl *funcLower) unsafeSliceData(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
+	if len(e.Args) != 1 {
+		return nil, nil, true, fl.errorf(e, "unsafe.SliceData wants 1 arg")
+	}
+	arg := e.Args[0]
+	src := fl.typeOf(arg)
+	if src == nil || !isSlice(src) {
+		return nil, nil, true, fl.errorf(arg, "unsafe.SliceData: not a slice")
+	}
+	sl, ok := types.Unalias(src).Underlying().(*types.Slice)
+	if !ok {
+		return nil, nil, true, fl.errorf(arg, "unsafe.SliceData: not a slice")
+	}
+	kind, err := fatPtrKind(sl.Elem())
+	if err != nil {
+		return nil, nil, true, fl.errorf(arg, "unsafe.SliceData: %v", err)
+	}
+	fl.pkg.ensureFatPtrTypes(kind)
+	ptrTy := want
+	if ptrTy == nil {
+		ptrTy = &ir.Ref{Null: true, Named: "$go.ptr." + kind}
+	}
+	x, stmts, err := fl.expr(arg, nil)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	// OpAddr on the slice; expandAddr unwraps data/off into the fat pointer.
+	return &ir.Instr{
+		Op:    ir.OpAddr,
+		Args:  []ir.Expr{x, fl.i32const(0)},
+		Field: "elem",
+		Str:   "elem",
+		Type:  ptrTy,
+	}, stmts, true, nil
+}
+
+// unsafeStringData lowers unsafe.StringData(s) to a *byte fat pointer at s's off.
+func (fl *funcLower) unsafeStringData(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
+	if len(e.Args) != 1 {
+		return nil, nil, true, fl.errorf(e, "unsafe.StringData wants 1 arg")
+	}
+	arg := e.Args[0]
+	if !isString(fl.typeOf(arg)) {
+		return nil, nil, true, fl.errorf(arg, "unsafe.StringData: not a string")
+	}
+	fl.pkg.ensureFatPtrTypes("i32")
+	ptrTy := want
+	if ptrTy == nil {
+		ptrTy = &ir.Ref{Null: true, Named: "$go.ptr.i32"}
+	}
+	x, stmts, err := fl.expr(arg, nil)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	// expandAddr unwraps $go.string to data/off.
+	return &ir.Instr{
+		Op:    ir.OpAddr,
+		Args:  []ir.Expr{x, fl.i32const(0)},
+		Field: "elem",
+		Str:   "elem",
+		Type:  ptrTy,
+	}, stmts, true, nil
+}
+
+// unsafeString lowers unsafe.String(p *byte, n) to a $go.string header.
+func (fl *funcLower) unsafeString(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
+	if len(e.Args) != 2 {
+		return nil, nil, true, fl.errorf(e, "unsafe.String wants 2 args")
+	}
+	ptrEx, stmts, err := fl.expr(e.Args[0], &ir.Ref{Null: true, Named: "$go.ptr.i32"})
+	if err != nil {
+		return nil, nil, true, err
+	}
+	nEx, nstmts, err := fl.expr(e.Args[1], ir.TypeI32)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	stmts = append(stmts, nstmts...)
+	fl.pkg.ensureFatPtrTypes("i32")
+	pt := &ir.Ref{Named: "$go.ptr.i32"}
+	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptrEx}}
+	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{nn}}
+	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{nn}}
+	// base is anyref holding $go.bytes; cast for the string header.
+	data := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: "$go.bytes"}, Args: []ir.Expr{base}}
+	_ = want
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: typeString,
+		Args: []ir.Expr{data, index, nEx},
+	}, stmts, true, nil
+}
+
+// unsafeSlice lowers unsafe.Slice(p *T, n) to a slice header over p's array.
+func (fl *funcLower) unsafeSlice(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
+	if len(e.Args) != 2 {
+		return nil, nil, true, fl.errorf(e, "unsafe.Slice wants 2 args")
+	}
+	ptrT := fl.typeOf(e.Args[0])
+	if ptrT == nil || !isPointer(ptrT) {
+		return nil, nil, true, fl.errorf(e.Args[0], "unsafe.Slice: not a pointer")
+	}
+	elem := types.Unalias(ptrT).Underlying().(*types.Pointer).Elem()
+	kind, err := fatPtrKind(elem)
+	if err != nil {
+		return nil, nil, true, fl.errorf(e.Args[0], "unsafe.Slice: %v", err)
+	}
+	fl.pkg.ensureFatPtrTypes(kind)
+	ptrTy := &ir.Ref{Null: true, Named: "$go.ptr." + kind}
+	ptrEx, stmts, err := fl.expr(e.Args[0], ptrTy)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	nEx, nstmts, err := fl.expr(e.Args[1], ir.TypeI32)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	stmts = append(stmts, nstmts...)
+	arrName, _, err := fl.pkg.ensureArrayType(elem)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	sliceName := sliceTypeName(arrName)
+	pt := &ir.Ref{Named: "$go.ptr." + kind}
+	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptrEx}}
+	base := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "base", Args: []ir.Expr{nn}}
+	index := &ir.Instr{Op: ir.OpStructGet, Type: pt, Field: "index", Args: []ir.Expr{nn}}
+	data := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{base}}
+	sliceTy := want
+	if sliceTy == nil {
+		sliceTy = &ir.Ref{Null: true, Named: sliceName}
+	}
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: sliceTy,
+		Args: []ir.Expr{data, index, nEx, nEx},
+	}, stmts, true, nil
 }
 
 func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -826,7 +1034,7 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 		}
 	}
 	if sig := fl.funcValueSig(e.Fun); sig != nil {
-		ex, stmts, err := fl.callFuncValue(e.Fun, e.Args, sig)
+		ex, stmts, err := fl.callFuncValue(e, sig)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -869,6 +1077,14 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 // funcValueSig returns the signature when Fun is a func value (not a direct
 // known function or method call).
 func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
+	apply := func(sig *types.Signature) *types.Signature {
+		if sig != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+				return s
+			}
+		}
+		return sig
+	}
 	switch fun := fun.(type) {
 	case *ast.Ident:
 		obj := fl.info.Uses[fun]
@@ -879,7 +1095,7 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 			return nil // direct call
 		}
 		if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
-			return sig
+			return apply(sig)
 		}
 	case *ast.SelectorExpr:
 		if sel := fl.info.Selections[fun]; sel != nil {
@@ -887,7 +1103,7 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 			case types.FieldVal:
 				// Struct field of func type: n.fn().
 				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
-					return sig
+					return apply(sig)
 				}
 			default:
 				return nil // method call / method value handled elsewhere
@@ -895,13 +1111,24 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		}
 		if id, ok := fun.X.(*ast.Ident); ok {
 			if _, ok := fl.info.Uses[id].(*types.PkgName); ok {
-				return nil // package.Func direct call
+				// package.Func direct call vs package.Var of func type
+				// (e.g. internal.TransformMarshalError(...)).
+				obj := fl.info.Uses[fun.Sel]
+				if _, isFn := obj.(*types.Func); isFn {
+					return nil
+				}
+				if obj != nil {
+					if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
+						return apply(sig)
+					}
+				}
+				return nil
 			}
 		}
 		tv := fl.info.Types[fun]
 		if tv.Type != nil {
 			if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-				return sig
+				return apply(sig)
 			}
 		}
 	case *ast.IndexExpr, *ast.IndexListExpr:
@@ -914,7 +1141,7 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 			return nil
 		}
 		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-			return sig
+			return apply(sig)
 		}
 	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr:
 		tv := fl.info.Types[fun]
@@ -929,7 +1156,8 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 }
 
 // indexExprGenericFunc returns the generic Func origin when fun is F[T] / F[T,U]
-// naming a generic function (instantiation used as a call callee).
+// naming a generic function (instantiation used as a call callee), including
+// package-qualified forms like pkg.F[T].
 func (fl *funcLower) indexExprGenericFunc(fun ast.Expr) *types.Func {
 	var x ast.Expr
 	switch fun := fun.(type) {
@@ -940,8 +1168,21 @@ func (fl *funcLower) indexExprGenericFunc(fun ast.Expr) *types.Func {
 	default:
 		return nil
 	}
-	id, ok := x.(*ast.Ident)
-	if !ok {
+	var id *ast.Ident
+	switch x := x.(type) {
+	case *ast.Ident:
+		id = x
+	case *ast.SelectorExpr:
+		// pkg.F[T]: only package-qualified function names.
+		if pkgID, ok := x.X.(*ast.Ident); ok {
+			if _, isPkg := fl.info.Uses[pkgID].(*types.PkgName); isPkg {
+				id = x.Sel
+			}
+		}
+		if id == nil {
+			return nil
+		}
+	default:
 		return nil
 	}
 	fn, ok := fl.info.Uses[id].(*types.Func)
@@ -1008,6 +1249,11 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 			anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 			return &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}}, stmts, nil
 		}
+	}
+	// *T ↔ *U / named struct refs with convertible underlying types (e.g.
+	// (*marshalersOption)(*Marshalers) in encoding/json/v2).
+	if isRefIR(srcIR) && isRefIR(dstIR) {
+		return &ir.Instr{Op: ir.OpRefCast, Type: dstIR, Args: []ir.Expr{x}}, stmts, nil
 	}
 	// string(rune) / string(byte) / string(int…)
 	if isString(dst) && isInteger(src) {
@@ -1300,7 +1546,7 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 		return nil, st, nil
 	}
 	if sig := fl.funcValueSig(e.Fun); sig != nil {
-		ex, st, err := fl.callFuncValue(e.Fun, e.Args, sig)
+		ex, st, err := fl.callFuncValue(e, sig)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1378,6 +1624,29 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 func (fl *funcLower) callMaterialize(e *ast.CallExpr, resultTypes []ir.Type) ([]*ir.Temp, []ir.Stmt, error) {
 	if fl.isBuiltinPrint(e) {
 		return nil, nil, fl.errorf(e, "print used as value")
+	}
+	if sig := fl.funcValueSig(e.Fun); sig != nil {
+		ex, stmts, err := fl.callFuncValue(e, sig)
+		if err != nil {
+			return nil, nil, err
+		}
+		if resultTypes == nil {
+			for i := 0; i < sig.Results().Len(); i++ {
+				ty, err := fl.mapType(sig.Results().At(i).Type())
+				if err != nil {
+					return nil, nil, fl.errorf(e, "%v", err)
+				}
+				resultTypes = append(resultTypes, ty)
+			}
+		}
+		temps := make([]*ir.Temp, len(resultTypes))
+		lhs := make([]ir.Dest, len(resultTypes))
+		for i, ty := range resultTypes {
+			temps[i] = fl.newTemp(ty)
+			lhs[i] = ir.Dest{Temp: temps[i], Name: temps[i].Name}
+		}
+		stmts = append(stmts, &ir.Assign{Lhs: lhs, Rhs: ex})
+		return temps, stmts, nil
 	}
 	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
 		if sel, isIface := fl.ifaceMethod(fun); isIface {
@@ -1573,8 +1842,9 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 			if err != nil {
 				return nil, nil, fl.errorf(sel.X, "%v", err)
 			}
-			// If method has pointer receiver but X is a value, take address.
-			rx, rst, err := fl.methodRecv(sel.X, sig.Recv().Type(), recvWant)
+			// Promoted methods: walk Selection.Index embedding path so
+			// d.previousOffsetEnd passes &d.decodeBuffer, not d.
+			rx, rst, err := fl.methodRecvSel(sel.X, s, sig.Recv().Type(), recvWant)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1590,8 +1860,12 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 				}
 			}
 			if sig == nil {
-				if obj, _ := fl.info.Uses[id].(*types.Func); obj != nil {
-					sig, _ = obj.Type().(*types.Signature)
+				obj := fl.info.Uses[id]
+				if fn, ok := obj.(*types.Func); ok {
+					sig, _ = fn.Type().(*types.Signature)
+				} else if obj != nil {
+					// Package / local var of func type.
+					sig, _ = obj.Type().Underlying().(*types.Signature)
 				}
 			}
 			// Origin / Instance sig may still mention type params; apply mono subst.
@@ -1603,10 +1877,21 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		}
 	}
 
-	var args []ir.Expr
-	if recvExpr != nil {
-		args = append(args, recvExpr)
+	args, astmts, err := fl.lowerArgsWithSig(e, sig)
+	if err != nil {
+		return nil, nil, err
 	}
+	stmts = append(stmts, astmts...)
+	if recvExpr != nil {
+		args = append([]ir.Expr{recvExpr}, args...)
+	}
+	return args, stmts, nil
+}
+
+// lowerArgsWithSig lowers call arguments for a known signature (no method recv).
+func (fl *funcLower) lowerArgsWithSig(e *ast.CallExpr, sig *types.Signature) ([]ir.Expr, []ir.Stmt, error) {
+	var args []ir.Expr
+	var stmts []ir.Stmt
 
 	nParams := 0
 	variadic := false
@@ -1619,15 +1904,31 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		nFixed = nParams - 1
 	}
 
-	// Fixed (non-variadic) parameters.
 	nArgs := len(e.Args)
 	if variadic && !e.Ellipsis.IsValid() && nArgs < nFixed {
 		return nil, nil, fl.errorf(e, "not enough arguments")
 	}
+
+	// f(g()) where g returns multiple values matching f's parameters.
+	if sig != nil && nArgs == 1 && !e.Ellipsis.IsValid() && !variadic {
+		if ce, ok := e.Args[0].(*ast.CallExpr); ok {
+			_, resTys, err := fl.resolveCallee(ce)
+			if err == nil && len(resTys) == nParams && nParams > 1 {
+				temps, st, err := fl.callMaterialize(ce, resTys)
+				if err != nil {
+					return nil, nil, err
+				}
+				stmts = append(stmts, st...)
+				for _, t := range temps {
+					args = append(args, fl.useTemp(t))
+				}
+				return args, stmts, nil
+			}
+		}
+	}
+
 	limit := nArgs
 	if variadic {
-		// With or without ellipsis, only the first nFixed args are fixed
-		// params; the rest form (or are) the variadic slice.
 		limit = nFixed
 		if limit > nArgs {
 			limit = nArgs
@@ -1663,7 +1964,6 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 			return nil, nil, fl.errorf(e, "%v", err)
 		}
 		if e.Ellipsis.IsValid() {
-			// f(slice...) — last arg is already the slice.
 			if nArgs != nFixed+1 {
 				return nil, nil, fl.errorf(e, "invalid use of ... with %d args", nArgs)
 			}
@@ -1675,7 +1975,6 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 			stmts = append(stmts, st...)
 			args = append(args, ex)
 		} else {
-			// Pack trailing args into a []T literal.
 			elemGo := sliceGo.Underlying().(*types.Slice).Elem()
 			elemIR, err := fl.mapType(elemGo)
 			if err != nil {
@@ -1691,7 +1990,6 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 				stmts = append(stmts, st...)
 				elems = append(elems, ex)
 			}
-			// Empty variadic → nil slice (same as Go for f() with f(...T)).
 			if len(elems) == 0 {
 				args = append(args, &ir.Instr{Op: ir.OpRefNull, Type: sliceIR})
 			} else {
@@ -1699,7 +1997,6 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 			}
 		}
 	} else {
-		// Non-variadic: any remaining args already handled in limit==nArgs.
 		for i := limit; i < nArgs; i++ {
 			a := e.Args[i]
 			var want ir.Type
@@ -1737,6 +2034,59 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 		return fl.useTemp(t), stmts, nil
 	}
 	return fl.expr(x, want)
+}
+
+// methodRecvSel lowers the receiver for a MethodVal selection, following
+// Selection.Index() embedding fields (all but the last, which is the method
+// index) so promoted methods receive the embedded field, not the outer value.
+func (fl *funcLower) methodRecvSel(x ast.Expr, sel *types.Selection, recvType types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	idx := sel.Index()
+	if len(idx) <= 1 {
+		// Method of X itself (no embedding path).
+		return fl.methodRecv(x, recvType, want)
+	}
+	base, stmts, err := fl.expr(x, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	xt := fl.typeOf(x)
+	ty := xt
+	cur := base
+	if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+		ty = p.Elem()
+		// *NamedStruct is already the object ref; no extra deref.
+	}
+	// Walk embedding fields (Index[:len-1]); last entry is the method index.
+	for _, fi := range idx[:len(idx)-1] {
+		st := structOf(ty)
+		if st == nil || fi < 0 || fi >= st.NumFields() {
+			return nil, nil, fl.errorf(x, "method embedding index %d out of range for %s", fi, ty)
+		}
+		fld := st.Field(fi)
+		stName := ""
+		if irt, err := fl.mapType(ty); err == nil {
+			stName = refTypeName(irt)
+		}
+		if stName == "" {
+			return nil, nil, fl.errorf(x, "no IR type for %s", ty)
+		}
+		cur = &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: stName},
+			Field: fld.Name(),
+			Args:  []ir.Expr{cur},
+		}
+		ty = fld.Type()
+		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			ty = p.Elem()
+		}
+	}
+	// cur is the embedded field (heap ref for struct values). Pointer and
+	// value receivers both use that ref (*T and T share the object).
+	_ = recvType
+	_ = want
+	_ = ty
+	return cur, stmts, nil
 }
 
 func identOf(e ast.Expr) *ast.Ident {

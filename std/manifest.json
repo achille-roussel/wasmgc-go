@@ -86,7 +86,9 @@
       "tier": "vendor"
     },
     "strings": {
-      "tier": "vendor"
+      "tier": "overlay",
+      "overlays": ["builder.go"],
+      "notes": "M9: Builder without abi.NoEscape/MakeNoZero; String via []byte share"
     },
     "bytes": {
       "tier": "vendor"
@@ -117,12 +119,61 @@
     "math/bits": {
       "tier": "vendor"
     },
+    "encoding": {
+      "tier": "vendor",
+      "notes": "M9: TextMarshaler/TextUnmarshaler for json"
+    },
+    "encoding/base32": {
+      "tier": "vendor",
+      "notes": "M9: json/v2 dependency"
+    },
+    "encoding/base64": {
+      "tier": "vendor",
+      "notes": "M9: json/v2 dependency"
+    },
     "encoding/binary": {
       "tier": "overlay",
       "overlays": [
         "native_endian_little.go"
       ],
       "notes": "native_endian_little.go is tagged wasm; add wasmgc twin"
+    },
+    "encoding/hex": {
+      "tier": "vendor",
+      "notes": "M9: json/v2 dependency"
+    },
+    "encoding/json": {
+      "tier": "vendor",
+      "notes": "M9: v1 API backed by v2 (goexperiment.jsonv2); SliceOf/MapOf stay"
+    },
+    "encoding/json/v2": {
+      "tier": "vendor",
+      "notes": "M9: production SliceOf/MapOf/PointerTo in closed universe; no overlay"
+    },
+    "encoding/json/jsontext": {
+      "tier": "vendor",
+      "notes": "M9: json text tokenizer"
+    },
+    "encoding/json/internal": {
+      "tier": "vendor",
+      "notes": "M9: shared json helpers"
+    },
+    "encoding/json/internal/jsonflags": {
+      "tier": "vendor"
+    },
+    "encoding/json/internal/jsonopts": {
+      "tier": "vendor"
+    },
+    "encoding/json/internal/jsonwire": {
+      "tier": "vendor"
+    },
+    "unicode/utf16": {
+      "tier": "vendor",
+      "notes": "M9: jsonwire dependency"
+    },
+    "internal/byteorder": {
+      "tier": "vendor",
+      "notes": "M9: encoding/base64 dependency"
     },
     "iter": {
       "tier": "vendor"

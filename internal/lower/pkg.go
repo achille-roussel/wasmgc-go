@@ -32,7 +32,16 @@ func (l *pkgLower) lower() error {
 		l.globals = map[types.Object]*ir.Global{}
 	}
 
-	var initStmts []ir.Stmt
+	// Pass 1: declare every package var as a global so forward refs
+	// (e.g. unicode.TurkishCase = _TurkishCase) resolve via lookupGlobal.
+	type varInit struct {
+		name *ast.Ident
+		obj  types.Object
+		ty   ir.Type
+		gname string
+		val  ast.Expr
+	}
+	var pending []varInit
 	for _, f := range l.files {
 		for _, d := range f.Decls {
 			gd, ok := d.(*ast.GenDecl)
@@ -58,27 +67,32 @@ func (l *pkgLower) lower() error {
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
 					if vs.Values != nil && i < len(vs.Values) {
-						// One shared init lowerer so temp/var names stay unique
-						// across all package-level var initializers (they become
-						// a single init.N function).
-						if l.initLower == nil {
-							l.initLower = l.newInitLower()
-						}
-						fl := l.initLower
-						ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
-						if err != nil {
-							return err
-						}
-						initStmts = append(initStmts, stmts...)
-						initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
-							Op:     ir.OpGlobalSet,
-							Global: gname,
-							Args:   []ir.Expr{ex},
-						}})
+						pending = append(pending, varInit{
+							name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
+						})
 					}
 				}
 			}
 		}
+	}
+
+	// Pass 2: lower initializers with all globals already registered.
+	var initStmts []ir.Stmt
+	for _, vi := range pending {
+		if l.initLower == nil {
+			l.initLower = l.newInitLower()
+		}
+		fl := l.initLower
+		ex, stmts, err := fl.coerceExpr(vi.val, vi.obj.Type(), vi.ty)
+		if err != nil {
+			return err
+		}
+		initStmts = append(initStmts, stmts...)
+		initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
+			Op:     ir.OpGlobalSet,
+			Global: vi.gname,
+			Args:   []ir.Expr{ex},
+		}})
 	}
 
 	type fnDecl struct {
@@ -175,9 +189,16 @@ func (l *pkgLower) newInitLower() *funcLower {
 }
 
 func (l *pkgLower) initName() string {
-	n := l.initCount
-	l.initCount++
-	return pkgIRPrefix(l.pkg) + ".init." + strconv.Itoa(n)
+	// Continue past any inits already in the module (AppendFiles / Ensure*
+	// may lower runtime pieces in several passes).
+	prefix := pkgIRPrefix(l.pkg) + ".init."
+	for {
+		name := prefix + strconv.Itoa(l.initCount)
+		l.initCount++
+		if l.mod.LookupFunc(name) == nil {
+			return name
+		}
+	}
 }
 
 func (l *pkgLower) funcName(name string) string {
@@ -239,6 +260,20 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	// Ensure void functions end with return when falling off the end.
 	if len(fl.results) == 0 && !endsWithReturn(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
+	}
+	// Non-void: falling off the end after an infinite loop (for { return })
+	// needs unreachable so Wasm validation sees a result on every path.
+	// Named results: implicit return of the result locals.
+	if len(fl.results) > 0 && !endsWithReturn(seq) {
+		if len(fl.namedResults) > 0 {
+			args := make([]ir.Expr, len(fl.namedResults))
+			for i, v := range fl.namedResults {
+				args[i] = fl.useVar(v)
+			}
+			seq.Stmts = append(seq.Stmts, &ir.Return{Results: args})
+		} else {
+			seq.Stmts = append(seq.Stmts, &ir.Unreachable{})
+		}
 	}
 
 	// Clone by-value struct params/receivers when the callee assigns a field

@@ -44,6 +44,49 @@ func (l *pkgLower) emitMonoInstances() error {
 	}
 }
 
+// emitAllPendingMono lowers every specialization still missing a body after
+// all packages have been processed (cross-package EnsureFunc registrations).
+func emitAllPendingMono(mod *ir.Module, md *meta, tab *mono.Table) error {
+	if tab == nil || mod == nil {
+		return nil
+	}
+	for {
+		var pending []*mono.Instance
+		for _, inst := range tab.ByName {
+			if inst == nil || inst.Origin == nil {
+				continue
+			}
+			if mod.LookupFunc(inst.IRName) != nil {
+				continue
+			}
+			pending = append(pending, inst)
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		for _, inst := range pending {
+			originPkg := tab.PkgFor[inst.Origin]
+			info := tab.InfoFor[inst.Origin]
+			if originPkg == nil || info == nil {
+				return fmt.Errorf("mono: pending %s missing package/info", inst.IRName)
+			}
+			l := &pkgLower{
+				fset: tab.Fset,
+				pkg:  originPkg,
+				info: info,
+				mod:  mod,
+				meta: md,
+				mono: tab,
+			}
+			fn, err := l.lowerInstance(inst)
+			if err != nil {
+				return err
+			}
+			mod.Funcs = append(mod.Funcs, fn)
+		}
+	}
+}
+
 func (l *pkgLower) lowerInstance(inst *mono.Instance) (*ir.Func, error) {
 	fd := l.mono.Decl[inst.Origin]
 	if fd == nil {

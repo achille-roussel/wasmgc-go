@@ -1,6 +1,10 @@
 package time
 
-import "runtime"
+import (
+	"errors"
+	"runtime"
+	"strconv"
+)
 
 // A Duration represents the elapsed time between two instants as an int64
 // nanosecond count.
@@ -15,6 +19,29 @@ const (
 	Hour                 = 60 * Minute
 )
 
+// Layout strings used by Time.Format / Parse (subset needed by encoding/json).
+const (
+	Layout      = "01/02 03:04:05PM '06 -0700"
+	ANSIC       = "Mon Jan _2 15:04:05 2006"
+	UnixDate    = "Mon Jan _2 15:04:05 MST 2006"
+	RubyDate    = "Mon Jan 02 15:04:05 -0700 2006"
+	RFC822      = "02 Jan 06 15:04 MST"
+	RFC822Z     = "02 Jan 06 15:04 -0700"
+	RFC850      = "Monday, 02-Jan-06 15:04:05 MST"
+	RFC1123     = "Mon, 02 Jan 2006 15:04:05 MST"
+	RFC1123Z    = "Mon, 02 Jan 2006 15:04:05 -0700"
+	RFC3339     = "2006-01-02T15:04:05Z07:00"
+	RFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+	Kitchen     = "3:04PM"
+	Stamp       = "Jan _2 15:04:05"
+	StampMilli  = "Jan _2 15:04:05.000"
+	StampMicro  = "Jan _2 15:04:05.000000"
+	StampNano   = "Jan _2 15:04:05.000000000"
+	DateTime    = "2006-01-02 15:04:05"
+	DateOnly    = "2006-01-02"
+	TimeOnly    = "15:04:05"
+)
+
 // Time represents an instant in time with nanosecond precision.
 // wall is reserved for a later monotonic encoding; ext holds Unix nanoseconds.
 type Time struct {
@@ -22,10 +49,34 @@ type Time struct {
 	ext  int64
 }
 
+// ParseError describes a problem parsing a time string.
+type ParseError struct {
+	Layout     string
+	Value      string
+	LayoutElem string
+	ValueElem  string
+	Message    string
+}
+
+func (e *ParseError) Error() string {
+	if e == nil {
+		return "time: parse error"
+	}
+	if e.Message != "" {
+		return "parsing time " + strconv.Quote(e.Value) + " as " + strconv.Quote(e.Layout) + ": " + e.Message
+	}
+	return "parsing time " + strconv.Quote(e.Value) + " as " + strconv.Quote(e.Layout)
+}
+
 // Now returns the current local time from the host wall clock.
 func Now() Time {
 	sec, nsec := runtime.Walltime()
 	return Time{ext: sec*1e9 + int64(nsec)}
+}
+
+// Unix returns the local Time corresponding to the given Unix time.
+func Unix(sec int64, nsec int64) Time {
+	return Time{ext: sec*1e9 + nsec}
 }
 
 // After reports whether the time instant t is after u.
@@ -48,6 +99,82 @@ func (t Time) Unix() int64 { return t.ext / 1e9 }
 
 // UnixNano returns t as a Unix time in nanoseconds.
 func (t Time) UnixNano() int64 { return t.ext }
+
+// Nanosecond returns the nanosecond offset within the second.
+func (t Time) Nanosecond() int { return int(t.ext % 1e9) }
+
+// UTC returns t with location UTC (no-op location in v1 rewrite).
+func (t Time) UTC() Time { return t }
+
+// AppendFormat appends a textual representation of t to b.
+// Stub: appends UnixNano decimal; full layout parsing is deferred.
+func (t Time) AppendFormat(b []byte, layout string) []byte {
+	_ = layout
+	return strconv.AppendInt(b, t.ext, 10)
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler via RFC3339 stub.
+func (t *Time) UnmarshalText(data []byte) error {
+	tt, err := Parse(RFC3339, string(data))
+	if err != nil {
+		return err
+	}
+	*t = tt
+	return nil
+}
+
+// Parse parses a formatted string and returns the time value it represents.
+// Stub: only accepts decimal Unix nanoseconds (AppendFormat output).
+func Parse(layout, value string) (Time, error) {
+	_ = layout
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+	}
+	return Time{ext: n}, nil
+}
+
+// String returns a decimal nanosecond count (enough for json duration format).
+func (d Duration) String() string {
+	return strconv.FormatInt(int64(d), 10) + "ns"
+}
+
+// ParseDuration parses a duration string.
+// Stub: accepts an integer with optional "ns"/"us"/"µs"/"ms"/"s"/"m"/"h" suffix.
+func ParseDuration(s string) (Duration, error) {
+	if s == "" {
+		return 0, errors.New("time: invalid duration")
+	}
+	// Try plain integer nanoseconds first.
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return Duration(n), nil
+	}
+	unit := Nanosecond
+	num := s
+	switch {
+	case len(s) > 2 && s[len(s)-2:] == "ns":
+		num, unit = s[:len(s)-2], Nanosecond
+	case len(s) > 2 && s[len(s)-2:] == "us":
+		num, unit = s[:len(s)-2], Microsecond
+	case len(s) > 3 && s[len(s)-3:] == "µs":
+		num, unit = s[:len(s)-3], Microsecond
+	case len(s) > 2 && s[len(s)-2:] == "ms":
+		num, unit = s[:len(s)-2], Millisecond
+	case len(s) > 1 && s[len(s)-1:] == "s":
+		num, unit = s[:len(s)-1], Second
+	case len(s) > 1 && s[len(s)-1:] == "m":
+		num, unit = s[:len(s)-1], Minute
+	case len(s) > 1 && s[len(s)-1:] == "h":
+		num, unit = s[:len(s)-1], Hour
+	default:
+		return 0, errors.New("time: invalid duration " + strconv.Quote(s))
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil {
+		return 0, errors.New("time: invalid duration " + strconv.Quote(s))
+	}
+	return Duration(n) * unit, nil
+}
 
 // Sleep pauses the current goroutine for at least duration d.
 func Sleep(d Duration) {
