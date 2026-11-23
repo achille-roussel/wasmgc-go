@@ -872,6 +872,13 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{a, b}}
 		case types.String:
 			return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{a, b}}
+		case types.Complex64, types.Complex128, types.UntypedComplex:
+			// complex is a Wasm GC struct ref ($go.complex64/128), not an i32.
+			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+			return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},
+				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{b}},
+			}}
 		case types.UnsafePointer:
 			// anyref — reference identity, not i32.
 			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}

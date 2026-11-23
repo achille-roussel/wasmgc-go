@@ -1,0 +1,8 @@
+# errors — wasmgc-go test skips
+TestIs — Is/Unwrap walk needs iface assert to interface{Unwrap() error} (itable gap)
+TestAs — As stub / reflectlite Set; iface method itables
+TestAsValidation — As panics / validation path
+TestAsType — AsType no Unwrap walk; generics edge cases
+TestUnwrap — Unwrap stub (no iface{Unwrap() error} itable)
+TestJoin — Join result .(interface{Unwrap() []error}) itable gap
+TestJoinErrorMethod — Join Error() multi-error formatting

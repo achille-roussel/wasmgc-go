@@ -68,7 +68,17 @@ type Frame struct {
 
 func CallersFrames(callers []uintptr) *Frames { return &Frames{} }
 
-func Stack(buf []byte, all bool) int { return 0 }
+// Stack writes a stub traceback into buf. Real PC/file/line frames need
+// Callers metadata (follow-up); M10 at least returns a recognizable header.
+func Stack(buf []byte, all bool) int {
+	msg := "goroutine 1 [running]:\n"
+	n := len(msg)
+	if n > len(buf) {
+		n = len(buf)
+	}
+	copy(buf, msg[:n])
+	return n
+}
 
 type Error interface {
 	RuntimeError()

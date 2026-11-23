@@ -225,19 +225,63 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 					return nil, err
 				}
 				out = append(out, stmts...)
-				out = append(out, fl.assignVar(v, ex))
-				// Plain local write (bypasses writeVar/cell); capture sync needs this.
-				fl.markPlainDirty(obj)
+				out = append(out, fl.assignDeclValue(obj, v, ex)...)
 			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
 				// Arrays / named structs: Wasm refnull default is null, but
 				// Go zero is an allocated empty value (e.g. var arr [32]byte).
-				out = append(out, fl.assignVar(v, z))
-				fl.markPlainDirty(obj)
+				out = append(out, fl.assignDeclValue(obj, v, z)...)
+			} else if fl.deferInLoop {
+				// Inside a loop, `var x` must reset each iteration — including
+				// when x is later cell-captured by range-over-func (Collect).
+				// Outside loops, defineLocal's zero-init is enough; re-zeroing
+				// every DeclStmt broke encoding/json string fields.
+				z, err := fl.declZero(obj.Type(), v.Typ)
+				if err != nil {
+					return nil, fl.errorf(name, "zero init: %v", err)
+				}
+				out = append(out, fl.assignDeclValue(obj, v, z)...)
 			}
 			// else: defineLocal already zero-inits non-defaultable refs.
 		}
 	}
 	return out, nil
+}
+
+// assignDeclValue writes rhs for a var declaration. If the local is already
+// cell-boxed, update the cell; otherwise write the plain local and mark it
+// dirty so a later closure/range-func capture syncs plain→cell (needed when
+// `var x` is lowered before the capture site that calls ensureLocalCell).
+func (fl *funcLower) assignDeclValue(obj types.Object, v *ir.Var, rhs ir.Expr) []ir.Stmt {
+	if fl.cells != nil {
+		if _, ok := fl.cells[obj]; ok {
+			ws, err := fl.writeVar(obj, rhs)
+			if err == nil {
+				return ws
+			}
+		}
+	}
+	fl.markPlainDirty(obj)
+	return []ir.Stmt{fl.assignVar(v, rhs)}
+}
+
+// declZero is the Go zero for a DeclStmt. Unlike zeroValue alone, pointer /
+// slice / map / chan / iface / func zeros are typed null — named structs and
+// their pointers share one IR shape, so zeroValue would allocate a value.
+func (fl *funcLower) declZero(goTy types.Type, irTy ir.Type) (ir.Expr, error) {
+	if goTy != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		goTy = fl.pkg.subst.Apply(goTy)
+	}
+	if z, ok := fl.goZeroValue(goTy, irTy); ok {
+		return z, nil
+	}
+	// Type params' constraints are interfaces; never treat an unsubstituted
+	// param as iface (cmp.Or[string]'s `var zero T` must be "").
+	if _, isTP := types.Unalias(goTy).(*types.TypeParam); !isTP {
+		if isPointer(goTy) || isSlice(goTy) || isMap(goTy) || isChan(goTy) || isIface(goTy) || isSignature(goTy) {
+			return &ir.Instr{Op: ir.OpRefNull, Type: irTy}, nil
+		}
+	}
+	return fl.zeroValue(irTy)
 }
 
 func needsZeroInit(ty ir.Type) bool {
@@ -710,6 +754,11 @@ func (fl *funcLower) exprStmt(s *ast.ExprStmt) ([]ir.Stmt, error) {
 }
 
 func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
+	// Inside a range-over-func yield: early-exit the iterator, then return
+	// from the enclosing function after the iterator call returns.
+	if fl.rangeYield && len(fl.rangeFrames) > 0 {
+		return fl.rangeYieldReturn(s)
+	}
 	if len(s.Results) == 0 {
 		if len(fl.namedResults) > 0 {
 			var results []ir.Expr
@@ -933,6 +982,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		return fl.rangeMapStmt(s, goLabel)
 	case *types.Chan:
 		return fl.rangeChanStmt(s, goLabel)
+	case *types.Signature:
+		return fl.rangeFuncStmt(s, goLabel)
 	case *types.Basic:
 		if u.Info()&types.IsInteger != 0 {
 			return fl.rangeIntStmt(s, goLabel)

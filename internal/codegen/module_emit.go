@@ -307,6 +307,20 @@ func (g *gen) emitFuncBodies() error {
 				g.wm.AddCode(bodyUnreachable())
 			}
 			continue
+		case f.Name == "runtime.panicrangestate" && g.fillPanicRange:
+			if g.hasEH {
+				g.wm.AddCode(g.bodyPanicMsg("range function continued iteration after loop body panic"))
+			} else {
+				g.wm.AddCode(bodyUnreachable())
+			}
+			continue
+		case f.Name == "runtime.panicNil" && g.fillPanicNil:
+			if g.hasEH {
+				g.wm.AddCode(g.bodyPanicMsg("runtime error: invalid memory address or nil pointer dereference"))
+			} else {
+				g.wm.AddCode(bodyUnreachable())
+			}
+			continue
 		case g.ehFill[f.Name]:
 			switch f.Name {
 			case "runtime.throwPanic":

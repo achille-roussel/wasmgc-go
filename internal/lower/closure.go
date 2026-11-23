@@ -12,6 +12,7 @@ import (
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 // Closures and func values (docs/design/03).
@@ -644,8 +645,13 @@ func (l *pkgLower) funcIRNameOf(fn *types.Func) string {
 // and calls the underlying top-level / method function.
 func (l *pkgLower) emitTopLevelClosWrapper(wrapper string, fn *types.Func) error {
 	sig := fn.Type().(*types.Signature)
+	return l.emitNamedClosWrapper(wrapper, l.funcIRNameOf(fn), sig)
+}
+
+// emitNamedClosWrapper emits a (clos, args...) wrapper that ignores clos and
+// calls target. Used for both ordinary top-level funcs and mono instances.
+func (l *pkgLower) emitNamedClosWrapper(wrapper, target string, sig *types.Signature) error {
 	l.ensureClosBase()
-	target := l.funcIRNameOf(fn)
 	closParam := &ir.Var{Name: "clos", Typ: &ir.Ref{Named: closBaseName}}
 	params := []*ir.Var{closParam}
 	var args []ir.Expr
@@ -691,6 +697,29 @@ func (l *pkgLower) emitTopLevelClosWrapper(wrapper string, fn *types.Func) error
 	})
 	_, err := l.ensureFuncType(sig, closBaseName)
 	return err
+}
+
+// monoInstFuncValue builds an empty-capture closure for a monomorphized
+// generic function (e.g. equal[int] passed to EqualFunc).
+func (fl *funcLower) monoInstFuncValue(inst *mono.Instance) (ir.Expr, []ir.Stmt, error) {
+	fl.pkg.ensureClosBase()
+	wrapper := inst.IRName + "$clos"
+	if fl.mod.LookupFunc(wrapper) == nil {
+		if err := fl.pkg.emitNamedClosWrapper(wrapper, inst.IRName, inst.Sig); err != nil {
+			return nil, nil, err
+		}
+	}
+	funcTy, err := fl.pkg.ensureFuncType(inst.Sig, closBaseName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: closBaseName},
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefFunc, Func: wrapper, Type: &ir.Ref{Named: funcTy}},
+		},
+	}, nil, nil
 }
 
 // methodValue lowers x.M as a closure capturing x.

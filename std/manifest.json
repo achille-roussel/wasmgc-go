@@ -52,6 +52,13 @@
       ],
       "notes": "overlaps without uintptr"
     },
+    "maps": {
+      "tier": "overlay",
+      "overlays": [
+        "maps.go"
+      ],
+      "notes": "M10: Clone without runtime maps.clone linkname; Keys/Values/All/Collect via iter + range-over-func"
+    },
     "sync": {
       "tier": "rewrite",
       "notes": "M7: Mutex/WaitGroup/Once via runtime.Semacquire; M8: Pool (single-local)"
@@ -235,6 +242,14 @@
     "os": {
       "tier": "rewrite",
       "notes": "M9: Args from host getArgc/getArg; Write returns PathError/ENOSYS; stdio via syscall"
+    },
+    "testing": {
+      "tier": "rewrite",
+      "notes": "M10: minimal T/M/MainStart for wasmgc-go test; no testdeps/fuzz"
+    },
+    "testing/internal/testdeps": {
+      "tier": "out",
+      "notes": "M10: avoided; MainStart takes no testDeps"
     },
     "plugin": {
       "tier": "out"

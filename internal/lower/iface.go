@@ -71,6 +71,9 @@ func (fl *funcLower) callResultGoTypes(e *ast.CallExpr) []types.Type {
 
 // convertToIface boxes a concrete (or interface) value into wantIface.
 func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	if src == nil || isUntypedNil(src) || isNilIdent(e) {
+		return &ir.Instr{Op: ir.OpRefNull, Type: typeIface}, nil, nil
+	}
 	if isIface(src) {
 		// Interface → interface: assert / re-wrap via descriptor itable vector.
 		// For M4: if identical underlying, pass through; else assert to target.

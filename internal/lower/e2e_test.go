@@ -101,3 +101,22 @@ func main() {
 `)
 	runNode(t, b, "6765\n")
 }
+
+func TestE2ERangeFunc(t *testing.T) {
+	b := lowerToWasm(t, `package main
+func seq(yield func(int) bool) {
+	if !yield(1) {
+		return
+	}
+	if !yield(2) {
+		return
+	}
+}
+func main() {
+	for x := range seq {
+		println(x)
+	}
+}
+`)
+	runNode(t, b, "1\n2\n")
+}

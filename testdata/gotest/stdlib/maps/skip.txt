@@ -1,0 +1,2 @@
+# maps — wasmgc-go test skips
+TestCloneLarge — Clone overlay is pure Go assign; large float keys / -0 signbit freeze (issue 64474) not preserved

@@ -120,11 +120,17 @@ type gen struct {
 	// Slice/index panic stubs (legacy trap fill; M5 uses EH fills).
 	panicIndexIdx       uint32
 	panicSliceBIdx      uint32
+	panicRangeIdx       uint32
+	panicNilIdx         uint32
 	hasPanicStubs       bool
 	stubNeedPanicIndex  bool
 	stubNeedPanicSliceB bool
+	stubNeedPanicRange  bool
+	stubNeedPanicNil    bool
 	fillPanicIndex      bool
 	fillPanicSliceB     bool
+	fillPanicRange      bool
+	fillPanicNil        bool
 
 	// M5 exception handling.
 	hasEH            bool

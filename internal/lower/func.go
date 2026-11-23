@@ -56,6 +56,24 @@ type funcLower struct {
 	mayPanic             bool
 	needsRecoverPrologue bool
 	allowVar             *ir.Var
+
+	// M10: range-over-func (iterators). rangeFrames is innermost-last.
+	// rangeYield is true when this funcLower is a synthesized yield body.
+	rangeFrames []*rangeFrame
+	rangeYield  bool
+}
+
+// rangeFrame holds the state machine and early-exit cells for one
+// range-over-func loop (docs/design/02-ir.md). Follow-up: defer inside the
+// range body should attach to the outer frame (runtime.deferrangefunc).
+type rangeFrame struct {
+	stateObj   types.Object
+	retObj     types.Object   // shared with outermost; 1 = outer return pending
+	resultObjs []types.Object // staging cells for outer return values
+	resultTys  []ir.Type
+	resultGo   []types.Type
+	breakL     string
+	contL      string
 }
 
 func (fl *funcLower) errorf(n ast.Node, format string, args ...any) error {
@@ -259,6 +277,12 @@ func (fl *funcLower) lookupGlobal(id *ast.Ident) *ir.Global {
 	if obj == nil {
 		return nil
 	}
+	// Never resolve a local/param via the globals map or name fallback.
+	if fl.vars != nil {
+		if _, ok := fl.vars[obj]; ok {
+			return nil
+		}
+	}
 	if fl.pkg.globals != nil {
 		if g := fl.pkg.globals[obj]; g != nil {
 			return g
@@ -266,7 +290,12 @@ func (fl *funcLower) lookupGlobal(id *ast.Ident) *ir.Global {
 	}
 	// Late mono emit (emitAllPendingMono) rebuilds pkgLower without the
 	// origin package's globals map; resolve by qualified IR name.
+	// Only package-level vars (parent == package scope) — not params named
+	// like maps.Equal's m1/m2 when tests also declare package vars m1/m2.
 	if v, ok := obj.(*types.Var); ok && v.Pkg() != nil {
+		if v.Parent() != v.Pkg().Scope() {
+			return nil
+		}
 		gname := pkgIRPrefix(v.Pkg()) + "." + v.Name()
 		if g := fl.mod.LookupGlobal(gname); g != nil {
 			return g

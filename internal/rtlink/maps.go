@@ -114,6 +114,7 @@ func stripMapFuncs(mod *ir.Module) {
 	// Helpers and methods from map.go not in mapSyms.
 	for _, s := range []string{
 		"runtime.mapCapForHint",
+		"runtime.mapCheckWrite",
 		"runtime.(*hmap).growTo",
 		"runtime.(*hmap).insertNew",
 		"runtime.(*hmap).maybeGrow",

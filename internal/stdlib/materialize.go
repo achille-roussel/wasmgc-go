@@ -202,10 +202,16 @@ func writeVERSION(goroot, version string) error {
 	return os.WriteFile(filepath.Join(goroot, "VERSION"), []byte(version+"\n"), 0o644)
 }
 
-// ensureUpstreamSrc returns a directory containing the extracted Go source
+// EnsureUpstreamSrc returns a directory containing the extracted Go source
 // (with a src/ subdirectory). Prefer a downloaded, checksum-verified tarball.
 // If the running toolchain's GOROOT VERSION matches the pin, it may be used as
 // the upstream tree without re-downloading (still not committed into the repo).
+// Exported for LoadTest, which needs upstream *_test.go files stripped from the
+// materialized GOROOT.
+func EnsureUpstreamSrc(p Paths, pin Pin) (string, error) {
+	return ensureUpstreamSrc(p, pin)
+}
+
 func ensureUpstreamSrc(p Paths, pin Pin) (string, error) {
 	extracted := filepath.Join(p.CacheDir, "src-"+pin.Version)
 	if _, err := os.Stat(filepath.Join(extracted, "src")); err == nil {

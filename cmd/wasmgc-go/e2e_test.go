@@ -898,6 +898,22 @@ func TestM9JsonMapIntE2E(t *testing.T) {
 	runM8(t, "m9_json_map_int", "one\ntwo\n2\n", 0)
 }
 
+// --- M10: range-over-func + maps.Keys/Clone ---
+
+func TestM10RangeFuncE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM2(t, "m10_rangefunc", "1\n2\n", 0)
+}
+
+func TestM10MapsKeysE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m10_maps_keys", "2\n2\n3\n", 0)
+}
+
 // TestM9HTTPGetE2E: http.Get of a local Node http server returns the body
 // via fetch (docs/design/09). Passes the server URL as os.Args[0].
 func TestM9HTTPGetE2E(t *testing.T) {

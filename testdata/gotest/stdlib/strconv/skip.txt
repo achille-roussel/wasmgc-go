@@ -1,0 +1,27 @@
+# strconv — wasmgc-go test skips
+TestAllocationsFromBytes — quote/unicode or alloc counting
+TestAtof — runtime error
+TestAtoi — runtime error
+TestCanBackquote — quote/unicode or alloc counting
+TestCountMallocs — quote/unicode or alloc counting
+TestIsGraphic — quote/unicode or alloc counting
+TestIsPrint — quote/unicode or alloc counting
+TestNumErrorUnwrap — test failed
+TestParseComplex — runtime error
+TestParseComplexIncorrectBitSize — runtime error
+TestParseInt — runtime error
+TestParseInt32 — runtime error
+TestParseInt64 — runtime error
+TestParseInt64Base — runtime error
+TestParseUint — runtime error
+TestParseUint32 — runtime error
+TestParseUint64 — runtime error
+TestParseUint64Base — runtime error
+TestQuote — quote/unicode or alloc counting
+TestQuoteRune — quote/unicode or alloc counting
+TestQuoteRuneToASCII — quote/unicode or alloc counting
+TestQuoteRuneToGraphic — quote/unicode or alloc counting
+TestQuoteToASCII — quote/unicode or alloc counting
+TestQuoteToGraphic — quote/unicode or alloc counting
+TestUnquote — quote/unicode or alloc counting
+TestUnquoteInvalidUTF8 — quote/unicode or alloc counting

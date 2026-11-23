@@ -1,0 +1,1 @@
+# container/list — wasmgc-go test skips

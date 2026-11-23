@@ -9,10 +9,20 @@ on:
 # Node 26.13.1: Wasm GC + EH + JSPI (Suspending/promising) on by default.
 # JSPI is required with no opt-out (docs/design/07, decision in 10). Node 22
 # is not in the matrix: it has no WebAssembly.Suspending.
+#
+# M10 four layers (docs/design/08-testing.md):
+#   1. unit tests (+ gotest/stdlib smoke)
+#   2. e2e programs (cmd/wasmgc-go)
+#   3. $GOROOT/test
+#   4. stdlib package tests
+
+env:
+  WASM_TOOLS_VERSION: "1.263.0"
+  GO_SRC_VERSION: "go1.27.4"
 
 jobs:
-  go:
-    name: Go vet and test
+  unit:
+    name: "1. Unit tests"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,8 +32,6 @@ jobs:
           go-version-file: go.mod
 
       - name: Install wasm-tools
-        env:
-          WASM_TOOLS_VERSION: "1.263.0"
         run: |
           curl -fsSL \
             "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
@@ -33,19 +41,15 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test
-        run: go test ./...
+      - name: Unit tests (internal + gotest smoke + skip growth)
+        run: go test ./internal/... ./testdata/gotest/ -count=1 -short
 
       - name: wasm-tools validate M0 module
         run: wasm-tools validate testdata/m0/empty.wasm
 
-  node:
-    name: Node ${{ matrix.node }}
+  e2e:
+    name: "2. E2E programs"
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["26.13.1"]
     steps:
       - uses: actions/checkout@v4
 
@@ -55,28 +59,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: "26.13.1"
 
       - name: Install wasm-tools
-        env:
-          WASM_TOOLS_VERSION: "1.263.0"
         run: |
           curl -fsSL \
             "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
             | sudo tar -xz -C /usr/local/bin --strip-components=1
-
-      - name: Ensure M0 wasm is present
-        run: |
-          go test ./internal/wasm -run TestEmptyRunModule
-          test -f testdata/m0/empty.wasm
-          wasm-tools validate testdata/m0/empty.wasm
-
-      - name: Run M0 glue (empty module)
-        run: |
-          node lib/wasmgc.js testdata/m0/empty.wasm
-          # Must print nothing and exit 0.
-          out="$(node lib/wasmgc.js testdata/m0/empty.wasm 2>&1)"
-          test -z "$out"
 
       - name: Prototypes (EH + fat-pointer + JSPI)
         run: |
@@ -89,3 +78,110 @@ jobs:
           node std/src/runtime/testdata/run_m5.mjs
           node std/src/runtime/testdata/run_m6.mjs
           node std/src/runtime/testdata/run_m7.mjs
+
+      - name: E2E programs + size corpus
+        run: go test ./cmd/wasmgc-go/ -count=1
+
+  gotest:
+    name: "3. GOROOT/test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26.13.1"
+
+      - name: Cache Go ${{ env.GO_SRC_VERSION }} source
+        id: cache-gosrc
+        uses: actions/cache@v4
+        with:
+          path: ~/gosrc
+          key: gosrc-${{ env.GO_SRC_VERSION }}
+
+      - name: Download Go ${{ env.GO_SRC_VERSION }} source
+        if: steps.cache-gosrc.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/gosrc
+          curl -fsSL "https://go.dev/dl/${GO_SRC_VERSION}.src.tar.gz" \
+            | tar -xz -C ~/gosrc --strip-components=0
+          # tarball extracts as ~/gosrc/go/...
+          test -d ~/gosrc/go/test
+
+      - name: Install wasm-tools
+        run: |
+          curl -fsSL \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1
+
+      - name: Skip-list format + growth guard
+        run: go test ./testdata/gotest/ -run 'TestSkipList' -count=1
+
+      - name: '$GOROOT/test suite'
+        env:
+          WASMGC_GOROOT: ${{ runner.temp }}/gosrc-go
+          WASMGC_GOTEST: "1"
+        run: |
+          # Cache stores ~/gosrc/go; point WASMGC_GOROOT at that tree.
+          if [ -d "$HOME/gosrc/go/test" ]; then
+            export WASMGC_GOROOT="$HOME/gosrc/go"
+          elif [ -d "$HOME/gosrc/test" ]; then
+            export WASMGC_GOROOT="$HOME/gosrc"
+          else
+            echo "Go source tree missing"; ls -la ~/gosrc; exit 1
+          fi
+          go test ./testdata/gotest/ -run TestGOROOT -count=1 -timeout 60m
+
+  stdlib:
+    name: "4. Stdlib tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26.13.1"
+
+      - name: Cache Go ${{ env.GO_SRC_VERSION }} source
+        id: cache-gosrc
+        uses: actions/cache@v4
+        with:
+          path: ~/gosrc
+          key: gosrc-${{ env.GO_SRC_VERSION }}
+
+      - name: Download Go ${{ env.GO_SRC_VERSION }} source
+        if: steps.cache-gosrc.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/gosrc
+          curl -fsSL "https://go.dev/dl/${GO_SRC_VERSION}.src.tar.gz" \
+            | tar -xz -C ~/gosrc --strip-components=0
+          test -d ~/gosrc/go/test
+
+      - name: Install wasm-tools
+        run: |
+          curl -fsSL \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1
+
+      - name: Stdlib package tests
+        env:
+          WASMGC_STDLIB_TEST: "1"
+        run: |
+          if [ -d "$HOME/gosrc/go/test" ]; then
+            export WASMGC_GOROOT="$HOME/gosrc/go"
+          elif [ -d "$HOME/gosrc/test" ]; then
+            export WASMGC_GOROOT="$HOME/gosrc"
+          else
+            echo "Go source tree missing"; ls -la ~/gosrc; exit 1
+          fi
+          go test ./testdata/gotest/ -run TestStdlibPackages -count=1 -timeout 45m

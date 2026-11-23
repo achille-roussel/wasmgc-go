@@ -28,6 +28,9 @@ type Config struct {
 	// Files, if non-empty, skips go list and type-checks these .go files as
 	// package main in Dir (test helper / single-file mode).
 	Files []string
+	// Overlay, if set, replaces the source file list for the given import
+	// paths (used by LoadTest to inject *_test.go and synthetic xtest packages).
+	Overlay map[string][]string
 }
 
 // Package is one type-checked package in a Program.
@@ -253,6 +256,7 @@ type programImporter struct {
 	typesPkgs map[string]*types.Package
 	stack     map[string]bool
 	prog      *Program
+	overlay   map[string][]string
 }
 
 func (imp *programImporter) Import(path string) (*types.Package, error) {
@@ -320,7 +324,17 @@ func (imp *programImporter) loadOne(lp *listPackage) (*Package, error) {
 	var goFiles []string
 	var err error
 
-	if standard {
+	if files, ok := imp.overlay[lp.ImportPath]; ok && len(files) > 0 {
+		goFiles = append([]string{}, files...)
+		if dir == "" {
+			dir = filepath.Dir(files[0])
+		}
+		// Overlay packages under test are treated as complete replacements;
+		// keep Standard true when the path looks like std so init order matches.
+		if isStdImportPath(lp.ImportPath) && !strings.HasSuffix(lp.ImportPath, "_test") {
+			standard = true
+		}
+	} else if standard {
 		if imp.goroot == "" {
 			return nil, fmt.Errorf("load: standard package %q required but GOROOT is unset (materialize via wasmgc-go std materialize)", lp.ImportPath)
 		}
