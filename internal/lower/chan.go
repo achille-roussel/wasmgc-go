@@ -399,15 +399,13 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 			}
 			body.Stmts = append(body.Stmts, ss...)
 		}
-		if !regionEndsWithReturn(body) {
-			body.Stmts = append(body.Stmts, &ir.Br{Label: breakL})
-		}
+		bodyR := appendBr(body, breakL)
 		elseR, err := build(i + 1)
 		if err != nil {
 			return nil, err
 		}
 		cond := &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{fl.useVar(chosen), fl.i32const(int64(i))}}
-		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: body, Else: elseR}}}, nil
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodyR, Else: elseR}}}, nil
 	}
 	r, err := build(0)
 	if err != nil {

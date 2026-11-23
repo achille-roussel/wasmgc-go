@@ -465,6 +465,19 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 	if len(child.results) == 0 && !endsWithReturn(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
 	}
+	// Non-void: same as pkg.lowerFunc — fallthru after a terminating type
+	// switch/block needs unreachable so Wasm sees results on every path.
+	if len(child.results) > 0 && !endsWithReturn(seq) {
+		if len(child.namedResults) > 0 {
+			args := make([]ir.Expr, len(child.namedResults))
+			for i, v := range child.namedResults {
+				args[i] = child.useVar(v)
+			}
+			seq.Stmts = append(seq.Stmts, &ir.Return{Results: args})
+		} else {
+			seq.Stmts = append(seq.Stmts, &ir.Unreachable{})
+		}
+	}
 	for _, v := range child.namedResults {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}

@@ -175,7 +175,8 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 }
 
 func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	ptrTy, _ := fl.mapType(fl.typeOf(e.X))
+	xt := fl.typeOf(e.X)
+	ptrTy, _ := fl.mapType(xt)
 	ptr, stmts, err := fl.expr(e.X, ptrTy)
 	if err != nil {
 		return nil, nil, err
@@ -183,6 +184,10 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	ty := want
 	if ty == nil {
 		ty, _ = fl.mapType(fl.typeOf(e))
+	}
+	// *Struct / *[N]T: pointer and value share the same object ref.
+	if xt != nil && isObjectPointer(xt) {
+		return ptr, stmts, nil
 	}
 	// Materialize pointer into a typed local so RuntimeOps expandDeref sees
 	// $go.ptr.* (struct.get Type is the container, not the field type).
@@ -734,10 +739,22 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 		}
 		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
 			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
-			args[i] = &ir.Instr{
-				Op:   ir.OpArrayNewDefault,
-				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			// (ref $go.string) is non-defaultable — use array.new of "".
+			if r.Named == "$go.array.go.string" {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNew,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStringLit, Str: ""},
+						&ir.Const{Op: ir.OpI32Const, I64: f.Len},
+					},
+				}
+			} else {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNewDefault,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+				}
 			}
 			continue
 		}

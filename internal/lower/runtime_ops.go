@@ -651,9 +651,11 @@ func (rt *runtimeLower) expandSliceLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
 	arrTy := &ir.Ref{Named: arrName}
 	if length == 0 {
+		alloc, allocPre := rt.allocArray(arrName, &ir.Const{Op: ir.OpI32Const, I64: 0})
+		pre = append(pre, allocPre...)
 		pre = append(pre, &ir.Assign{
 			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-			Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: arrTy, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+			Rhs: alloc,
 		})
 	} else if rhs, ok := rt.constArrayNew(arrTy, elems, n); ok {
 		pre = append(pre, &ir.Assign{
@@ -850,13 +852,25 @@ func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[strin
 			args[i] = &ir.Instr{Op: ir.OpStringLit, Str: ""}
 			continue
 		}
-		// Fixed Go array field: allocate array.new_default of Len.
+		// Fixed Go array field: allocate Len elements. (ref $go.string) is
+		// non-defaultable — use array.new of "" (StringLit expands later).
 		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
 			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
-			args[i] = &ir.Instr{
-				Op:   ir.OpArrayNewDefault,
-				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			if r.Named == "$go.array.go.string" {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNew,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStringLit, Str: ""},
+						&ir.Const{Op: ir.OpI32Const, I64: f.Len},
+					},
+				}
+			} else {
+				args[i] = &ir.Instr{
+					Op:   ir.OpArrayNewDefault,
+					Type: &ir.Ref{Named: r.Named},
+					Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+				}
 			}
 			continue
 		}
@@ -905,12 +919,9 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 		if nElems < 0 {
 			nElems = 0
 		}
-		rhs := &ir.Instr{
-			Op:   ir.OpArrayNewDefault,
-			Type: in.Type,
-			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: nElems}},
-		}
-		return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: rhs}}, nil
+		alloc, pre := rt.allocArray(tname, &ir.Const{Op: ir.OpI32Const, I64: nElems})
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: alloc})
+		return pre, nil
 	}
 	// Fat pointer to scalar: allocate [1]T and build ptr.
 	kind := "i32"
@@ -1613,6 +1624,14 @@ func exprRefTypeMod(mod *ir.Module, e ir.Expr) string {
 			}
 		}
 	case *ir.Instr:
+		// global.get has no Instr.Type; look up the global's declared type.
+		if b.Op == ir.OpGlobalGet && mod != nil && b.Global != "" {
+			if g := mod.LookupGlobal(b.Global); g != nil {
+				if r, ok := g.Typ.(*ir.Ref); ok {
+					return r.Named
+				}
+			}
+		}
 		// struct.get's Type is the container; resolve the field type when possible.
 		if b.Op == ir.OpStructGet && b.Field != "" && b.Type != nil && mod != nil {
 			if r, ok := b.Type.(*ir.Ref); ok && r.Named != "" {
@@ -1634,6 +1653,21 @@ func exprRefTypeMod(mod *ir.Module, e ir.Expr) string {
 	return ""
 }
 
+// isObjectPtrIR reports whether named is a bare object/array ref used for
+// *Struct / *[N]T (not a fat $go.ptr.*). Includes runtime aliases that
+// mapNamedStruct shares with the value type (*hmap, *g, …).
+func isObjectPtrIR(named string) bool {
+	switch named {
+	case "$go.bytes", "$go.i16s",
+		"$go.hmap", "$go.mapIter", "$go.chan", "$go.g", "$go.type",
+		"$go.waiter", "$go.waitq", "$go.scase", "$go.select",
+		"$go.runqnode", "$go.semaRoot", "$go.panicObj", "$go.chanOps":
+		return true
+	}
+	return strings.HasPrefix(named, "$go.struct.") ||
+		strings.HasPrefix(named, "$go.array.")
+}
+
 func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	ptr, pre, err := rt.rewriteExpr(in.Args[0], n)
 	if err != nil {
@@ -1644,15 +1678,15 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	// also has result type $go.struct.* but must call_ref get.
 	kind := "i32"
 	ptrType := "$go.ptr.i32"
-	ptrTyp := exprRefType(in.Args[0])
+	ptrTyp := exprRefTypeMod(rt.mod, in.Args[0])
 	if ptrTyp == "" {
-		ptrTyp = exprRefType(ptr)
+		ptrTyp = exprRefTypeMod(rt.mod, ptr)
 	}
 	switch {
 	case strings.HasPrefix(ptrTyp, "$go.ptr."):
 		kind = strings.TrimPrefix(ptrTyp, "$go.ptr.")
 		ptrType = ptrTyp
-	case strings.HasPrefix(ptrTyp, "$go.struct."), strings.HasPrefix(ptrTyp, "$go.array."):
+	case isObjectPtrIR(ptrTyp):
 		// Object pointer: the ref is the value.
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: ptr})
 		return pre, nil

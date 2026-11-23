@@ -190,10 +190,31 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 		u, _ := constant.Uint64Val(w)
 		return fl.i32const(int64(int32(u))), nil
 	case constant.Float:
-		f, _ := constant.Float64Val(v)
-		if want != nil && irNumWidth(want) == ir.F32 {
-			return fl.f32const(f), nil
+		// go/types may keep Kind=Float on a value already typed as int/Duration
+		// (e.g. time.Duration(daysPerYear*…*1e9)). Honor integer want.
+		if want != nil {
+			switch irNumWidth(want) {
+			case ir.I64:
+				if i, ok := constant.Int64Val(constant.ToInt(v)); ok {
+					return fl.i64const(i), nil
+				}
+				if u, ok := constant.Uint64Val(constant.ToInt(v)); ok {
+					return fl.i64const(int64(u)), nil
+				}
+				f, _ := constant.Float64Val(v)
+				return fl.i64const(int64(f)), nil
+			case ir.I32:
+				if i, ok := constant.Int64Val(constant.ToInt(v)); ok {
+					return fl.i32const(i), nil
+				}
+				f, _ := constant.Float64Val(v)
+				return fl.i32const(int64(int32(f))), nil
+			case ir.F32:
+				f, _ := constant.Float64Val(v)
+				return fl.f32const(f), nil
+			}
 		}
+		f, _ := constant.Float64Val(v)
 		return fl.f64const(f), nil
 	case constant.Complex:
 		// Stored complex is a struct of two floats (docs/design/03).
@@ -2025,6 +2046,10 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 	}
 	if !needPtr && havePtr {
 		// Auto-deref for value-receiver method on pointer.
+		// *NamedStruct / *[N]T share the object ref with T — no OpDeref.
+		if isObjectPointer(xt) {
+			return fl.expr(x, want)
+		}
 		ex, stmts, err := fl.expr(x, nil)
 		if err != nil {
 			return nil, nil, err

@@ -1460,9 +1460,12 @@ func structName(t *types.Named) string {
 	if alias := runtimeStructAliasName(t); alias != "" {
 		return alias
 	}
+	// Must match lower.structTypeName / pkgIRPrefix (full import path), not
+	// pkg.Name() alone — else iface method params get $go.struct.jsontext.T
+	// while values are $go.struct.encoding.json.jsontext.T and call_ref fails.
 	pkg := "main"
 	if t.Obj().Pkg() != nil {
-		pkg = t.Obj().Pkg().Name()
+		pkg = pkgIRPrefix(t.Obj().Pkg())
 	}
 	suffix := ""
 	if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
@@ -1719,7 +1722,7 @@ func builtinType(key string) types.Type {
 
 func findTypeByKey(pkg *types.Package, key string) types.Type {
 	want := key
-	pkgPrefix := pkg.Name() + "."
+	pkgPrefix := pkgIRPrefix(pkg) + "."
 	if strings.HasPrefix(key, "*") {
 		elemKey := strings.TrimPrefix(key, "*")
 		if t := findTypeByKey(pkg, elemKey); t != nil {
@@ -1729,8 +1732,11 @@ func findTypeByKey(pkg *types.Package, key string) types.Type {
 	}
 	if strings.HasPrefix(key, pkgPrefix) {
 		want = strings.TrimPrefix(key, pkgPrefix)
-	} else if strings.Contains(key, ".") && !strings.HasPrefix(key, pkg.Name()) {
+	} else if strings.Contains(key, ".") && !strings.HasPrefix(key, pkgPrefix) && !strings.HasPrefix(key, pkg.Name()+".") {
 		return nil
+	} else if strings.HasPrefix(key, pkg.Name()+".") && pkgIRPrefix(pkg) != pkg.Name() {
+		// Legacy short keys (pkg.Name only) still resolve.
+		want = strings.TrimPrefix(key, pkg.Name()+".")
 	}
 	if obj := pkg.Scope().Lookup(want); obj != nil {
 		if tn, ok := obj.(*types.TypeName); ok {

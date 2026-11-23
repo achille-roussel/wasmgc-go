@@ -1933,15 +1933,19 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 	ifaceV := fl.newVar("ts", typeIface)
 	out = append(out, fl.assignVar(ifaceV, ifaceEx))
 
-	// If-else chain implements case exclusivity; no outer break block needed
-	// (a trailing br after return left functions with results failing validation).
+	// If-else chain implements case exclusivity. Break block still needed for
+	// explicit break; trailing br after return/unreachable is skipped (same as
+	// value switches) so multi-result functions validate.
 	breakL := fl.freshLabel("tsbreak")
 	fl.breakStack = append(fl.breakStack, breakL)
 	defer func() { fl.breakStack = fl.breakStack[:len(fl.breakStack)-1] }()
 
+	allTerm := len(s.Body.List) > 0
 	var build func(i int) (ir.Region, error)
 	build = func(i int) (ir.Region, error) {
 		if i >= len(s.Body.List) {
+			// No default: falling off the type switch is a valid exit.
+			allTerm = false
 			return &ir.Seq{}, nil
 		}
 		cc := s.Body.List[i].(*ast.CaseClause)
@@ -2005,13 +2009,14 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 			}
 			bodySeq.Stmts = append(bodySeq.Stmts, ss...)
 		}
-		if !regionEndsWithReturn(bodySeq) {
-			bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: breakL})
+		if !regionTerminates(bodySeq) {
+			allTerm = false
 		}
+		bodyR := appendBr(bodySeq, breakL)
 
 		if len(cc.List) == 0 {
 			// default
-			return bodySeq, nil
+			return bodyR, nil
 		}
 		// Match: any of the listed types (or nil interface).
 		var cond ir.Expr
@@ -2040,7 +2045,7 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodySeq, Else: elseR}}}, nil
+		return &ir.Seq{Stmts: []ir.Stmt{&ir.If{Cond: cond, Then: bodyR, Else: elseR}}}, nil
 	}
 	// Find default and non-default order: Go evaluates in order; default last in chain.
 	var cases []*ast.CaseClause
@@ -2068,14 +2073,10 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 		return nil, err
 	}
 	out = append(out, &ir.Block{Name: breakL, Body: r})
-	return out, nil
-}
-
-func regionEndsWithReturn(r ir.Region) bool {
-	seq, ok := r.(*ir.Seq)
-	if !ok || len(seq.Stmts) == 0 {
-		return false
+	// When every case returns/unreachable, fallthru after the break block
+	// leaves no result; Wasm still expects the function results.
+	if len(fl.results) > 0 && allTerm {
+		out = append(out, &ir.Unreachable{})
 	}
-	_, ok = seq.Stmts[len(seq.Stmts)-1].(*ir.Return)
-	return ok
+	return out, nil
 }
