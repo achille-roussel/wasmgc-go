@@ -1,0 +1,8 @@
+func export "run" main.run() {
+  call main.main()
+  return
+}
+
+func main.main() {
+  return
+}
