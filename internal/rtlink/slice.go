@@ -16,27 +16,28 @@ func EnsureSlice(mod *ir.Module, rewriteDir string) error {
 		return nil
 	}
 	needConcat := scanConcat(mod)
-	if !needConcat {
-		return nil
+	if needConcat && mod.LookupFunc("runtime.concatstrings") == nil {
+		if rewriteDir == "" {
+			return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime slice")
+		}
+		path := filepath.Join(rewriteDir, "runtime", "slice.go")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("rtlink: read %s: %w", path, err)
+		}
+		fset, files, pkg, info, err := lower.TypeCheck(path, string(src))
+		if err != nil {
+			return fmt.Errorf("rtlink: typecheck slice.go: %w", err)
+		}
+		stripConcat(mod)
+		if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
+			return fmt.Errorf("rtlink: lower slice.go: %w", err)
+		}
 	}
-	if mod.LookupFunc("runtime.concatstrings") != nil {
-		return nil
-	}
-	if rewriteDir == "" {
-		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime slice")
-	}
-	path := filepath.Join(rewriteDir, "runtime", "slice.go")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("rtlink: read %s: %w", path, err)
-	}
-	fset, files, pkg, info, err := lower.TypeCheck(path, string(src))
-	if err != nil {
-		return fmt.Errorf("rtlink: typecheck slice.go: %w", err)
-	}
-	stripConcat(mod)
-	if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
-		return fmt.Errorf("rtlink: lower slice.go: %w", err)
+	// Full runtime package load can leave a body-less concat without a result
+	// type if an older slice.go omitted it; keep the IR signature honest.
+	if f := mod.LookupFunc("runtime.concatstrings"); f != nil && len(f.Results) == 0 {
+		f.Results = []ir.Type{&ir.Ref{Named: "$go.string"}}
 	}
 	return nil
 }

@@ -197,6 +197,13 @@ func (g *gen) scanModule() {
 				if in.Global != "" {
 					g.needTypeKey(in.Global) // type key
 				}
+			case ir.OpChanRecv, ir.OpChanSend:
+				// Typed moves / comma-ok unbox need the element descriptor
+				// even when the program never boxes that type via iface.make
+				// (e.g. recv-only from a closed chan).
+				if in.Global != "" {
+					g.needTypeKey(in.Global)
+				}
 			case ir.OpConv:
 				if in.Str == "iface.eq" {
 					// equality uses descriptors already registered via makes
@@ -421,7 +428,7 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 	var body ir.Region
 	if !tr.comparable {
 		body = &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex"}},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicUncomparable"}},
 			&ir.Unreachable{},
 		}}
 	} else {

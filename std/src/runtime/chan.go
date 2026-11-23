@@ -27,6 +27,26 @@ type waitq struct {
 	tail *waiter
 }
 
+// scase is one select case. Kind: 0=recv, 1=send, 2=default.
+// Defined here (not only in select.go) so chan/proc typecheck without
+// linking selectGo when the program never uses select.
+type scase struct {
+	kind int32
+	c    *hchan
+	ops  *chanOps
+	elem any // send value, or recv result after win
+	ok   bool
+}
+
+// select_ is the park object shared by waiters of one select.
+type select_ struct {
+	park   int32
+	winner int32 // case index, or -1
+	ncase  int32
+	slice  []scase
+	done   int32 // 1 once a case won
+}
+
 // waiter is $go.waiter plus an elem slot for the payload the shared path
 // parks with. Generated code may use a typed subtype; the scaffold keeps
 // elem as any so tests and early Go bodies share one shape.
@@ -37,6 +57,22 @@ type waiter struct {
 	next   *waiter
 	elem   any // send: value waiting; recv: destination slot after write
 	isSend bool
+	cas    *scase // select case object (same ref as cases[casi])
+}
+
+// trySelectReady claims sel for waiter w. Returns true if this waiter won.
+// Lives next to the channel wake path so plain chan programs need not link select.go.
+func trySelectReady(w *waiter) bool {
+	sel := w.sel
+	if sel == nil {
+		return true
+	}
+	if sel.done != 0 {
+		return false
+	}
+	sel.done = 1
+	sel.winner = w.casi
+	return true
 }
 
 // chanOps is the narrow payload-move interface (04). Generated send/recv
@@ -50,11 +86,17 @@ type chanOps struct {
 	zero       func() any                      // closed-recv zero
 }
 
-func makechan(size int32, buf any) *hchan {
+func makechan(size int32) *hchan {
 	if size < 0 {
 		throw("makechan: negative cap")
 	}
-	return &hchan{dataqsiz: size, buf: buf}
+	var buf any
+	if size > 0 {
+		buf = make([]any, size)
+	}
+	// sendq/recvq are ref fields ($go.waitq); allocate empty queues so
+	// enqueue/dequeue never see a null waitq object.
+	return &hchan{dataqsiz: size, buf: buf, sendq: waitq{}, recvq: waitq{}}
 }
 
 func (q *waitq) enqueue(w *waiter) {
@@ -108,7 +150,6 @@ func (q *waitq) releaseAll() {
 		}
 		if w.sel != nil {
 			trySelectReady(w)
-			continue
 		}
 		goready(w.park)
 	}
@@ -138,6 +179,11 @@ func chanSend(c *hchan, v any, ops *chanOps, block bool) bool {
 			continue // lost select race
 		}
 		ops.toRecv(w, v)
+		// Publish into the select case (write-before-ready).
+		if w.cas != nil {
+			w.cas.elem = v
+			w.cas.ok = true
+		}
 		goready(w.park)
 		return true
 	}

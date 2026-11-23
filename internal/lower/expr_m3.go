@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
@@ -19,6 +20,12 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 				return nil, nil, err
 			}
 		}
+	}
+	// Named structs / arrays are heap refs: *T and T share the same IR type, so
+	// &x is just x (the object ref). Fat pointers are only for scalars and for
+	// addressable slots of non-object element types.
+	if xt := fl.typeOf(x); xt != nil && isObjectPointer(types.NewPointer(xt)) {
+		return fl.expr(x, ptrTy)
 	}
 	switch x := x.(type) {
 	case *ast.Ident:
@@ -124,14 +131,36 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 			return nil, nil, err
 		}
 		xt := fl.typeOf(e.X)
-		// Field of pointer: use object pointer as base (same ref).
-		_ = xt
 		ty := want
 		if ty == nil {
 			ty, _ = fl.mapType(fl.typeOf(e))
 		}
-		// Emit addr+deref so escape can rewrite non-escaping field loads.
-		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Field: e.Sel.Name}
+		// Direct struct.get when base is a struct / *struct object ref.
+		if xt != nil && (isStruct(xt) || isObjectPointer(xt)) {
+			stName := ""
+			if irt, err := fl.mapType(xt); err == nil {
+				stName = refTypeName(irt)
+			}
+			if stName != "" {
+				return &ir.Instr{
+					Op:    ir.OpStructGet,
+					Type:  &ir.Ref{Named: stName},
+					Field: e.Sel.Name,
+					Args:  []ir.Expr{base},
+				}, stmts, nil
+			}
+		}
+		// Fat-pointer path for other bases: set ptr kind from field type.
+		kind, _ := fatPtrKind(sel.Type())
+		if kind == "" {
+			kind = "i32"
+		}
+		addr := &ir.Instr{
+			Op:    ir.OpAddr,
+			Type:  &ir.Ref{Null: true, Named: "$go.ptr." + kind},
+			Args:  []ir.Expr{base},
+			Field: e.Sel.Name,
+		}
 		return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{addr}, Type: ty}, stmts, nil
 	case types.MethodVal:
 		return fl.methodValue(e, sel, want)
@@ -365,8 +394,44 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			})
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
+		// User named structs ($go.struct.*) are values: zero is an empty heap
+		// object. Nested struct fields are filled by structZero (non-null).
+		// Runtime / iface / chan / slice / clos zeros stay null refs.
+		if strings.HasPrefix(t.Named, "$go.struct.") {
+			if td := fl.mod.LookupType(t.Named); td != nil && td.Kind == ir.TypeStruct {
+				return fl.structZero(td, t, map[string]bool{})
+			}
+		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	default:
 		return nil, fmt.Errorf("no zero value for %s", t)
 	}
+}
+
+func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
+	if seen[td.Name] {
+		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+	}
+	seen[td.Name] = true
+	args := make([]ir.Expr, len(td.Fields))
+	for i, f := range td.Fields {
+		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			ntd := fl.mod.LookupType(r.Named)
+			if ntd != nil && ntd.Kind == ir.TypeStruct {
+				z, err := fl.structZero(ntd, r, seen)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = z
+				continue
+			}
+		}
+		z, err := fl.zeroValue(f.Type)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = z
+	}
+	delete(seen, td.Name)
+	return &ir.Instr{Op: ir.OpStructNew, Type: t, Args: args}, nil
 }

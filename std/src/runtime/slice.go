@@ -5,4 +5,4 @@ package runtime
 // WAT hatch binds a kernel (docs/design/04, 12).
 
 // concatstrings returns the concatenation of a and b.
-func concatstrings(a, b string)
+func concatstrings(a, b string) string

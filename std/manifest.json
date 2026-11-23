@@ -45,12 +45,12 @@
       "notes": "overlaps without uintptr"
     },
     "sync": {
-      "tier": "overlay",
-      "overlays": [
-        "cond.go",
-        "pool.go"
-      ],
-      "notes": "Cond copy check removed; Pool single-local"
+      "tier": "rewrite",
+      "notes": "M7: Mutex/WaitGroup/Once via runtime.Semacquire; Cond/Pool stubs omitted"
+    },
+    "internal/sync": {
+      "tier": "out",
+      "notes": "Unused; sync is rewrite-tier"
     },
     "crypto/internal/fips140/alias": {
       "tier": "overlay",
@@ -89,6 +89,10 @@
         "print.go"
       ],
       "notes": "fmtPointer used uintptr(UnsafePointer); wasmgc prints placeholders (doc 05 scan missed this)"
+    },
+    "time": {
+      "tier": "rewrite",
+      "notes": "M7 minimal: Duration/Time/Sleep/After; Sleep via runtime.TimeSleep"
     },
     "sort": {
       "tier": "vendor"
@@ -153,9 +157,6 @@
       "tier": "vendor"
     },
     "internal/race": {
-      "tier": "vendor"
-    },
-    "internal/sync": {
       "tier": "vendor"
     },
     "internal/synctest": {

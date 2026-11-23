@@ -169,7 +169,14 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	if err != nil {
 		return nil, nil, fl.errorf(id, "%v", err)
 	}
-	v := &ir.Var{Name: id.Name, Typ: ty}
+	// Uniquify IR names when the same Go identifier is redefined in nested
+	// blocks (e.g. two `for w := …` loops in one function).
+	name := id.Name
+	base := name
+	for i := 0; fl.nameTaken(name); i++ {
+		name = base + strconv.Itoa(i+1)
+	}
+	v := &ir.Var{Name: name, Typ: ty}
 	fl.vars[obj] = v
 	fl.extraLocals = append(fl.extraLocals, v)
 	// VarDef is emitted once in lowerFunc preamble.

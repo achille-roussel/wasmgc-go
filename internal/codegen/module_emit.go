@@ -19,13 +19,84 @@ func (g *gen) emitImports() error {
 		g.hasWrite = true
 		g.funcs["go.runtime.write"] = g.importWrite
 	}
-	if g.ehNeeded {
+	needExit := g.ehNeeded || g.callsHost("runtime.exit")
+	if needExit {
 		exitTy := g.internFuncType([]wasm.ValType{wasm.I32()}, nil)
 		g.exitIdx = g.wm.ImportFunc("go", "runtime.exit", exitTy)
 		g.funcs["go.runtime.exit"] = g.exitIdx
+		g.funcs["runtime.exit"] = g.exitIdx
 		g.hasExit = true
+		g.hostImported["runtime.exit"] = true
+	}
+	if err := g.emitSchedImports(); err != nil {
+		return err
 	}
 	return nil
+}
+
+// hostImportIR maps IR func names to Wasm import names under module "go".
+var hostImportIR = []struct {
+	irName     string
+	importName string
+}{
+	{"runtime.park", "runtime.park"},
+	{"runtime.ready", "runtime.ready"},
+	{"runtime.spawn", "runtime.spawn"},
+	{"runtime.goschedImport", "runtime.gosched"},
+	{"runtime.scheduleTimer", "runtime.scheduleTimer"},
+	{"runtime.clearTimer", "runtime.clearTimer"},
+}
+
+func (g *gen) emitSchedImports() error {
+	for _, h := range hostImportIR {
+		if !g.needsHostImport(h.irName) {
+			continue
+		}
+		f := g.m.LookupFunc(h.irName)
+		if f == nil {
+			continue
+		}
+		params, err := g.valTypes(paramTypes(f))
+		if err != nil {
+			return fmt.Errorf("codegen: import %s params: %w", h.irName, err)
+		}
+		results, err := g.valTypes(f.Results)
+		if err != nil {
+			return fmt.Errorf("codegen: import %s results: %w", h.irName, err)
+		}
+		ty := g.internFuncType(params, results)
+		idx := g.wm.ImportFunc("go", h.importName, ty)
+		g.funcs[h.irName] = idx
+		g.hostImported[h.irName] = true
+	}
+	return nil
+}
+
+func (g *gen) needsHostImport(irName string) bool {
+	f := g.m.LookupFunc(irName)
+	if f == nil || !emptyPrintBody(f) {
+		return false
+	}
+	return g.callsHost(irName)
+}
+
+func (g *gen) callsHost(name string) bool {
+	for _, f := range g.m.Funcs {
+		if f.Name == name {
+			continue
+		}
+		found := false
+		walkExprs(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if ok && in.Op == ir.OpCall && in.Func == name {
+				found = true
+			}
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *gen) emitMemory() {
@@ -113,6 +184,9 @@ func (g *gen) emitData() error {
 
 func (g *gen) declareFuncs() error {
 	for _, f := range g.m.Funcs {
+		if g.hostImported[f.Name] {
+			continue // already ImportFunc'd
+		}
 		params, err := g.valTypes(paramTypes(f))
 		if err != nil {
 			return fmt.Errorf("codegen: func %s params: %w", f.Name, err)
@@ -138,6 +212,9 @@ func paramTypes(f *ir.Func) []ir.Type {
 
 func (g *gen) emitFuncBodies() error {
 	for _, f := range g.m.Funcs {
+		if g.hostImported[f.Name] {
+			continue // imports have no code section entry
+		}
 		switch {
 		case f.Name == "runtime.printstring" && g.fillPrintString:
 			g.wm.AddCode(g.bodyPrintString())
@@ -174,6 +251,8 @@ func (g *gen) emitFuncBodies() error {
 				g.wm.AddCode(g.bodyUnrecoveredPanic())
 			case "runtime.concatstrings":
 				g.wm.AddCode(g.bodyConcatStrings())
+			case "runtime.semaPtrSame":
+				g.wm.AddCode(g.bodySemaPtrSame())
 			default:
 				g.wm.AddCode(bodyUnreachable())
 			}

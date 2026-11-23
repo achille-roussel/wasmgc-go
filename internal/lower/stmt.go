@@ -59,11 +59,13 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 	case *ast.EmptyStmt:
 		return nil, nil
 	case *ast.GoStmt:
-		return nil, fl.errorf(s, "go not supported in M1/M2")
+		return fl.goStmt(s)
 	case *ast.DeferStmt:
 		return fl.deferStmt(s)
 	case *ast.SelectStmt:
-		return nil, fl.errorf(s, "select not supported in M1/M2")
+		return fl.selectStmt(s)
+	case *ast.SendStmt:
+		return fl.sendStmt(s)
 	default:
 		return nil, fl.errorf(s, "unsupported statement %T", s)
 	}
@@ -166,19 +168,31 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
 		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {
 			// x = f(...) → single assign from call (no extra temp).
-			name, results, err := fl.resolveCallee(call)
-			if err != nil {
-				return nil, err
+			if sig := fl.funcValueSig(call.Fun); sig != nil {
+				ex, astmts, err := fl.callFuncValue(call.Fun, call.Args, sig)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, astmts...)
+				if sig.Results().Len() != 1 {
+					return nil, fl.errorf(call, "call returns %d values, want 1", sig.Results().Len())
+				}
+				rhs = ex
+			} else {
+				name, results, err := fl.resolveCallee(call)
+				if err != nil {
+					return nil, err
+				}
+				args, astmts, err := fl.lowerArgs(call)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, astmts...)
+				if len(results) != 1 {
+					return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
+				}
+				rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
 			}
-			args, astmts, err := fl.lowerArgs(call)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, astmts...)
-			if len(results) != 1 {
-				return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
-			}
-			rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
 		} else {
 			var stmts []ir.Stmt
 			var err error
@@ -225,9 +239,12 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 	if ta, ok := s.Rhs[0].(*ast.TypeAssertExpr); ok {
 		return fl.multiAssignTypeAssert(s, ta, out)
 	}
+	if u, ok := s.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.multiAssignRecv(s, u, out)
+	}
 	call, ok := s.Rhs[0].(*ast.CallExpr)
 	if !ok {
-		return nil, fl.errorf(s, "multi-value assignment requires a call or type assert")
+		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
 	}
 	resultTypes := make([]ir.Type, len(s.Lhs))
 	for i, lhs := range s.Lhs {
@@ -338,8 +355,32 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Field: lhs.Sel.Name}
-		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{addr, rhs}}})
+		// Prefer struct.set for mutable fields when base is a struct ref.
+		baseTy := fl.typeOf(lhs.X)
+		if baseTy != nil && (isStruct(baseTy) || isObjectPointer(baseTy)) {
+			stName := ""
+			if irt, err := fl.mapType(baseTy); err == nil {
+				stName = refTypeName(irt)
+			}
+			if stName != "" {
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op:    ir.OpStructSet,
+					Type:  &ir.Ref{Named: stName},
+					Field: lhs.Sel.Name,
+					Args:  []ir.Expr{base, rhs},
+				}})
+				return stmts, nil
+			}
+		}
+		fieldTy := sel.Type()
+		kind, _ := fatPtrKind(fieldTy)
+		addr := &ir.Instr{
+			Op:    ir.OpAddr,
+			Type:  &ir.Ref{Null: true, Named: "$go.ptr." + kind},
+			Args:  []ir.Expr{base},
+			Field: lhs.Sel.Name,
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Type: addr.Type, Args: []ir.Expr{addr, rhs}}})
 		return stmts, nil
 	case *ast.IndexExpr:
 		base, stmts, err := fl.expr(lhs.X, nil)
@@ -387,9 +428,12 @@ func (fl *funcLower) lhsType(lhs ast.Expr) (ir.Type, error) {
 }
 
 func (fl *funcLower) exprStmt(s *ast.ExprStmt) ([]ir.Stmt, error) {
+	if u, ok := s.X.(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.chanRecvStmt(u)
+	}
 	call, ok := s.X.(*ast.CallExpr)
 	if !ok {
-		return nil, fl.errorf(s, "expression statement must be a call in M1/M2")
+		return nil, fl.errorf(s, "expression statement must be a call or channel receive")
 	}
 	_, stmts, err := fl.callExpr(call, false)
 	return stmts, err
@@ -579,8 +623,8 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 	}
 }
 
-// rangeStmt lowers for-range over slices (and arrays) to an index loop.
-// Maps/chans/strings wait for later milestones.
+// rangeStmt lowers for-range over slices/arrays (index loop) and channels
+// (recv until !ok). Maps/strings wait for later milestones.
 func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
 	prevDeferLoop := fl.deferInLoop
 	fl.deferInLoop = true
@@ -593,8 +637,10 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	switch u.(type) {
 	case *types.Slice, *types.Array:
 		// ok
+	case *types.Chan:
+		return fl.rangeChanStmt(s, goLabel)
 	default:
-		return nil, fl.errorf(s.X, "range over %s not supported in M4", xType)
+		return nil, fl.errorf(s.X, "range over %s not supported", xType)
 	}
 	xIR, err := fl.mapType(xType)
 	if err != nil {
@@ -682,6 +728,117 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(i, &ir.Instr{
 		Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(1)},
 	}))
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
+
+	loop := &ir.Loop{Name: loopL, Body: bodySeq}
+	out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{loop}}})
+	return out, nil
+}
+
+// rangeChanStmt lowers `for v := range ch` / `for range ch` to recv-until-!ok.
+func (fl *funcLower) rangeChanStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
+	if s.Key != nil && s.Value != nil {
+		return nil, fl.errorf(s, "range over chan allows at most one iteration variable")
+	}
+	fl.pkg.ensureChanBaseTypes()
+	if fl.pkg.meta != nil {
+		fl.pkg.meta.needsSched = true
+	}
+	xType := fl.typeOf(s.X)
+	xIR, err := fl.mapType(xType)
+	if err != nil {
+		return nil, fl.errorf(s.X, "%v", err)
+	}
+	x, xstmts, err := fl.expr(s.X, xIR)
+	if err != nil {
+		return nil, err
+	}
+	var out []ir.Stmt
+	out = append(out, xstmts...)
+	xv := fl.newVar("rch", xIR)
+	out = append(out, fl.assignVar(xv, x))
+
+	elemGo := chanElem(xType)
+	var valTy ir.Type = typeIface
+	if elemGo != nil {
+		if t, err := fl.mapType(elemGo); err == nil {
+			valTy = t
+		}
+	}
+	var valVar *ir.Var
+	iter := s.Key
+	if s.Value != nil {
+		iter = s.Value
+	}
+	if iter != nil {
+		if id, ok := iter.(*ast.Ident); ok && id.Name != "_" {
+			obj := fl.info.Defs[id]
+			if obj != nil {
+				vt, err := fl.mapType(obj.Type())
+				if err != nil {
+					return nil, fl.errorf(iter, "%v", err)
+				}
+				valVar = &ir.Var{Name: id.Name, Typ: vt}
+				fl.vars[obj] = valVar
+				fl.extraLocals = append(fl.extraLocals, valVar)
+				valTy = vt
+			}
+		}
+	}
+
+	var breakL, contL, loopL string
+	if goLabel != "" {
+		breakL = "$" + goLabel + ".break"
+		contL = "$" + goLabel + ".cont"
+		loopL = "$" + goLabel
+		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
+	} else {
+		breakL = fl.freshLabel("break")
+		contL = fl.freshLabel("cont")
+		loopL = fl.freshLabel("L")
+	}
+	fl.breakStack = append(fl.breakStack, breakL)
+	fl.continueStack = append(fl.continueStack, contL)
+	defer func() {
+		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
+		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
+		if goLabel != "" {
+			delete(fl.labels, goLabel)
+		}
+	}()
+
+	bodySeq := &ir.Seq{}
+	recv := &ir.Instr{
+		Op:   ir.OpChanRecv,
+		Type: valTy,
+		Str:  "ok",
+		Args: []ir.Expr{fl.useVar(xv)},
+	}
+	if elemGo != nil {
+		recv.Global = desc.TypeKey(elemGo)
+		recv.Field = boxKind(elemGo)
+	}
+	vt := fl.newTemp(valTy)
+	ot := fl.newTemp(ir.TypeI32)
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Assign{
+		Lhs: []ir.Dest{
+			{Temp: vt, Name: vt.Name},
+			{Temp: ot, Name: ot.Name},
+		},
+		Rhs: recv,
+	})
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
+		Label: breakL,
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useTemp(ot)}},
+	})
+	if valVar != nil {
+		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, fl.useTemp(vt)))
+	}
+	inner, err := fl.stmtBlock(s.Body)
+	if err != nil {
+		return nil, err
+	}
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Block{Name: contL, Body: inner})
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
 
 	loop := &ir.Loop{Name: loopL, Body: bodySeq}

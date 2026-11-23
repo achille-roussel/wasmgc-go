@@ -502,6 +502,20 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 			if cv == nil {
 				return nil, nil, fmt.Errorf("missing cell for %s", c.obj.Name())
 			}
+			// Cells are allocated in the function preamble with the zero value.
+			// Assignments that ran before ensureLocalCell (e.g. `ch := make(…)`
+			// before `go func(){ … ch … }`) only updated the plain local. Sync
+			// the local into the cell immediately before capture so the child
+			// sees the current value.
+			if v := fl.vars[c.obj]; v != nil {
+				cellTy := cv.Typ.(*ir.Ref).Named
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op:    ir.OpStructSet,
+					Type:  &ir.Ref{Named: cellTy},
+					Field: "v",
+					Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
+				}})
+			}
 			args = append(args, fl.useVar(cv))
 		} else {
 			v := fl.vars[c.obj]

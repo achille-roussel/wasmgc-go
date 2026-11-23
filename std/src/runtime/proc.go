@@ -4,9 +4,8 @@ package runtime
 //
 // JSPI is the stack: go.runtime.park / ready / spawn / gosched are host
 // imports (07). The Go side owns the run queue, $g, park ids, and deadlock
-// detection. Closures and the `go` statement are not lowered yet (M7 streams
-// note in 09); this file is the contract the lowerer will call, exercised by
-// prototypes/jspi-sched and testdata/m7_*.wat.
+// detection. The lowerer emits runtime.go_ for `go f()` and links this file
+// via rtlink.EnsureSched.
 
 // waitReason values passed to gopark. Host-callback parks are not deadlocks.
 const (
@@ -38,15 +37,16 @@ type runqnode struct {
 }
 
 var (
-	gp          *g       // current goroutine; Wasm lowers this to global $g
-	runqHead    *runqnode
-	runqTail    *runqnode
-	runqLen     int32
-	goidGen   int32
-	ngo       int32 // started and not yet returned
-	nparked   int32 // currently parked (waiting for ready)
-	ntimers   int32 // armed timers that can call ready
-	parkIDGen int32
+	gp            *g // current goroutine; Wasm lowers this to global $g
+	runqHead      *runqnode
+	runqTail      *runqnode
+	runqLen       int32
+	goidGen       int32
+	ngo           int32 // started and not yet returned
+	nparked       int32 // currently parked (waiting for ready)
+	npendingReady int32 // readied but not yet resumed (JSPI)
+	ntimers       int32 // armed timers that can call ready
+	parkIDGen     int32
 )
 
 func init() {
@@ -121,29 +121,38 @@ func nextgoid() int32 {
 }
 
 // gopark saves $g, calls the suspending park import, restores $g (04).
-// The save/restore of the Wasm global is the lowerer's job around this call
-// when emitting park; the Go body calls the import directly.
+// JSPI may clobber the global across the suspending import, so save/restore
+// in Go around park.
 func gopark(id int32, reason int32) {
 	if id == 0 {
 		throw("gopark: invalid park id")
 	}
 	checkDeadlock(reason)
 	nparked++
+	saved := gp
 	if gp != nil {
 		gp.park = id
 		gp.waiting = 1
 	}
 	_ = park(id)
+	gp = saved
 	if gp != nil {
 		gp.waiting = 0
 		gp.park = 0
 	}
 	nparked--
+	// Pair with goready's npendingReady++ when this park was readied early.
+	if npendingReady > 0 {
+		npendingReady--
+	}
 }
 
 // goready signals park id. Non-suspending.
+// A readied goroutine will resume when the current activation parks; count it
+// as runnable for deadlock checks until its gopark returns.
 func goready(id int32) {
 	ready(id)
+	npendingReady++
 }
 
 // Gosched yields to a macrotask so spawned goroutines and timers can run.
@@ -163,13 +172,14 @@ func checkDeadlock(reason int32) {
 	if reason == waitReasonHostCallback {
 		return
 	}
-	// Runnable after this park: other unparked goroutines, the run queue, timers.
-	runnableElse := (ngo - nparked - 1) + runqLen
+	// Runnable after this park: other unparked goroutines, the run queue,
+	// timers, and goroutines already readied but not yet resumed.
+	runnableElse := (ngo - nparked - 1) + runqLen + npendingReady
 	if runnableElse > 0 || ntimers > 0 {
 		return
 	}
 	// Only this goroutine would remain, and it is about to park with no timer.
-	throw("all goroutines are asleep - deadlock")
+	fatal("all goroutines are asleep - deadlock!")
 }
 
 // Host imports (07). Bodies are filled by wasmimport / WAT; scaffolds call

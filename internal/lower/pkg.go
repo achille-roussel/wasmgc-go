@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"strconv"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
@@ -113,6 +114,13 @@ func (l *pkgLower) lower() error {
 		l.meta.initOrder = append(l.meta.initOrder, name)
 	}
 	for _, fd := range funcs {
+		// Skip generic functions (e.g. abi.Escape): unused instantiations must
+		// not fail the build. Monomorphization is a later milestone.
+		if obj, _ := l.info.Defs[fd.decl.Name].(*types.Func); obj != nil {
+			if sig, _ := obj.Type().(*types.Signature); sig != nil && sig.TypeParams().Len() > 0 {
+				continue
+			}
+		}
 		name := l.funcIRName(fd.decl)
 		if name == "main.main" {
 			l.meta.hasMain = true
@@ -230,6 +238,19 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	}
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
+	}
+	// Zero-init user named-struct locals (`var wg sync.WaitGroup`): heap
+	// object, not a null ref.
+	for _, v := range fl.extraLocals {
+		r, ok := v.Typ.(*ir.Ref)
+		if !ok || !strings.HasPrefix(r.Named, "$go.struct.") {
+			continue
+		}
+		z, err := fl.zeroValue(v.Typ)
+		if err != nil {
+			return nil, err
+		}
+		preamble = append(preamble, fl.assignVar(v, z))
 	}
 	// Allocate capture cells and copy initial values.
 	for _, ci := range fl.cellInits {

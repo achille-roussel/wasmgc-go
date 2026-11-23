@@ -36,39 +36,39 @@ func (rt *runtimeLower) expandIfaceMake(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		Args: []ir.Expr{&ir.Instr{Op: ir.OpGlobalGet, Global: itabG}},
 	}))
 
+	anyTy := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	asAny := func(ex ir.Expr) ir.Expr {
+		return &ir.Instr{Op: ir.OpRefCast, Type: anyTy, Args: []ir.Expr{ex}}
+	}
 	switch box {
 	case "nil":
-		pre = append(pre, assignV(dataT, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Heap: ir.HeapAny}}))
+		pre = append(pre, assignV(dataT, &ir.Instr{Op: ir.OpRefNull, Type: anyTy}))
 	case "i32":
-		pre = append(pre, assignV(dataT, &ir.Instr{
+		pre = append(pre, assignV(dataT, asAny(&ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: &ir.Ref{Named: "$go.box.i32"},
 			Args: []ir.Expr{val},
-		}))
+		})))
 	case "i64":
-		pre = append(pre, assignV(dataT, &ir.Instr{
+		pre = append(pre, assignV(dataT, asAny(&ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: &ir.Ref{Named: "$go.box.i64"},
 			Args: []ir.Expr{val},
-		}))
+		})))
 	case "f32":
-		pre = append(pre, assignV(dataT, &ir.Instr{
+		pre = append(pre, assignV(dataT, asAny(&ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: &ir.Ref{Named: "$go.box.f32"},
 			Args: []ir.Expr{val},
-		}))
+		})))
 	case "f64":
-		pre = append(pre, assignV(dataT, &ir.Instr{
+		pre = append(pre, assignV(dataT, asAny(&ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: &ir.Ref{Named: "$go.box.f64"},
 			Args: []ir.Expr{val},
-		}))
+		})))
 	default: // ref — already a reference; bitcast to any
-		pre = append(pre, assignV(dataT, &ir.Instr{
-			Op:   ir.OpRefCast,
-			Type: &ir.Ref{Null: true, Heap: ir.HeapAny},
-			Args: []ir.Expr{val},
-		}))
+		pre = append(pre, assignV(dataT, asAny(val)))
 	}
 
 	pre = append(pre, &ir.Assign{

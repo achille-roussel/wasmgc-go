@@ -69,6 +69,14 @@ const (
 	OpI64Eqz byte = 0x50
 	OpI64Eq  byte = 0x51
 	OpI64Ne  byte = 0x52
+	OpI64LtS byte = 0x53
+	OpI64LtU byte = 0x54
+	OpI64GtS byte = 0x55
+	OpI64GtU byte = 0x56
+	OpI64LeS byte = 0x57
+	OpI64LeU byte = 0x58
+	OpI64GeS byte = 0x59
+	OpI64GeU byte = 0x5A
 
 	OpI32Clz    byte = 0x67
 	OpI32Ctz    byte = 0x68
@@ -411,6 +419,17 @@ func (e *Encoder) I32Shl() *Encoder  { return e.op(OpI32Shl) }
 func (e *Encoder) I32ShrS() *Encoder { return e.op(OpI32ShrS) }
 func (e *Encoder) I32ShrU() *Encoder { return e.op(OpI32ShrU) }
 
+func (e *Encoder) I64Eqz() *Encoder  { return e.op(OpI64Eqz) }
+func (e *Encoder) I64Eq() *Encoder   { return e.op(OpI64Eq) }
+func (e *Encoder) I64Ne() *Encoder   { return e.op(OpI64Ne) }
+func (e *Encoder) I64LtS() *Encoder  { return e.op(OpI64LtS) }
+func (e *Encoder) I64LtU() *Encoder  { return e.op(OpI64LtU) }
+func (e *Encoder) I64GtS() *Encoder  { return e.op(OpI64GtS) }
+func (e *Encoder) I64GtU() *Encoder  { return e.op(OpI64GtU) }
+func (e *Encoder) I64LeS() *Encoder  { return e.op(OpI64LeS) }
+func (e *Encoder) I64LeU() *Encoder  { return e.op(OpI64LeU) }
+func (e *Encoder) I64GeS() *Encoder  { return e.op(OpI64GeS) }
+func (e *Encoder) I64GeU() *Encoder  { return e.op(OpI64GeU) }
 func (e *Encoder) I64Add() *Encoder  { return e.op(OpI64Add) }
 func (e *Encoder) I64Sub() *Encoder  { return e.op(OpI64Sub) }
 func (e *Encoder) I64Mul() *Encoder  { return e.op(OpI64Mul) }

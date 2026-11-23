@@ -202,6 +202,8 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 		return &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{x, fl.i32const(-1)}}, stmts, nil
 	case token.AND:
 		return fl.addrOf(e.X, want)
+	case token.ARROW:
+		return fl.chanRecvExpr(e, want)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported unary %v", e.Op)
 	}
@@ -303,6 +305,12 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		if m, err := fl.mapType(yt); err == nil {
 			yWant = m
 		}
+	}
+
+	// Wasm i64 shifts take an i64 count; force the RHS to the LHS width for
+	// SHL/SHR (Go allows a smaller unsigned count type).
+	if e.Op == token.SHL || e.Op == token.SHR {
+		yWant = xWant
 	}
 
 	x, xstmts, err := fl.expr(e.X, xWant)
@@ -644,7 +652,15 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		}
 	case *ast.SelectorExpr:
 		if sel := fl.info.Selections[fun]; sel != nil {
-			return nil // method call / value handled elsewhere
+			switch sel.Kind() {
+			case types.FieldVal:
+				// Struct field of func type: n.fn().
+				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
+					return sig
+				}
+			default:
+				return nil // method call / method value handled elsewhere
+			}
 		}
 		if id, ok := fun.X.(*ast.Ident); ok {
 			if _, ok := fl.info.Uses[id].(*types.PkgName); ok {
@@ -652,8 +668,10 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 			}
 		}
 		tv := fl.info.Types[fun]
-		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-			return sig
+		if tv.Type != nil {
+			if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+				return sig
+			}
 		}
 	case *ast.FuncLit, *ast.CallExpr, *ast.IndexExpr, *ast.ParenExpr:
 		tv := fl.info.Types[fun]
@@ -815,6 +833,10 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 	}
 	if fl.builtinName(e) == "panic" {
 		st, err := fl.builtinPanic(e)
+		return nil, st, err
+	}
+	if fl.builtinName(e) == "close" {
+		st, err := fl.builtinClose(e)
 		return nil, st, err
 	}
 	if fl.isBuiltinCall(e) {
