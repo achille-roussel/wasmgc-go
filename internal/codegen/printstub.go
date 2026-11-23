@@ -47,7 +47,10 @@ func (g *gen) ensurePrintStubs() error {
 			}
 		}
 	}
-	if !needString && !needInt && !needNL {
+	if f := g.m.LookupFunc("syscall.writeHost"); f != nil && emptyPrintBody(f) {
+		g.fillWriteHost = true
+	}
+	if !needString && !needInt && !needNL && !g.fillWriteHost {
 		return nil
 	}
 	if !g.hasWrite || !g.hasMemory {
@@ -226,6 +229,116 @@ func (g *gen) bodyPrintString() wasm.Code {
 	// reset bump
 	enc.I32Const(0)
 	enc.GlobalSet(g.memBumpIdx)
+
+	locals := []wasm.Local{
+		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(bytesIdx))}, // data
+		{Count: 4, Type: wasm.I32()},                              // off, len, i, ptr
+	}
+	return wasm.CodeFrom(locals, enc)
+}
+
+// writeHost(fd i32, p []byte) i32: copy slice bytes into linear memory and
+// call go.runtime.write(fd, ptr, n). Returns n (bytes written). Nil/empty → 0.
+//
+// Params: 0=fd, 1=p. Locals: 2=data, 3=off, 4=len, 5=i, 6=ptr
+func (g *gen) bodyWriteHost() wasm.Code {
+	sliceIdx := g.types.ByName["$go.slice.i8"]
+	bytesIdx := g.types.ByName["$go.bytes"]
+	enc := wasm.NewEncoder()
+
+	const (
+		locFD   = 0
+		locP    = 1
+		locData = 2
+		locOff  = 3
+		locLen  = 4
+		locI    = 5
+		locPtr  = 6
+	)
+
+	// nil slice → return 0
+	enc.Block(wasm.BlockEmpty())
+	enc.LocalGet(locP)
+	enc.RefIsNull()
+	enc.I32Eqz()
+	enc.BrIf(0)
+	enc.I32Const(0)
+	enc.Return()
+	enc.End()
+
+	enc.LocalGet(locP)
+	enc.StructGet(sliceIdx, 0)
+	enc.LocalSet(locData)
+	enc.LocalGet(locP)
+	enc.StructGet(sliceIdx, 1)
+	enc.LocalSet(locOff)
+	enc.LocalGet(locP)
+	enc.StructGet(sliceIdx, 2)
+	enc.LocalSet(locLen)
+
+	// empty → return 0
+	enc.Block(wasm.BlockEmpty())
+	enc.LocalGet(locLen)
+	enc.BrIf(0)
+	enc.I32Const(0)
+	enc.Return()
+	enc.End()
+
+	enc.I32Const(0)
+	enc.LocalTee(locPtr)
+	enc.GlobalSet(g.memBumpIdx)
+
+	enc.Block(wasm.BlockEmpty())
+	enc.Loop(wasm.BlockEmpty())
+	enc.MemorySize()
+	enc.I32Const(65536)
+	enc.I32Mul()
+	enc.LocalGet(locLen)
+	enc.I32GeU()
+	enc.BrIf(1)
+	enc.I32Const(1)
+	enc.MemoryGrow()
+	enc.Drop()
+	enc.Br(0)
+	enc.End()
+	enc.End()
+
+	enc.I32Const(0)
+	enc.LocalSet(locI)
+
+	enc.Block(wasm.BlockEmpty())
+	enc.Loop(wasm.BlockEmpty())
+	enc.LocalGet(locI)
+	enc.LocalGet(locLen)
+	enc.I32GeU()
+	enc.BrIf(1)
+
+	enc.LocalGet(locPtr)
+	enc.LocalGet(locI)
+	enc.I32Add()
+	enc.LocalGet(locData)
+	enc.LocalGet(locOff)
+	enc.LocalGet(locI)
+	enc.I32Add()
+	enc.ArrayGetU(bytesIdx)
+	enc.I32Store8(0, 0)
+
+	enc.LocalGet(locI)
+	enc.I32Const(1)
+	enc.I32Add()
+	enc.LocalSet(locI)
+	enc.Br(0)
+	enc.End()
+	enc.End()
+
+	enc.LocalGet(locFD)
+	enc.LocalGet(locPtr)
+	enc.LocalGet(locLen)
+	enc.Call(g.importWrite)
+	enc.LocalSet(locLen) // n written
+	enc.I32Const(0)
+	enc.GlobalSet(g.memBumpIdx)
+	enc.LocalGet(locLen)
 
 	locals := []wasm.Local{
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(bytesIdx))}, // data

@@ -109,6 +109,8 @@ type gen struct {
 	fillPrintString bool
 	fillPrintInt    bool
 	fillPrintNL     bool
+	// syscall.writeHost: []byte → linear bridge → go.runtime.write.
+	fillWriteHost bool
 
 	// Slice/index panic stubs (legacy trap fill; M5 uses EH fills).
 	panicIndexIdx       uint32
@@ -203,7 +205,7 @@ func (g *gen) scanNeeds() {
 				case ir.OpCall:
 					switch e.Func {
 					case "runtime.printstring", "runtime.printint", "runtime.printnl",
-						"go.runtime.write":
+						"go.runtime.write", "syscall.writeHost":
 						g.needsMemory = true
 						g.needsStringTypes = true
 					}
@@ -236,8 +238,8 @@ func (g *gen) scanNeeds() {
 			g.needsStringTypes = true
 		}
 	}
-	// Body-less print decls still need memory + string prelude.
-	for _, name := range []string{"runtime.printstring", "runtime.printint", "runtime.printnl"} {
+	// Body-less print/write decls still need memory + string prelude.
+	for _, name := range []string{"runtime.printstring", "runtime.printint", "runtime.printnl", "syscall.writeHost"} {
 		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {
 			g.needsMemory = true
 			g.needsStringTypes = true

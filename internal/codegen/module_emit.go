@@ -225,6 +225,9 @@ func (g *gen) emitFuncBodies() error {
 		case f.Name == "runtime.printnl" && g.fillPrintNL:
 			g.wm.AddCode(g.bodyPrintNL())
 			continue
+		case f.Name == "syscall.writeHost" && g.fillWriteHost:
+			g.wm.AddCode(g.bodyWriteHost())
+			continue
 		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
 			if g.hasEH {
 				g.wm.AddCode(g.bodyPanicMsg("runtime error: index out of range"))

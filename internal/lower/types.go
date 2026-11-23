@@ -531,7 +531,11 @@ func (l *pkgLower) structFields(st *types.Struct) ([]ir.Field, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", f.Name(), err)
 		}
-		fields = append(fields, ir.Field{Name: f.Name(), Type: ft, Mut: true})
+		fld := ir.Field{Name: f.Name(), Type: ft, Mut: true}
+		if a, ok := types.Unalias(f.Type()).Underlying().(*types.Array); ok {
+			fld.Len = a.Len()
+		}
+		fields = append(fields, fld)
 	}
 	return fields, nil
 }

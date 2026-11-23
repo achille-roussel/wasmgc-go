@@ -648,6 +648,15 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 				continue
 			}
 		}
+		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
+			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
+			args[i] = &ir.Instr{
+				Op:   ir.OpArrayNewDefault,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			}
+			continue
+		}
 		z, err := fl.zeroValue(f.Type)
 		if err != nil {
 			return nil, err

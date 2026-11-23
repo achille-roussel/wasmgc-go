@@ -667,6 +667,57 @@ func (rt *runtimeLower) expandArrayLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	return pre, nil
 }
 
+// structZeroExpr builds a non-null zero $go.struct.* with nested struct
+// fields recursively allocated (same rules as funcLower.structZero).
+func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
+	if seen[td.Name] {
+		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+	}
+	seen[td.Name] = true
+	args := make([]ir.Expr, len(td.Fields))
+	for i, f := range td.Fields {
+		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			ntd := rt.mod.LookupType(r.Named)
+			if ntd != nil && ntd.Kind == ir.TypeStruct {
+				z, err := rt.structZeroExpr(ntd, r, seen)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = z
+				continue
+			}
+		}
+		if r, ok := f.Type.(*ir.Ref); ok && r.Named == "$go.string" {
+			args[i] = &ir.Instr{Op: ir.OpStringLit, Str: ""}
+			continue
+		}
+		// Fixed Go array field: allocate array.new_default of Len.
+		if r, ok := f.Type.(*ir.Ref); ok && f.Len > 0 &&
+			(r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
+			args[i] = &ir.Instr{
+				Op:   ir.OpArrayNewDefault,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+			}
+			continue
+		}
+		switch f.Type {
+		case ir.TypeI32:
+			args[i] = &ir.Const{Op: ir.OpI32Const, I64: 0}
+		case ir.TypeI64:
+			args[i] = &ir.Const{Op: ir.OpI64Const, I64: 0}
+		case ir.TypeF32:
+			args[i] = &ir.Const{Op: ir.OpF32Const, F64: 0}
+		case ir.TypeF64:
+			args[i] = &ir.Const{Op: ir.OpF64Const, F64: 0}
+		default:
+			args[i] = &ir.Instr{Op: ir.OpRefNull, Type: f.Type}
+		}
+	}
+	delete(seen, td.Name)
+	return &ir.Instr{Op: ir.OpStructNew, Type: t, Args: args}, nil
+}
+
 func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	// new(T) / literal of ptr type: 1-elem array + fat pointer at index 0,
 	// or struct.new_default for *Struct.
@@ -675,10 +726,18 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 		tname = r.Named
 	}
 	if strings.HasPrefix(tname, "$go.struct.") {
-		return []ir.Stmt{&ir.Assign{
-			Lhs: s.Lhs,
-			Rhs: &ir.Instr{Op: ir.OpStructNewDefault, Type: in.Type},
-		}}, nil
+		// Prefer a proper zero (nested $go.struct.* fields allocated, not
+		// null) so new(pp) yields a usable pp.fmt, matching Go value zeros.
+		var z ir.Expr
+		if td := rt.mod.LookupType(tname); td != nil && td.Kind == ir.TypeStruct {
+			if zz, err := rt.structZeroExpr(td, in.Type, map[string]bool{}); err == nil {
+				z = zz
+			}
+		}
+		if z == nil {
+			z = &ir.Instr{Op: ir.OpStructNewDefault, Type: in.Type}
+		}
+		return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: z}}, nil
 	}
 	// Fat pointer to scalar: allocate [1]T and build ptr.
 	kind := "i32"
@@ -916,28 +975,61 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 		return pre, nil
 	}
 
-	offT := &ir.Temp{Name: rt.fresh("off"), Typ: ir.TypeI32}
-	capT := &ir.Temp{Name: rt.fresh("cap"), Typ: ir.TypeI32}
-	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+	// nil[:0] is nil in Go (cap 0); nil with hi/max > 0 panics. Slice headers
+	// use non-null data, so the nil slice is a null header ref — keep it null.
+	nullSlice := &ir.Instr{Op: ir.OpRefNull, Type: st}
+	// hi > 0 (or max > 0) on a nil slice → panic (high > cap).
+	nilBad := ir.Expr(hi)
+	if len(args) > 3 {
+		nilBad = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			hi,
+			args[3],
+		}}
+	}
+	offV := rt.newVar("off", ir.TypeI32)
+	capV := rt.newVar("cap", ir.TypeI32)
+	// Nullable so the local is defaultable (only set on the non-null path).
+	dataV := rt.newVar("data", &ir.Ref{Null: true, Named: arrName})
+	resV := rt.newVar("sslice", &ir.Ref{Null: true, Named: sliceName})
 	pre = append(pre,
-		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: capT, Name: capT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
+		&ir.VarDef{Var: offV}, &ir.VarDef{Var: capV},
+		&ir.VarDef{Var: dataV}, &ir.VarDef{Var: resV},
 	)
-	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, lo}}
+	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(offV), lo}}
 	var newCap ir.Expr
 	if len(args) > 3 {
 		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
 	} else {
-		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{&ir.Name{Temp: capT, Raw: capT.Name}, lo}}
+		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{useV(capV), lo}}
 	}
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{
+	nonNullBody := []ir.Stmt{
+		assignV(offV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}),
+		assignV(capV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{sl}}),
+		assignV(dataV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}),
+		assignV(resV, &ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: st,
-			Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}, newOff, newLen, newCap},
-		},
+			// data field is non-null in the header; value comes from a live slice.
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(dataV)}},
+				newOff, newLen, newCap,
+			},
+		}),
+	}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{sl}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32Ne, Args: []ir.Expr{nilBad, &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			},
+			assignV(resV, nullSlice),
+		}},
+		Else: &ir.Seq{Stmts: nonNullBody},
+	})
+	pre = append(pre, &ir.Assign{
+		Lhs: s.Lhs,
+		Rhs: useV(resV),
 	})
 	return pre, nil
 }
@@ -1093,6 +1185,23 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 			Lhs: s.Lhs,
 			Rhs: &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{arg}},
 		})
+		return pre, nil
+	}
+	// Slices (and slice-shaped headers): nil → len/cap 0.
+	if r, ok := ty.(*ir.Ref); ok && (strings.HasPrefix(r.Named, "$go.slice.") || r.Named == "$go.bytes" || r.Named == "$go.i16s") {
+		slV := rt.newVar("lsl", ty)
+		pre = append(pre, &ir.VarDef{Var: slV}, assignV(slV, arg))
+		resV := rt.newVar("ln", ir.TypeI32)
+		pre = append(pre, &ir.VarDef{Var: resV}, assignV(resV, &ir.Const{Op: ir.OpI32Const, I64: 0}))
+		pre = append(pre, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(slV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{assignV(resV, &ir.Instr{
+				Op: ir.OpStructGet, Type: ty, Field: field,
+				Args: []ir.Expr{useV(slV)},
+			})}},
+		})
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(resV)})
 		return pre, nil
 	}
 	pre = append(pre, &ir.Assign{

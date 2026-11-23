@@ -996,13 +996,24 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		if err != nil {
 			return err
 		}
-		fe.enc.RefCast(ht)
+		// ref.cast traps on null; ref.cast null passes null through.
+		// Fat-pointer get accessors cast field values (often null zeros)
+		// to (ref null any) — must use the nullable form.
+		if r, ok := in.Type.(*ir.Ref); ok && r.Null {
+			fe.enc.RefCastNull(ht)
+		} else {
+			fe.enc.RefCast(ht)
+		}
 	case ir.OpRefTest:
 		ht, err := fe.g.heapTypeOf(in.Type)
 		if err != nil {
 			return err
 		}
-		fe.enc.RefTest(ht)
+		if r, ok := in.Type.(*ir.Ref); ok && r.Null {
+			fe.enc.RefTestNull(ht)
+		} else {
+			fe.enc.RefTest(ht)
+		}
 	case ir.OpRefEq:
 		fe.enc.RefEq()
 	case ir.OpRefIsNull:

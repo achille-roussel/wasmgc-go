@@ -246,6 +246,10 @@ type Field struct {
 	Name string
 	Type Type
 	Mut  bool
+	// Len is the Go array length when Type is a bare array ref ($go.bytes /
+	// $go.array.*). Zero means "not a fixed array" (or length 0). Used by
+	// structZero so new(T) allocates [N]elem instead of leaving a null array.
+	Len int64
 }
 
 // TypeDef is an interned module type: struct, array, or function signature.

@@ -292,6 +292,28 @@ func (g *gen) collectFromProgram() {
 				}
 			}
 		}
+		// Anonymous structs/slices/maps appear in TypesInfo but not in the
+		// package scope — attach them so struct extras (NumField/getField) work.
+		if pkg.Info != nil {
+			for _, tv := range pkg.Info.Types {
+				if tv.Type == nil {
+					continue
+				}
+				g.attachGoType(tv.Type)
+			}
+			for _, obj := range pkg.Info.Defs {
+				if obj == nil {
+					continue
+				}
+				g.attachGoType(obj.Type())
+			}
+			for _, obj := range pkg.Info.Uses {
+				if obj == nil {
+					continue
+				}
+				g.attachGoType(obj.Type())
+			}
+		}
 	}
 	// Resolve go types for itab keys.
 	for _, it := range g.itabs {
@@ -303,6 +325,24 @@ func (g *gen) collectFromProgram() {
 		if tr := g.types[it.ifaceKey]; tr != nil && tr.goType == nil && it.iface != nil {
 			tr.goType = it.iface
 		}
+	}
+}
+
+func (g *gen) attachGoType(t types.Type) {
+	if t == nil {
+		return
+	}
+	key := TypeKey(t)
+	if key == "" {
+		return
+	}
+	// Only fill types we already need (from iface.make / itabs / asserts).
+	tr := g.types[key]
+	if tr == nil {
+		return
+	}
+	if tr.goType == nil {
+		tr.goType = t
 	}
 }
 
