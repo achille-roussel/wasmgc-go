@@ -126,10 +126,12 @@ func TestGOROOT(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full := os.Getenv("WASMGC_GOTEST") == "1" || !testing.Short()
+	// Full $GOROOT/test only when explicitly requested — plain `go test ./...`
+	// / `-short=false` stay on the smoke subset so unit CI stays fast.
+	full := os.Getenv("WASMGC_GOTEST") == "1"
 	if !full {
 		cases = gotest.FilterSmoke(cases)
-		t.Logf("short mode: %d smoke tests", len(cases))
+		t.Logf("smoke mode: %d tests (set WASMGC_GOTEST=1 for full suite)", len(cases))
 	} else {
 		t.Logf("full suite: %d files", len(cases))
 	}

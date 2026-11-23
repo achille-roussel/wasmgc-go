@@ -138,6 +138,7 @@ func (l *pkgLower) ensureMapBaseTypes() {
 		{Name: "used", Type: ir.TypeI32, Mut: true},
 		{Name: "seed", Type: ir.TypeI32, Mut: true},
 		{Name: "mask", Type: ir.TypeI32, Mut: true},
+		{Name: "writing", Type: ir.TypeI32, Mut: true},
 		{Name: "ctrl", Type: sliceU8, Mut: true},
 		{Name: "keys", Type: sliceIface, Mut: true},
 		{Name: "vals", Type: sliceIface, Mut: true},
@@ -919,6 +920,12 @@ func isJSValueType(t types.Type) bool {
 func isPointer(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Pointer)
+	return ok
+}
+
+func isSignature(t types.Type) bool {
+	t = types.Unalias(t)
+	_, ok := t.Underlying().(*types.Signature)
 	return ok
 }
 

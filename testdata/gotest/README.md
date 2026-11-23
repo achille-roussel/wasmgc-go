@@ -13,10 +13,8 @@ export WASMGC_GOROOT="${WASMGC_GOROOT:-/home/ubuntu/.local/go-src}"
 # Smoke subset (CI-friendly)
 go test ./testdata/gotest/ -count=1 -short
 
-# Full // run suite
-go test ./testdata/gotest/ -count=1 -short=false
-# or
-WASMGC_GOTEST=1 go test ./testdata/gotest/ -count=1 -short
+# Full // run suite (requires WASMGC_GOTEST=1)
+WASMGC_GOTEST=1 go test ./testdata/gotest/ -run TestGOROOT -count=1
 
 # Stdlib package tests (wasmgc-go test)
 go test ./testdata/gotest/ -run TestStdlibPackages -count=1 -short

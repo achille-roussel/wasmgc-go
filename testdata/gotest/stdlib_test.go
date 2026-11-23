@@ -38,7 +38,8 @@ func TestStdlibPackages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	full := os.Getenv("WASMGC_STDLIB_TEST") == "1" || !testing.Short()
+	// Full packages.txt only when explicitly requested.
+	full := os.Getenv("WASMGC_STDLIB_TEST") == "1"
 	if !full {
 		want := map[string]bool{}
 		for _, p := range gotest.StdlibSmokePackages {
@@ -51,7 +52,7 @@ func TestStdlibPackages(t *testing.T) {
 			}
 		}
 		pkgs = filtered
-		t.Logf("short mode: %d smoke packages", len(pkgs))
+		t.Logf("smoke mode: %d packages (set WASMGC_STDLIB_TEST=1 for full suite)", len(pkgs))
 	} else {
 		t.Logf("full stdlib suite: %d packages", len(pkgs))
 	}

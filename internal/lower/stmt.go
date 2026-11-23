@@ -226,22 +226,22 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignDeclValue(obj, v, ex)...)
-			} else {
-				// Always re-zero on DeclStmt. `var x T` inside a loop must
-				// reset x each iteration — including when x is later
-				// cell-captured by a range-over-func yield (maps.Keys).
-				var z ir.Expr
-				if gz, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
-					z = gz
-				} else {
-					var err error
-					z, err = fl.zeroValue(v.Typ)
-					if err != nil {
-						return nil, fl.errorf(name, "zero init: %v", err)
-					}
+			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
+				// Arrays / named structs: Wasm refnull default is null, but
+				// Go zero is an allocated empty value (e.g. var arr [32]byte).
+				out = append(out, fl.assignDeclValue(obj, v, z)...)
+			} else if fl.deferInLoop {
+				// Inside a loop, `var x` must reset each iteration — including
+				// when x is later cell-captured by range-over-func (Collect).
+				// Outside loops, defineLocal's zero-init is enough; re-zeroing
+				// every DeclStmt broke encoding/json string fields.
+				z, err := fl.declZero(obj.Type(), v.Typ)
+				if err != nil {
+					return nil, fl.errorf(name, "zero init: %v", err)
 				}
 				out = append(out, fl.assignDeclValue(obj, v, z)...)
 			}
+			// else: defineLocal already zero-inits non-defaultable refs.
 		}
 	}
 	return out, nil
@@ -262,6 +262,26 @@ func (fl *funcLower) assignDeclValue(obj types.Object, v *ir.Var, rhs ir.Expr) [
 	}
 	fl.markPlainDirty(obj)
 	return []ir.Stmt{fl.assignVar(v, rhs)}
+}
+
+// declZero is the Go zero for a DeclStmt. Unlike zeroValue alone, pointer /
+// slice / map / chan / iface / func zeros are typed null — named structs and
+// their pointers share one IR shape, so zeroValue would allocate a value.
+func (fl *funcLower) declZero(goTy types.Type, irTy ir.Type) (ir.Expr, error) {
+	if goTy != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		goTy = fl.pkg.subst.Apply(goTy)
+	}
+	if z, ok := fl.goZeroValue(goTy, irTy); ok {
+		return z, nil
+	}
+	// Type params' constraints are interfaces; never treat an unsubstituted
+	// param as iface (cmp.Or[string]'s `var zero T` must be "").
+	if _, isTP := types.Unalias(goTy).(*types.TypeParam); !isTP {
+		if isPointer(goTy) || isSlice(goTy) || isMap(goTy) || isChan(goTy) || isIface(goTy) || isSignature(goTy) {
+			return &ir.Instr{Op: ir.OpRefNull, Type: irTy}, nil
+		}
+	}
+	return fl.zeroValue(irTy)
 }
 
 func needsZeroInit(ty ir.Type) bool {

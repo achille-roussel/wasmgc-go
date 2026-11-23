@@ -5,28 +5,32 @@ package runtime
 // Ctrl: 0 empty, 1 full, 2 tombstone. Probe is linear from hash&mask.
 // Load factor 7/8 → grow, dropping tombstones. First insert allocates 8 slots.
 //
-// Concurrent map write detection (go vet / runtime throw) is out of scope for M6.
+// Concurrent map write detection: writing is set for the duration of
+// assign/delete/clear. A nested or overlapping write throws. Same idea as
+// upstream hashWriting; wasmgc is single-activation so this mainly catches
+// re-entrant writes from within a range callback or after a park.
 
 const (
 	ctrlEmpty     uint8 = 0
 	ctrlFull      uint8 = 1
 	ctrlTombstone uint8 = 2
 
-	mapMinCap   int32 = 8
-	mapLoadNum  int32 = 7
-	mapLoadDen  int32 = 8
+	mapMinCap    int32 = 8
+	mapLoadNum   int32 = 7
+	mapLoadDen   int32 = 8
 	nanHashConst uint32 = 0x7ff80000
 )
 
 // hmap is $go.hmap (03). Keys and vals are boxed as any; typed arrays are a
 // later size win. used is field 0 so len can be a struct.get.
 type hmap struct {
-	used int32
-	seed uint32
-	mask int32 // cap-1; 0 when table is nil
-	ctrl []uint8
-	keys []any
-	vals []any
+	used    int32
+	seed    uint32
+	mask    int32 // cap-1; 0 when table is nil
+	writing int32 // 1 while a write is in progress
+	ctrl    []uint8
+	keys    []any
+	vals    []any
 }
 
 // mapIter holds a snapshot of the table arrays so growth during range is safe.
@@ -120,6 +124,7 @@ func mapAccess(h *hmap, key any) (any, bool) {
 	if h == nil {
 		return nil, false
 	}
+	mapCheckWrite(h)
 	if h.ctrl == nil {
 		return nil, false
 	}
@@ -140,42 +145,60 @@ func mapAccess(h *hmap, key any) (any, bool) {
 	return nil, false
 }
 
+func mapCheckWrite(h *hmap) {
+	if h != nil && h.writing != 0 {
+		throw("concurrent map read and map write")
+	}
+}
+
 // mapAssign inserts or updates. Nil map panics with the gc message.
 func mapAssign(h *hmap, key, val any) {
 	if h == nil {
 		throw("assignment to entry in nil map")
 	}
-	h.maybeGrow()
-	hash := mapKeyHash(key, h.seed)
-	mask := uint32(h.mask)
-	i := hash & mask
-	var tomb int32 = -1
-	n := h.mask + 1
-	for step := int32(0); step < n; step++ {
-		c := h.ctrl[i]
-		if c == ctrlEmpty {
-			if tomb >= 0 {
-				i = uint32(tomb)
-			}
-			h.ctrl[i] = ctrlFull
-			h.keys[i] = key
-			h.vals[i] = val
-			h.used++
-			return
-		}
-		if c == ctrlTombstone {
-			if tomb < 0 {
-				tomb = int32(i)
-			}
-		} else if h.keys[i] == key {
-			h.vals[i] = val
-			return
-		}
-		i = (i + 1) & mask
+	if h.writing != 0 {
+		throw("concurrent map writes")
 	}
-	// Table full of tombstones; grow and retry once.
-	h.growTo(n << 1)
-	mapAssign(h, key, val)
+	h.writing = 1
+	for attempt := 0; attempt < 2; attempt++ {
+		h.maybeGrow()
+		hash := mapKeyHash(key, h.seed)
+		mask := uint32(h.mask)
+		i := hash & mask
+		var tomb int32 = -1
+		n := h.mask + 1
+		placed := false
+		for step := int32(0); step < n; step++ {
+			c := h.ctrl[i]
+			if c == ctrlEmpty {
+				if tomb >= 0 {
+					i = uint32(tomb)
+				}
+				h.ctrl[i] = ctrlFull
+				h.keys[i] = key
+				h.vals[i] = val
+				h.used++
+				placed = true
+				break
+			}
+			if c == ctrlTombstone {
+				if tomb < 0 {
+					tomb = int32(i)
+				}
+			} else if h.keys[i] == key {
+				h.vals[i] = val
+				placed = true
+				break
+			}
+			i = (i + 1) & mask
+		}
+		if placed {
+			break
+		}
+		// Table full of tombstones; grow and retry once (still under writing).
+		h.growTo(n << 1)
+	}
+	h.writing = 0
 }
 
 // mapDelete removes key. Nil or missing is a no-op.
@@ -183,27 +206,31 @@ func mapDelete(h *hmap, key any) {
 	if h == nil {
 		return
 	}
-	if h.ctrl == nil {
-		return
+	if h.writing != 0 {
+		throw("concurrent map writes")
 	}
-	hash := mapKeyHash(key, h.seed)
-	mask := uint32(h.mask)
-	i := hash & mask
-	n := h.mask + 1
-	for step := int32(0); step < n; step++ {
-		c := h.ctrl[i]
-		if c == ctrlEmpty {
-			return
+	h.writing = 1
+	if h.ctrl != nil {
+		hash := mapKeyHash(key, h.seed)
+		mask := uint32(h.mask)
+		i := hash & mask
+		n := h.mask + 1
+		for step := int32(0); step < n; step++ {
+			c := h.ctrl[i]
+			if c == ctrlEmpty {
+				break
+			}
+			if c == ctrlFull && h.keys[i] == key {
+				h.ctrl[i] = ctrlTombstone
+				h.keys[i] = nil
+				h.vals[i] = nil
+				h.used--
+				break
+			}
+			i = (i + 1) & mask
 		}
-		if c == ctrlFull && h.keys[i] == key {
-			h.ctrl[i] = ctrlTombstone
-			h.keys[i] = nil
-			h.vals[i] = nil
-			h.used--
-			return
-		}
-		i = (i + 1) & mask
 	}
+	h.writing = 0
 }
 
 // mapClear removes all entries. Nil is a no-op.
@@ -211,6 +238,10 @@ func mapClear(h *hmap) {
 	if h == nil || h.ctrl == nil {
 		return
 	}
+	if h.writing != 0 {
+		throw("concurrent map writes")
+	}
+	h.writing = 1
 	n := h.mask + 1
 	for i := int32(0); i < n; i++ {
 		h.ctrl[i] = ctrlEmpty
@@ -218,6 +249,7 @@ func mapClear(h *hmap) {
 		h.vals[i] = nil
 	}
 	h.used = 0
+	h.writing = 0
 }
 
 // mapLen returns used, or 0 for nil.
@@ -230,6 +262,7 @@ func mapLen(h *hmap) int32 {
 
 // mapIterStart snapshots the table and picks a randomized start index.
 func mapIterStart(h *hmap) *mapIter {
+	mapCheckWrite(h)
 	if h == nil || h.ctrl == nil || h.used == 0 {
 		return &mapIter{}
 	}
