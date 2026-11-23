@@ -235,7 +235,7 @@ func (g *gen) ensureStructWasmType(wasmName string, st *types.Struct) {
 
 // ensureMutableBoxes marks $go.box.*.v mutable for Reflect Set* on New().Elem().
 func (g *gen) ensureMutableBoxes() {
-	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64"} {
+	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64", "$go.box.string"} {
 		td := g.mod.LookupType(name)
 		if td == nil {
 			continue

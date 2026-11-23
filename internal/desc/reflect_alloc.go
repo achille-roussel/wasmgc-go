@@ -19,7 +19,25 @@ func (g *gen) fillReflectSetBoxF64() {
 	g.fillReflectSetBox("runtime.ReflectSetBoxF64", "$go.box.f64", ir.TypeF64)
 }
 func (g *gen) fillReflectSetBoxString() {
+	f := g.mod.LookupFunc("runtime.ReflectSetBoxString")
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureBoxString()
 	g.fillReflectSetBox("runtime.ReflectSetBoxString", "$go.box.string", &ir.Ref{Named: "$go.string"})
+}
+
+// ensureBoxString interns the mutable string holder for reflect.New(string)
+// / SetString. Kept out of the unconditional prelude so empty_main stays 208.
+func (g *gen) ensureBoxString() {
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.box.string",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "v", Type: &ir.Ref{Named: "$go.string"}, Mut: true},
+		},
+	})
 }
 
 func (g *gen) fillReflectSetBox(name, box string, valT ir.Type) {
@@ -233,14 +251,7 @@ func (g *gen) zeroValueExpr(tr *typeRec) ir.Expr {
 		}
 	case KindString:
 		// Mutable holder so New(string).Elem().SetString works.
-		g.mod.InternType(&ir.TypeDef{
-			Name:  "$go.box.string",
-			Kind:  ir.TypeStruct,
-			Super: "$go.object",
-			Fields: []ir.Field{
-				{Name: "v", Type: &ir.Ref{Named: "$go.string"}, Mut: true},
-			},
-		})
+		g.ensureBoxString()
 		return &ir.Instr{
 			Op: ir.OpStructNew, Type: &ir.Ref{Named: "$go.box.string"},
 			Args: []ir.Expr{g.stringConstExpr("")},

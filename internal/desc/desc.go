@@ -158,6 +158,8 @@ func (g *gen) ensurePreludeShapes() {
 		},
 	})
 	// Box types for scalar → interface.
+	// $go.box.string is not part of the unconditional prelude (empty_main size
+	// budget); intern it lazily via ensureBoxString when reflect New/Set needs it.
 	for _, kind := range []struct {
 		name string
 		ty   ir.Type
@@ -176,16 +178,8 @@ func (g *gen) ensurePreludeShapes() {
 			},
 		})
 	}
-	// Mutable string holder for reflect.New(string).Elem().SetString.
-	g.mod.InternType(&ir.TypeDef{
-		Name:  "$go.box.string",
-		Kind:  ir.TypeStruct,
-		Super: "$go.object",
-		Fields: []ir.Field{
-			{Name: "v", Type: &ir.Ref{Named: "$go.string"}, Mut: true},
-		},
-	})
 	// lower may have interned boxes first with immutable v; patch for Set*.
+	// Include $go.box.string when present (added lazily by ensureBoxString).
 	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64", "$go.box.string"} {
 		if td := g.mod.LookupType(name); td != nil {
 			for i := range td.Fields {

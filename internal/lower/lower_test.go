@@ -188,6 +188,55 @@ func main() {}
 	}
 }
 
+// String switch must call runtime.stringeq (ref $go.string), not i32.eq.
+func TestStringSwitchUsesStringEq(t *testing.T) {
+	m := mustCompile(t, `package main
+func classify(s string) int {
+	switch s {
+	case "a":
+		return 1
+	case "b", "c":
+		return 2
+	}
+	return 0
+}
+func main() {}
+`)
+	text := formatFunc(m, "main.classify")
+	if !strings.Contains(text, "call runtime.stringeq") {
+		t.Fatalf("expected runtime.stringeq in string switch:\n%s", text)
+	}
+	if strings.Contains(text, "i32.eq") {
+		t.Fatalf("string switch must not use i32.eq:\n%s", text)
+	}
+	assertRoundTrip(t, m)
+}
+
+// Pointer switch must use ref.eq, not i32.eq (jsontext.Token.Bool pattern).
+func TestPointerSwitchUsesRefEq(t *testing.T) {
+	m := mustCompile(t, `package main
+type T struct{ x int }
+var a, b T
+func classify(p *T) int {
+	switch p {
+	case &a:
+		return 1
+	case &b:
+		return 2
+	}
+	return 0
+}
+func main() {}
+`)
+	text := formatFunc(m, "main.classify")
+	if !strings.Contains(text, "ref.eq") {
+		t.Fatalf("expected ref.eq in pointer switch:\n%s", text)
+	}
+	if strings.Contains(text, "i32.eq") {
+		t.Fatalf("pointer switch must not use i32.eq:\n%s", text)
+	}
+}
+
 func TestIntIsI32(t *testing.T) {
 	m := mustCompile(t, `package main
 func f(x int, y uint, z uintptr) int64 {
