@@ -1374,25 +1374,35 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 	case *types.Pointer:
 		elem := types.Unalias(t.Elem())
 		if n, ok := elem.(*types.Named); ok {
-			if _, ok := n.Underlying().(*types.Struct); ok {
+			switch u := n.Underlying().(type) {
+			case *types.Struct:
+				// *Struct shares the struct ref (matches lower.mapPointer).
 				return &ir.Ref{Null: true, Named: structName(n)}, nil
+			case *types.Array:
+				// *[N]T / *byteReplacer → same array ref as [N]T.
+				return mapArrayApprox(u)
 			}
 		}
 		if _, ok := elem.(*types.Struct); ok {
 			return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 		}
+		if a, ok := elem.(*types.Array); ok {
+			return mapArrayApprox(a)
+		}
 		// *string / *int / *[]T → fat pointer ($go.ptr.ref / .i32 / …).
 		return &ir.Ref{Null: true, Named: "$go.ptr." + fatPtrKindApprox(elem)}, nil
 	case *types.Named:
-		if _, ok := t.Underlying().(*types.Struct); ok {
+		switch u := t.Underlying().(type) {
+		case *types.Struct:
 			return &ir.Ref{Null: true, Named: structName(t)}, nil
+		case *types.Array:
+			return mapArrayApprox(u)
 		}
 		return mapTypeApprox(t.Underlying())
 	case *types.Slice:
 		return sliceIRApprox(t.Elem()), nil
 	case *types.Array:
-		// Rare as a method param; treat like a ref.
-		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+		return mapArrayApprox(t)
 	case *types.Map, *types.Chan:
 		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 	case *types.Signature:
@@ -1427,6 +1437,21 @@ func fatPtrKindApprox(elem types.Type) string {
 		return fatPtrKindApprox(u.Underlying())
 	}
 	return "ref"
+}
+
+// mapArrayApprox mirrors lower.mapArray / ensureArrayType for descriptor wrappers.
+func mapArrayApprox(t *types.Array) (ir.Type, error) {
+	elem := types.Unalias(t.Elem())
+	if b, ok := elem.Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Int8, types.Uint8, types.Bool:
+			return &ir.Ref{Null: true, Named: "$go.bytes"}, nil
+		case types.Int16, types.Uint16:
+			return &ir.Ref{Null: true, Named: "$go.i16s"}, nil
+		}
+	}
+	// Other element arrays: approximate as any (rare as method receivers).
+	return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 }
 
 // sliceIRApprox maps []T to the WasmGC slice header name used by the lowerer.

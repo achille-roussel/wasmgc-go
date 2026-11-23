@@ -291,10 +291,13 @@ func (g *gen) zeroValueExpr(tr *typeRec) ir.Expr {
 
 func (g *gen) structZeroIR(td *ir.TypeDef, t ir.Type, seen map[string]bool) ir.Expr {
 	if td == nil {
-		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}
+		// Prefer null over struct.new_default: many structs have non-defaultable
+		// (ref $go.string) fields that Wasm rejects for new_default.
+		return &ir.Instr{Op: ir.OpRefNull, Type: t}
 	}
 	if seen[td.Name] {
-		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}
+		// Cycle / self-pointer: null (same as lower.structZeroExpr).
+		return &ir.Instr{Op: ir.OpRefNull, Type: t}
 	}
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
@@ -318,10 +321,36 @@ func (g *gen) structZeroIR(td *ir.TypeDef, t ir.Type, seen map[string]bool) ir.E
 				args[i] = g.stringConstExpr("")
 				continue
 			}
+			// Same-type field is *T (null), not a nested value.
+			if rname := ft.Named; rname != "" && rname == td.Name {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: ft}
+				continue
+			}
 			// Nested program structs only (not $go.string / boxes / runtime).
 			if ntd := g.mod.LookupType(ft.Named); ntd != nil && ntd.Kind == ir.TypeStruct &&
 				len(ft.Named) >= 11 && ft.Named[:11] == "$go.struct." {
 				args[i] = g.structZeroIR(ntd, ft, seen)
+				continue
+			}
+			// Fixed arrays ($go.bytes / $go.array.*): allocate empty/zero when Len set.
+			if f.Len > 0 && (ft.Named == "$go.bytes" || ft.Named == "$go.i16s" ||
+				(len(ft.Named) > 10 && ft.Named[:10] == "$go.array.")) {
+				if ft.Named == "$go.array.go.string" {
+					args[i] = &ir.Instr{
+						Op:   ir.OpArrayNew,
+						Type: &ir.Ref{Named: ft.Named},
+						Args: []ir.Expr{
+							g.stringConstExpr(""),
+							&ir.Const{Op: ir.OpI32Const, I64: f.Len},
+						},
+					}
+				} else {
+					args[i] = &ir.Instr{
+						Op:   ir.OpArrayNewDefault,
+						Type: &ir.Ref{Named: ft.Named},
+						Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: f.Len}},
+					}
+				}
 				continue
 			}
 			args[i] = &ir.Instr{Op: ir.OpRefNull, Type: ft}
