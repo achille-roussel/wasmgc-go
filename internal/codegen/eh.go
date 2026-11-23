@@ -242,7 +242,13 @@ func (g *gen) markEHFills() {
 	} {
 		f := g.m.LookupFunc(name)
 		if f == nil {
-			// Synthesize missing decls for unit tests that skip rtlink.
+			// Do not resurrect deferRun/gorecover after DCE — map/print-only
+			// programs never call them. Still synth throw/unrecovered/concat
+			// for unit tests that skip rtlink but need the panic catch path.
+			switch name {
+			case "runtime.deferRun", "runtime.gorecover":
+				continue
+			}
 			g.synthEHFunc(name)
 			f = g.m.LookupFunc(name)
 		}

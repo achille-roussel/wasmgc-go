@@ -93,6 +93,13 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
 	if pkg.Types == nil || pkg.Info == nil {
 		return fmt.Errorf("lower.Package: package %s is not type-checked", pkg.PkgPath)
 	}
+	// Rewrite package runtime is linked on demand by rtlink.Ensure*
+	// (EnsureSched / EnsureMaps / EnsurePanic / EnsurePrint), same as
+	// -skip-stdlib. Lowering every GOROOT runtime file here (via sync's
+	// import "runtime") would keep map/select/Frames in mutex programs.
+	if pkg.PkgPath == "runtime" && pkg.Standard {
+		return nil
+	}
 	l := &pkgLower{
 		fset:  nil, // positions reported by package path
 		files: pkg.Syntax,
@@ -113,6 +120,8 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
 //	}
 //
 // It does not set Module.Low; Package calls RuntimeOps after Finish.
+// Inits linked later via AppendFiles (rtlink.EnsureSched, etc.) are wired by
+// LinkPendingInits after those Ensure* calls.
 func Finish(mod *ir.Module) error {
 	if mod == nil {
 		return fmt.Errorf("lower.Finish: nil module")
@@ -148,6 +157,88 @@ func Finish(mod *ir.Module) error {
 	return nil
 }
 
+// LinkPendingInits prepends any meta.initOrder entries not yet called from
+// main.run. EnsureSched / EnsureMaps AppendFiles after Finish can register
+// runtime.init (sets gp / ngo); without this hook the first park deadlocks
+// ("all goroutines are asleep") and DCE drops the unreachable init.
+func LinkPendingInits(mod *ir.Module) {
+	if mod == nil {
+		return
+	}
+	md := metaOf(mod)
+	if md == nil || len(md.initOrder) == 0 {
+		return
+	}
+	run := mod.LookupFunc("main.run")
+	if run == nil || run.Body == nil {
+		return
+	}
+	called := map[string]bool{}
+	walkInitCalls(run.Body, func(name string) { called[name] = true })
+	var missing []string
+	for _, name := range md.initOrder {
+		if called[name] {
+			continue
+		}
+		if mod.LookupFunc(name) == nil {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) == 0 {
+		return
+	}
+	seq, ok := run.Body.(*ir.Seq)
+	if !ok {
+		return
+	}
+	// Insert before main.main (or at start if the body was EH-wrapped later).
+	insert := make([]ir.Stmt, 0, len(missing))
+	for _, name := range missing {
+		insert = append(insert, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: name},
+		})
+	}
+	idx := 0
+	for i, s := range seq.Stmts {
+		if es, ok := s.(*ir.ExprStmt); ok {
+			if in, ok := es.X.(*ir.Instr); ok && in.Op == ir.OpCall && in.Func == "main.main" {
+				idx = i
+				break
+			}
+		}
+	}
+	out := make([]ir.Stmt, 0, len(seq.Stmts)+len(insert))
+	out = append(out, seq.Stmts[:idx]...)
+	out = append(out, insert...)
+	out = append(out, seq.Stmts[idx:]...)
+	seq.Stmts = out
+}
+
+func walkInitCalls(r ir.Region, fn func(string)) {
+	if r == nil {
+		return
+	}
+	switch r := r.(type) {
+	case *ir.Seq:
+		for _, s := range r.Stmts {
+			if es, ok := s.(*ir.ExprStmt); ok {
+				if in, ok := es.X.(*ir.Instr); ok && in.Op == ir.OpCall {
+					fn(in.Func)
+				}
+			}
+			if nested, ok := s.(ir.Region); ok {
+				walkInitCalls(nested, fn)
+			}
+		}
+	case *ir.Block:
+		walkInitCalls(r.Body, fn)
+	case *ir.Try:
+		walkInitCalls(r.Body, fn)
+		walkInitCalls(r.Handler, fn)
+	}
+}
+
 // meta holds whole-program state shared across package lowering.
 type meta struct {
 	initOrder []string
@@ -157,6 +248,7 @@ type meta struct {
 	cellVars  map[types.Object]bool
 	needsEH    bool // set when any function uses defer/panic/recover
 	needsSched bool // set when go / chan / select / park may be needed
+	needsMaps  bool // set when map ops may be needed (M6)
 }
 
 var moduleMeta = map[*ir.Module]*meta{}

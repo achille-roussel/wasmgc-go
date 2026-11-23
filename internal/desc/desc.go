@@ -359,6 +359,9 @@ func (g *gen) emitAll() error {
 			return err
 		}
 	}
+	if err := g.emitDispatchEq(); err != nil {
+		return err
+	}
 	// Group itabs by iface for Wasm type.
 	ifaceMethods := map[string][]*types.Func{}
 	for _, it := range g.itabs {
@@ -397,7 +400,7 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 		return nil
 	}
 	// Minimal descriptor: id, kind, name=null, extra=null.
-	// Name strings can wait; identity is the global ref.
+	// Per-type equal lives in $go.dispatchEq (keeps $go.type at 4 fields).
 	init := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.type"},
@@ -432,7 +435,7 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 			&ir.Unreachable{},
 		}}
 	} else {
-		// Pointer / ref identity, or boxed scalar field compare.
+		// Pointer / ref identity, boxed scalar compare, or struct field-wise.
 		switch tr.kind {
 		case KindInt, KindInt8, KindInt16, KindInt32, KindUint, KindUint8, KindUint16, KindUint32, KindUintptr, KindBool:
 			body = g.boxEqualBody("$go.box.i32", ir.TypeI32, a, b)
@@ -442,8 +445,12 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 			body = g.boxEqualBody("$go.box.f32", ir.TypeF32, a, b)
 		case KindFloat64:
 			body = g.boxEqualBody("$go.box.f64", ir.TypeF64, a, b)
+		case KindString:
+			body = g.stringEqualBody(a, b)
+		case KindStruct:
+			body = g.structEqualBody(tr, a, b)
 		default:
-			// ref.eq requires eqref; cast anyref params first.
+			// Pointers, chans, interfaces, arrays: identity on the data word.
 			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
 			ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
 			cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
@@ -483,6 +490,176 @@ func (g *gen) boxEqualBody(box string, val ir.Type, a, b *ir.Var) ir.Region {
 	return &ir.Seq{Stmts: []ir.Stmt{
 		&ir.Return{Results: []ir.Expr{&ir.Instr{Op: eq, Args: []ir.Expr{va, vb}}}},
 	}}
+}
+
+func (g *gen) stringEqualBody(a, b *ir.Var) ir.Region {
+	// Content compare is iface.eq's stringDataEq → runtime.stringeq.
+	// Descriptor equal for strings is identity (dispatchEq does not use KindString).
+	eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+	ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
+	cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
+	return &ir.Seq{Stmts: []ir.Stmt{
+		&ir.Return{Results: []ir.Expr{&ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{ca, cb}}}},
+	}}
+}
+
+// emitDispatchEq builds $go.dispatchEq(id, a, b) → call $go.eq.* by dense id.
+// iface.eq uses this for KindStruct so $go.type stays 4 fields (size budget).
+func (g *gen) emitDispatchEq() error {
+	if g.mod.LookupFunc("$go.dispatchEq") != nil {
+		return nil
+	}
+	need := false
+	for _, tr := range g.types {
+		if tr.kind == KindStruct || tr.kind == KindArray {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return nil
+	}
+	id := &ir.Var{Name: "id", Typ: ir.TypeI32}
+	a := &ir.Var{Name: "a", Typ: &ir.Ref{Null: true, Heap: ir.HeapAny}}
+	b := &ir.Var{Name: "b", Typ: &ir.Ref{Null: true, Heap: ir.HeapAny}}
+	keys := make([]string, 0, len(g.types))
+	for k := range g.types {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	// if/else chain of returns; Unreachable after so codegen sees no fallthru.
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}
+	for i := len(keys) - 1; i >= 0; i-- {
+		tr := g.types[keys[i]]
+		if tr.kind != KindStruct && tr.kind != KindArray {
+			continue
+		}
+		eqName := "$go.eq." + sanitize(tr.key)
+		call := &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
+			&ir.Name{Raw: "a", Var: a}, &ir.Name{Raw: "b", Var: b},
+		}}
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "id", Var: id},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(tr.id)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{call}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    "$go.dispatchEq",
+		Params:  []*ir.Var{id, a, b},
+		Results: []ir.Type{ir.TypeI32},
+		Body:    &ir.Seq{Stmts: []ir.Stmt{chain, &ir.Unreachable{}}},
+	})
+	return nil
+}
+
+// structEqualBody compares named/anon struct fields (Go ==). Empty structs are equal.
+func (g *gen) structEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
+	wasmName := ""
+	var st *types.Struct
+	if tr.goType != nil {
+		t := types.Unalias(tr.goType)
+		if n, ok := t.(*types.Named); ok {
+			wasmName = structName(n)
+			st, _ = n.Underlying().(*types.Struct)
+		} else if s, ok := t.(*types.Struct); ok {
+			st = s
+			wasmName = anonStructWasmName(s)
+		}
+	}
+	// Runtime structs alias to $go.g / $go.hmap / … with field layouts that
+	// may not match go/types names; identity is enough (they are not map keys).
+	if tr.goType != nil {
+		if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
+			if runtimeStructAliasName(n) != "" {
+				st = nil
+				wasmName = ""
+			}
+		}
+	}
+	if st == nil || wasmName == "" || g.mod.LookupType(wasmName) == nil {
+		// Fall back to identity if we lack a concrete Wasm struct shape.
+		eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+		ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
+		cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
+		return &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Return{Results: []ir.Expr{&ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{ca, cb}}}},
+		}}
+	}
+	sty := &ir.Ref{Named: wasmName}
+	sa := &ir.Var{Name: "sa", Typ: sty}
+	sb := &ir.Var{Name: "sb", Typ: sty}
+	seq := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: sa}, &ir.VarDef{Var: sb},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "sa", Var: sa}}, Rhs: &ir.Instr{Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "sb", Var: sb}}, Rhs: &ir.Instr{Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}},
+	}}
+	var cmp ir.Expr = &ir.Const{Op: ir.OpI32Const, I64: 1}
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		if isZeroSizeType(f.Type()) {
+			continue
+		}
+		fa := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "sa", Var: sa}}}
+		fb := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "sb", Var: sb}}}
+		fieldEq := g.fieldEqExpr(f.Type(), fa, fb)
+		cmp = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{cmp, fieldEq}}
+	}
+	seq.Stmts = append(seq.Stmts, &ir.Return{Results: []ir.Expr{cmp}})
+	return seq
+}
+
+func anonStructWasmName(t *types.Struct) string {
+	var b strings.Builder
+	b.WriteString("$go.struct.anon")
+	for i := 0; i < t.NumFields(); i++ {
+		f := t.Field(i)
+		b.WriteByte('.')
+		b.WriteString(f.Name())
+		b.WriteByte('.')
+		b.WriteString(strings.ReplaceAll(f.Type().String(), " ", "_"))
+	}
+	return b.String()
+}
+
+func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
+	ft = types.Unalias(ft)
+	switch u := ft.(type) {
+	case *types.Basic:
+		switch u.Kind() {
+		case types.Float32:
+			return &ir.Instr{Op: ir.OpF32Eq, Args: []ir.Expr{a, b}}
+		case types.Float64:
+			return &ir.Instr{Op: ir.OpF64Eq, Args: []ir.Expr{a, b}}
+		case types.Int64, types.Uint64:
+			return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{a, b}}
+		case types.String:
+			return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{a, b}}
+		default:
+			return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{a, b}}
+		}
+	case *types.Named:
+		if _, ok := u.Underlying().(*types.Struct); ok {
+			// Nested struct values are refs; field-wise via that type's equal.
+			eqName := "$go.eq." + sanitize(TypeKey(u))
+			anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+			return &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{a}},
+				&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{b}},
+			}}
+		}
+		return g.fieldEqExpr(u.Underlying(), a, b)
+	default:
+		// Pointers, slices, maps, chans, ifaces: reference identity.
+		eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+		return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},
+			&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{b}},
+		}}
+	}
 }
 
 func (g *gen) emitItabType(ifaceKey string, ms []*types.Func) error {
@@ -846,11 +1023,53 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 }
 
 func structName(t *types.Named) string {
+	if alias := runtimeStructAliasName(t); alias != "" {
+		return alias
+	}
 	pkg := "main"
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name()
 	}
 	return "$go.struct." + pkg + "." + t.Obj().Name()
+}
+
+// runtimeStructAliasName mirrors lower.runtimeStructAlias for eq bodies.
+func runtimeStructAliasName(t *types.Named) string {
+	obj := t.Obj()
+	if obj == nil || obj.Pkg() == nil {
+		return ""
+	}
+	if obj.Pkg().Path() != "runtime" && obj.Pkg().Name() != "runtime" {
+		return ""
+	}
+	switch obj.Name() {
+	case "hchan":
+		return "$go.chan"
+	case "waiter":
+		return "$go.waiter"
+	case "waitq":
+		return "$go.waitq"
+	case "g":
+		return "$go.g"
+	case "hmap":
+		return "$go.hmap"
+	case "mapIter":
+		return "$go.mapIter"
+	case "scase":
+		return "$go.scase"
+	case "select_":
+		return "$go.select"
+	case "chanOps":
+		return "$go.chanOps"
+	case "panicObj":
+		return "$go.panicObj"
+	case "semaRoot":
+		return "$go.semaRoot"
+	case "semaEntry":
+		return "$go.semaEntry"
+	default:
+		return ""
+	}
 }
 
 func sanitize(s string) string {

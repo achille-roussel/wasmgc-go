@@ -48,7 +48,7 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Tuple:
 		return nil, fmt.Errorf("tuple type not a single value: %s", t)
 	case *types.Map:
-		return nil, fmt.Errorf("map type not supported until M6: %s", t)
+		return l.mapMap(t)
 	case *types.Chan:
 		return l.mapChan(t)
 	default:
@@ -56,10 +56,63 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	}
 }
 
+// mapMap lowers map[K]V to (ref null $go.hmap). Nil map is a null ref.
+// Key/value types are erased at the header; payloads are boxed as any (04).
+func (l *pkgLower) mapMap(t *types.Map) (ir.Type, error) {
+	l.ensureMapBaseTypes()
+	return &ir.Ref{Null: true, Named: "$go.hmap"}, nil
+}
+
 // mapChan lowers chan T to (ref null $go.chan). Nil channel is a null ref.
 func (l *pkgLower) mapChan(t *types.Chan) (ir.Type, error) {
 	l.ensureChanBaseTypes()
 	return &ir.Ref{Null: true, Named: "$go.chan"}, nil
+}
+
+// ensureMapBaseTypes interns $go.hmap / $go.mapIter with the field layout of
+// runtime.hmap / mapIter so PackageHigh and AppendFiles agree.
+func (l *pkgLower) ensureMapBaseTypes() {
+	if l.mod.LookupType("$go.hmap") != nil && len(l.mod.LookupType("$go.hmap").Fields) > 0 {
+		return
+	}
+	sliceU8, err := l.mapSlice(types.NewSlice(types.Typ[types.Uint8]))
+	if err != nil {
+		panic("ensureMapBaseTypes: []uint8: " + err.Error())
+	}
+	sliceIface, err := l.mapSlice(types.NewSlice(types.NewInterfaceType(nil, nil)))
+	if err != nil {
+		panic("ensureMapBaseTypes: []any: " + err.Error())
+	}
+	fields := []ir.Field{
+		{Name: "used", Type: ir.TypeI32, Mut: true},
+		{Name: "seed", Type: ir.TypeI32, Mut: true},
+		{Name: "mask", Type: ir.TypeI32, Mut: true},
+		{Name: "ctrl", Type: sliceU8, Mut: true},
+		{Name: "keys", Type: sliceIface, Mut: true},
+		{Name: "vals", Type: sliceIface, Mut: true},
+	}
+	if td := l.mod.LookupType("$go.hmap"); td != nil {
+		td.Fields = fields
+	} else {
+		l.mod.InternType(&ir.TypeDef{
+			Name: "$go.hmap", Kind: ir.TypeStruct, Super: "$go.object", Fields: fields,
+		})
+	}
+	iterFields := []ir.Field{
+		{Name: "keys", Type: sliceIface, Mut: true},
+		{Name: "vals", Type: sliceIface, Mut: true},
+		{Name: "ctrl", Type: sliceU8, Mut: true},
+		{Name: "start", Type: ir.TypeI32, Mut: true},
+		{Name: "i", Type: ir.TypeI32, Mut: true},
+		{Name: "n", Type: ir.TypeI32, Mut: true},
+	}
+	if td := l.mod.LookupType("$go.mapIter"); td != nil {
+		td.Fields = iterFields
+	} else {
+		l.mod.InternType(&ir.TypeDef{
+			Name: "$go.mapIter", Kind: ir.TypeStruct, Super: "$go.object", Fields: iterFields,
+		})
+	}
 }
 
 // ensureChanBaseTypes interns the shared channel / scheduler layouts from
@@ -329,8 +382,18 @@ func (l *pkgLower) mapArray(t *types.Array) (ir.Type, error) {
 }
 
 func (l *pkgLower) mapNamedStruct(t *types.Named) (ir.Type, error) {
-	if runtimeStructAlias(t) != "" {
-		l.ensureChanBaseTypes()
+	if alias := runtimeStructAlias(t); alias != "" {
+		// Only pull the layouts this alias needs. Calling ensureChanBaseTypes
+		// for hmap/mapIter used to intern chan/select/sema types into every
+		// map-only module (~type-section bloat).
+		switch alias {
+		case "$go.hmap", "$go.mapIter":
+			l.ensureMapBaseTypes()
+		case "$go.g", "$go.panicObj":
+			l.ensureGType()
+		default:
+			l.ensureChanBaseTypes()
+		}
 	}
 	name := structTypeName(t)
 	existing := l.mod.LookupType(name)
@@ -478,6 +541,10 @@ func runtimeStructAlias(t *types.Named) string {
 		return "$go.semaRoot"
 	case "panicObj":
 		return "$go.panicObj"
+	case "hmap":
+		return "$go.hmap"
+	case "mapIter":
+		return "$go.mapIter"
 	}
 	return ""
 }

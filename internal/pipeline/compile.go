@@ -182,7 +182,10 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsureSched(mod, rewriteDir); err != nil {
 		return nil, err
 	}
-	// Sched may introduce printstring / printnl via fatal; link if still missing.
+	if err := rtlink.EnsureMaps(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	// Sched/maps may introduce printstring / printnl via fatal; link if still missing.
 	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
 		return nil, err
 	}
@@ -205,6 +208,12 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := lower.RuntimeOps(mod); err != nil {
 		return nil, err
 	}
+	// AppendFiles from Ensure* may have registered package inits (e.g.
+	// runtime.init for gp/ngo) after Finish already built main.run.
+	lower.LinkPendingInits(mod)
+	// Drop runtime (and other) funcs not reachable from exports / ref.func
+	// sites so GOROOT import "runtime" cannot keep unused map/select/Frames.
+	ir.PruneUnreachable(mod)
 	return mod, nil
 }
 

@@ -20,37 +20,55 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	needString, needInt, needNL := scanPrintCalls(mod)
-	if !needString && !needInt && !needNL {
+	needString, needInt, needNL, needStreq := scanPrintCalls(mod)
+	if !needString && !needInt && !needNL && !needStreq {
 		return nil
 	}
-	// Linked when decls exist: printstring may be body-less; int/nl need bodies.
+	// Linked when decls exist: printstring may be body-less; int/nl/streq need bodies.
 	if (!needString || mod.LookupFunc("runtime.printstring") != nil) &&
 		(!needInt || hasPrintBody(mod, "runtime.printint")) &&
-		(!needNL || hasPrintBody(mod, "runtime.printnl")) {
+		(!needNL || hasPrintBody(mod, "runtime.printnl")) &&
+		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) {
 		return nil
 	}
 	if rewriteDir == "" {
 		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime print")
 	}
-	path := filepath.Join(rewriteDir, "runtime", "print.go")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("rtlink: read %s: %w", path, err)
+	var filenames []string
+	var srcs []string
+	add := func(name string) error {
+		path := filepath.Join(rewriteDir, "runtime", name)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("rtlink: read %s: %w", path, err)
+		}
+		filenames = append(filenames, path)
+		srcs = append(srcs, string(src))
+		return nil
 	}
-	fset, files, pkg, info, err := lower.TypeCheck(path, string(src))
+	if needString || needInt || needNL {
+		if err := add("print.go"); err != nil {
+			return err
+		}
+	}
+	if needStreq {
+		if err := add("stringeq.go"); err != nil {
+			return err
+		}
+	}
+	fset, files, pkg, info, err := lower.TypeCheckFiles(filenames, srcs)
 	if err != nil {
-		return fmt.Errorf("rtlink: typecheck print.go: %w", err)
+		return fmt.Errorf("rtlink: typecheck print: %w", err)
 	}
 
 	stripPrintFuncs(mod)
 	if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
-		return fmt.Errorf("rtlink: lower print.go: %w", err)
+		return fmt.Errorf("rtlink: lower print: %w", err)
 	}
 	return nil
 }
 
-func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL bool) {
+func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq bool) {
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
@@ -60,6 +78,8 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL bool) {
 				needInt = true
 			case "runtime.printnl":
 				needNL = true
+			case "runtime.stringeq":
+				needStreq = true
 			}
 		})
 	}
@@ -91,6 +111,7 @@ func stripPrintFuncs(mod *ir.Module) {
 		"runtime.printint":    true,
 		"runtime.printnl":     true,
 		"runtime.printuint":   true,
+		"runtime.stringeq":    true,
 	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {

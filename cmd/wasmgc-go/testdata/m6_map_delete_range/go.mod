@@ -1,0 +1,1 @@
+module m6_map_delete_range

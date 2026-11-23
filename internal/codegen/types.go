@@ -32,7 +32,7 @@ func (g *gen) emitPrelude() {
 	)))
 	g.types.ByName["$go.string"] = str
 
-	// 4: $go.type
+	// 4: $go.type (keep 4 fields — empty_main size budget; equal is $go.dispatchEq)
 	typ := g.wm.AddType(wasm.SubFinal([]uint32{obj}, wasm.StructType(
 		wasm.Field(wasm.StorageVal(wasm.I32()), false),                          // id
 		wasm.Field(wasm.StorageVal(wasm.I32()), false),                          // kind

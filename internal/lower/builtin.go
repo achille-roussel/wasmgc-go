@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
 
@@ -37,7 +38,7 @@ func (fl *funcLower) builtinName(e *ast.CallExpr) string {
 
 func (fl *funcLower) isBuiltinCall(e *ast.CallExpr) bool {
 	switch fl.builtinName(e) {
-	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover", "close":
+	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover", "close", "delete", "clear":
 		return true
 	}
 	return false
@@ -138,6 +139,12 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 	case "close":
 		st, err := fl.builtinClose(e)
 		return nil, st, err
+	case "delete":
+		st, err := fl.builtinDelete(e)
+		return nil, st, err
+	case "clear":
+		st, err := fl.builtinClear(e)
+		return nil, st, err
 	case "panic":
 		return nil, nil, fl.errorf(e, "panic used as value")
 	case "print", "println":
@@ -201,11 +208,29 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 		}
 		return &ir.Instr{Op: ir.OpChanMake, Type: irt, Args: []ir.Expr{capEx}}, stmts, nil
 	}
+	if isMap(resTy) {
+		fl.markNeedsMaps()
+		var hint ir.Expr = fl.i32const(0)
+		var stmts []ir.Stmt
+		if len(e.Args) >= 2 {
+			var hstmts []ir.Stmt
+			hint, hstmts, err = fl.expr(e.Args[1], ir.TypeI32)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, hstmts...)
+		}
+		in := &ir.Instr{Op: ir.OpMapMake, Type: irt, Args: []ir.Expr{hint}}
+		if key, _ := mapKeyElem(resTy); key != nil {
+			in.Str = desc.TypeKey(key)
+		}
+		return in, stmts, nil
+	}
 	if len(e.Args) < 2 {
 		return nil, nil, fl.errorf(e, "make needs type and length")
 	}
 	if !isSlice(resTy) {
-		return nil, nil, fl.errorf(e, "make of non-slice/chan not supported")
+		return nil, nil, fl.errorf(e, "make of non-slice/chan/map not supported")
 	}
 	lenEx, stmts, err := fl.expr(e.Args[1], ir.TypeI32)
 	if err != nil {
