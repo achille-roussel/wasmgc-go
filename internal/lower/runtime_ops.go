@@ -526,6 +526,12 @@ func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {
 }
 
 func elemOfArrayName(arrName string) ir.Type {
+	switch arrName {
+	case "$go.bytes":
+		return ir.TypeI8
+	case "$go.i16s":
+		return ir.TypeI16
+	}
 	suf := strings.TrimPrefix(arrName, "$go.array.")
 	switch suf {
 	case "i32":
@@ -536,8 +542,23 @@ func elemOfArrayName(arrName string) ir.Type {
 		return ir.TypeF32
 	case "f64":
 		return ir.TypeF64
+	case "i8":
+		return ir.TypeI8
+	case "i16":
+		return ir.TypeI16
+	case "go.iface", "iface":
+		return &ir.Ref{Null: true, Named: "$go.iface"}
+	case "go.string", "string":
+		return &ir.Ref{Named: "$go.string"}
 	default:
-		return ir.TypeI32
+		// Reference element arrays ($go.array.go.slice.i8, …).
+		if strings.HasSuffix(suf, ".iface") {
+			return &ir.Ref{Null: true, Named: "$go.iface"}
+		}
+		if strings.HasPrefix(suf, "go.") {
+			return &ir.Ref{Null: true, Named: "$" + suf}
+		}
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
 }
 
@@ -857,6 +878,44 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 	}
 	sl, lo, hi := args[0], args[1], args[2]
 	st := &ir.Ref{Named: sliceName}
+	newLen := &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{hi, lo}}
+	// Bounds: lo > hi → panicSliceB (trap until M5).
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{lo, hi}},
+		Then: &ir.Seq{Stmts: rt.panicSliceB()},
+	})
+
+	// Array → slice: base is a bare array ref; build a fresh header.
+	baseTy := lenCapArgType(rt.mod, in.Args[0])
+	if baseTy == nil {
+		baseTy = lenCapArgType(rt.mod, sl)
+	}
+	if baseArr := arrayIRName(baseTy); baseArr != "" {
+		if arrName == "" {
+			arrName = baseArr
+		}
+		dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+		// Slice headers require non-null data; array fields are refnull.
+		nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{sl}}
+		pre = append(pre, &ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: nn})
+		var newCap ir.Expr
+		if len(args) > 3 {
+			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
+		} else {
+			alen := &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}}}
+			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{alen, lo}}
+		}
+		pre = append(pre, &ir.Assign{
+			Lhs: s.Lhs,
+			Rhs: &ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: st,
+				Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}, lo, newLen, newCap},
+			},
+		})
+		return pre, nil
+	}
+
 	offT := &ir.Temp{Name: rt.fresh("off"), Typ: ir.TypeI32}
 	capT := &ir.Temp{Name: rt.fresh("cap"), Typ: ir.TypeI32}
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
@@ -866,18 +925,12 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
 	)
 	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, lo}}
-	newLen := &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{hi, lo}}
 	var newCap ir.Expr
 	if len(args) > 3 {
 		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
 	} else {
 		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{&ir.Name{Temp: capT, Raw: capT.Name}, lo}}
 	}
-	// Bounds: lo > hi → panicSliceB (trap until M5).
-	pre = append(pre, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{lo, hi}},
-		Then: &ir.Seq{Stmts: rt.panicSliceB()},
-	})
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
 		Rhs: &ir.Instr{
@@ -1032,11 +1085,34 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: call})
 		return pre, nil
 	}
+	// Go arrays are bare Wasm array refs ($go.bytes / $go.array.*); len/cap = array.len.
+	if arrName := arrayIRName(ty); arrName != "" {
+		pre = append(pre, &ir.Assign{
+			Lhs: s.Lhs,
+			Rhs: &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{arg}},
+		})
+		return pre, nil
+	}
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
 		Rhs: &ir.Instr{Op: ir.OpStructGet, Type: ty, Field: field, Args: []ir.Expr{arg}},
 	})
 	return pre, nil
+}
+
+// arrayIRName returns the Wasm array type name if t is a bare array ref
+// (Go [N]T), else "".
+func arrayIRName(t ir.Type) string {
+	r, ok := t.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return ""
+	}
+	switch {
+	case r.Named == "$go.bytes", r.Named == "$go.i16s",
+		strings.HasPrefix(r.Named, "$go.array."):
+		return r.Named
+	}
+	return ""
 }
 
 func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
@@ -1052,6 +1128,18 @@ func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
 		if e.Op == ir.OpGlobalGet && mod != nil {
 			if g := mod.LookupGlobal(e.Global); g != nil && g.Typ != nil {
 				return g.Typ
+			}
+		}
+		// struct.get's Type is the container; resolve the field's type.
+		if e.Op == ir.OpStructGet && e.Field != "" && e.Type != nil && mod != nil {
+			if r, ok := e.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := mod.LookupType(r.Named); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == e.Field {
+							return f.Type
+						}
+					}
+				}
 			}
 		}
 		if e.Type != nil {
@@ -1137,25 +1225,52 @@ func (rt *runtimeLower) addrClassKey(in *ir.Instr, base ir.Expr) (container, fie
 	if in.Str == "elem" {
 		field = "elem"
 		container = "$go.array.i32"
-		if t := structTypeOf(base); t != "" {
-			container = t
+		if t := exprRefTypeMod(rt.mod, base); t != "" {
+			container = arrayContainerOf(t)
 		}
 		return container, field
 	}
 	if in.Field != "" {
 		field = in.Field
 		container = "$go.object"
-		if t := structTypeOf(base); t != "" {
+		if t := exprRefTypeMod(rt.mod, base); t != "" {
 			container = t
 		}
 		return container, field
 	}
 	field = "elem"
 	container = "$go.array.i32"
-	if t := structTypeOf(base); t != "" {
-		container = t
+	if t := exprRefTypeMod(rt.mod, base); t != "" {
+		container = arrayContainerOf(t)
 	}
 	return container, field
+}
+
+// arrayContainerOf maps a slice/array/iface-array IR type name to the array
+// type used for elem fat-pointer accessors.
+func arrayContainerOf(t string) string {
+	switch {
+	case strings.HasPrefix(t, "$go.array."), t == "$go.bytes", t == "$go.i16s":
+		return t
+	case strings.HasPrefix(t, "$go.slice."):
+		rest := strings.TrimPrefix(t, "$go.slice.")
+		if rest == "i8" {
+			return "$go.bytes"
+		}
+		if rest == "i16" {
+			return "$go.i16s"
+		}
+		return "$go.array." + rest
+	case t == "$go.iface" || strings.HasSuffix(t, ".iface"):
+		return "$go.array.go.iface"
+	case t == "$go.string":
+		// []string / [N]string elem accessors use the string array type;
+		// a bare $go.string here means the base type was resolved to the
+		// element type — prefer the array of strings.
+		return "$go.array.go.string"
+	default:
+		return t
+	}
 }
 
 func structTypeOf(base ir.Expr) string {
@@ -1163,6 +1278,10 @@ func structTypeOf(base ir.Expr) string {
 }
 
 func exprRefType(e ir.Expr) string {
+	return exprRefTypeMod(nil, e)
+}
+
+func exprRefTypeMod(mod *ir.Module, e ir.Expr) string {
 	switch b := e.(type) {
 	case *ir.Name:
 		if b.Var != nil {
@@ -1176,6 +1295,20 @@ func exprRefType(e ir.Expr) string {
 			}
 		}
 	case *ir.Instr:
+		// struct.get's Type is the container; resolve the field type when possible.
+		if b.Op == ir.OpStructGet && b.Field != "" && b.Type != nil && mod != nil {
+			if r, ok := b.Type.(*ir.Ref); ok && r.Named != "" {
+				if td := mod.LookupType(r.Named); td != nil {
+					for _, f := range td.Fields {
+						if f.Name == b.Field {
+							if fr, ok := f.Type.(*ir.Ref); ok {
+								return fr.Named
+							}
+						}
+					}
+				}
+			}
+		}
 		if r, ok := b.Type.(*ir.Ref); ok {
 			return r.Named
 		}
@@ -1397,8 +1530,18 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	// "elem" is the synthetic field name for array/slice index addresses.
 	// A real struct field may also be named elem (waiter.elem); only use the
 	// array path when the container is an array type.
+	// Normalize mistaken non-array containers for elem accessors.
+	if field == "elem" {
+		container = arrayContainerOf(container)
+	}
 	isArrayElem := field == "elem" && (strings.HasPrefix(container, "$go.array.") ||
 		container == "$go.bytes" || container == "$go.i16s")
+	castToVal := func(ex ir.Expr) ir.Expr {
+		if kind == "ref" {
+			return &ir.Instr{Op: ir.OpRefCast, Type: val, Args: []ir.Expr{ex}}
+		}
+		return ex
+	}
 	if isArrayElem {
 		if isGet {
 			getOp := ir.OpArrayGet
@@ -1406,17 +1549,25 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 				getOp = ir.OpArrayGetU
 			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
+				&ir.Return{Results: []ir.Expr{castToVal(&ir.Instr{
 					Op: getOp, Type: &ir.Ref{Named: container},
 					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}},
-				}}},
+				})}},
 			}}
 		} else {
 			v := &ir.Var{Name: "v", Typ: val}
+			setVal := ir.Expr(&ir.Name{Raw: "v", Var: v})
+			if kind == "ref" {
+				// Caller passes anyref; cast to element type for array.set.
+				elemTy := elemOfArrayName(container)
+				if elemTy != nil {
+					setVal = &ir.Instr{Op: ir.OpRefCast, Type: elemTy, Args: []ir.Expr{setVal}}
+				}
+			}
 			body = &ir.Seq{Stmts: []ir.Stmt{
 				&ir.ExprStmt{X: &ir.Instr{
 					Op: ir.OpArraySet, Type: &ir.Ref{Named: container},
-					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}, &ir.Name{Raw: "v", Var: v}},
+					Args: []ir.Expr{cast, &ir.Name{Raw: "i", Var: idx}, setVal},
 				}},
 				&ir.Return{},
 			}}
@@ -1424,10 +1575,10 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	} else {
 		if isGet {
 			body = &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
+				&ir.Return{Results: []ir.Expr{castToVal(&ir.Instr{
 					Op: ir.OpStructGet, Type: &ir.Ref{Named: container}, Field: field,
 					Args: []ir.Expr{cast},
-				}}},
+				})}},
 			}}
 		} else {
 			v := &ir.Var{Name: "v", Typ: val}

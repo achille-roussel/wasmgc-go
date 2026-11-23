@@ -147,16 +147,22 @@ func (rt *runtimeLower) expandIfaceCall(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		Args: callArgs,
 	}
 	if s != nil && len(s.Lhs) > 0 {
-		// Ensure LHS temps carry a real result type (codegen defaults nil → i32).
-		var resTy ir.Type = in.Type
-		if td := rt.mod.LookupType(sigName); td != nil && len(td.Results) > 0 {
-			resTy = td.Results[0]
-		}
-		if resTy == nil {
-			resTy = &ir.Ref{Named: "$go.string"} // last-resort; better than i32
+		// Ensure LHS temps carry real result types (codegen defaults nil → i32).
+		var resTys []ir.Type
+		if td := rt.mod.LookupType(sigName); td != nil {
+			resTys = td.Results
 		}
 		lhs := make([]ir.Dest, len(s.Lhs))
 		for i := range s.Lhs {
+			resTy := in.Type
+			if i < len(resTys) && resTys[i] != nil {
+				resTy = resTys[i]
+			} else if i > 0 {
+				resTy = nil
+			}
+			if resTy == nil {
+				resTy = &ir.Ref{Named: "$go.iface"} // last-resort for iface results
+			}
 			lhs[i] = s.Lhs[i]
 			if lhs[i].Temp != nil {
 				nt := &ir.Temp{Name: lhs[i].Temp.Name, Typ: resTy}

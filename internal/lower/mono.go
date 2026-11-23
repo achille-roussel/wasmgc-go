@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/types"
 	"strconv"
-	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/mono"
@@ -132,9 +131,11 @@ func (l *pkgLower) finishLowerFunc(fl *funcLower, fd *ast.FuncDecl) (*ir.Func, e
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
-	for _, v := range fl.extraLocals {
-		r, ok := v.Typ.(*ir.Ref)
-		if !ok || !strings.HasPrefix(r.Named, "$go.struct.") {
+	for _, v := range append(fl.namedResults, fl.extraLocals...) {
+		if !needsZeroInit(v.Typ) {
+			continue
+		}
+		if r, ok := v.Typ.(*ir.Ref); ok && len(r.Named) >= 9 && r.Named[:9] == "$go.cell." {
 			continue
 		}
 		z, err := fl.zeroValue(v.Typ)

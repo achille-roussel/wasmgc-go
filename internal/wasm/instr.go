@@ -104,6 +104,8 @@ const (
 	OpI64Mul  byte = 0x7E
 	OpI64DivS byte = 0x7F
 	OpI64DivU byte = 0x80
+	OpI64RemS byte = 0x81
+	OpI64RemU byte = 0x82
 	OpI64And  byte = 0x83
 	OpI64Or   byte = 0x84
 	OpI64Xor  byte = 0x85
@@ -433,6 +435,10 @@ func (e *Encoder) I64GeU() *Encoder  { return e.op(OpI64GeU) }
 func (e *Encoder) I64Add() *Encoder  { return e.op(OpI64Add) }
 func (e *Encoder) I64Sub() *Encoder  { return e.op(OpI64Sub) }
 func (e *Encoder) I64Mul() *Encoder  { return e.op(OpI64Mul) }
+func (e *Encoder) I64DivS() *Encoder { return e.op(OpI64DivS) }
+func (e *Encoder) I64DivU() *Encoder { return e.op(OpI64DivU) }
+func (e *Encoder) I64RemS() *Encoder { return e.op(OpI64RemS) }
+func (e *Encoder) I64RemU() *Encoder { return e.op(OpI64RemU) }
 func (e *Encoder) I64And() *Encoder  { return e.op(OpI64And) }
 func (e *Encoder) I64Or() *Encoder   { return e.op(OpI64Or) }
 func (e *Encoder) I64Xor() *Encoder  { return e.op(OpI64Xor) }

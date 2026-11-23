@@ -370,7 +370,11 @@ func (v *verifier) stmt(s Stmt) {
 			got := v.exprType(e)
 			if i < len(v.fn.Results) && got != nil && v.fn.Results[i] != nil &&
 				!typesCompatible(v.fn.Results[i], got) {
-				v.errorf(e.GetPos(), "return value %d: have %s, want %s", i, got, v.fn.Results[i])
+				fn := "?"
+				if v.fn != nil {
+					fn = v.fn.Name
+				}
+				v.errorf(e.GetPos(), "return value %d: have %s, want %s in %s", i, got, v.fn.Results[i], fn)
 			}
 		}
 	case *Br:

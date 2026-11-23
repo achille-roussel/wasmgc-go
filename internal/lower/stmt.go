@@ -296,6 +296,29 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 					return nil, fl.errorf(call, "call returns %d values, want 1", sig.Results().Len())
 				}
 				rhs = ex
+			} else if fun, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if sel, isIface := fl.ifaceMethod(fun); isIface {
+					ex, astmts, err := fl.ifaceCall(call, fun, sel)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, astmts...)
+					rhs = ex
+				} else {
+					name, results, err := fl.resolveCallee(call)
+					if err != nil {
+						return nil, err
+					}
+					args, astmts, err := fl.lowerArgs(call)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, astmts...)
+					if len(results) != 1 {
+						return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
+					}
+					rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
+				}
 			} else {
 				name, results, err := fl.resolveCallee(call)
 				if err != nil {
@@ -477,21 +500,14 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			return nil, err
 		}
 		// Prefer struct.set for mutable fields when base is a struct ref.
+		// Promoted embedded fields: chain gets then set the leaf.
 		baseTy := fl.typeOf(lhs.X)
 		if baseTy != nil && (isStruct(baseTy) || isObjectPointer(baseTy)) {
-			stName := ""
-			if irt, err := fl.mapType(baseTy); err == nil {
-				stName = refTypeName(irt)
+			setStmts, err := fl.fieldSetChain(base, baseTy, sel, rhs)
+			if err != nil {
+				return nil, fl.errorf(lhs, "%v", err)
 			}
-			if stName != "" {
-				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
-					Op:    ir.OpStructSet,
-					Type:  &ir.Ref{Named: stName},
-					Field: lhs.Sel.Name,
-					Args:  []ir.Expr{base, rhs},
-				}})
-				return stmts, nil
-			}
+			return append(stmts, setStmts...), nil
 		}
 		fieldTy := sel.Type()
 		kind, _ := fatPtrKind(fieldTy)

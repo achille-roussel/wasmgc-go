@@ -275,11 +275,14 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
-	// Zero-init user named-struct locals (`var wg sync.WaitGroup`): heap
-	// object, not a null ref.
-	for _, v := range fl.extraLocals {
-		r, ok := v.Typ.(*ir.Ref)
-		if !ok || !strings.HasPrefix(r.Named, "$go.struct.") {
+	// Zero-init non-defaultable locals (e.g. $go.string named results, var
+	// sync.WaitGroup): Wasm GC rejects uninitialized (ref T) locals.
+	// Capture cells are initialized via cellInits (struct.new), not null.
+	for _, v := range append(fl.namedResults, fl.extraLocals...) {
+		if !needsZeroInit(v.Typ) {
+			continue
+		}
+		if r, ok := v.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.cell.") {
 			continue
 		}
 		z, err := fl.zeroValue(v.Typ)

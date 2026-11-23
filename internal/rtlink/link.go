@@ -20,15 +20,16 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	needString, needInt, needNL, needStreq := scanPrintCalls(mod)
-	if !needString && !needInt && !needNL && !needStreq {
+	needString, needInt, needNL, needStreq, needCmpstr := scanPrintCalls(mod)
+	if !needString && !needInt && !needNL && !needStreq && !needCmpstr {
 		return nil
 	}
 	// Linked when decls exist: printstring may be body-less; int/nl/streq need bodies.
 	if (!needString || mod.LookupFunc("runtime.printstring") != nil) &&
 		(!needInt || hasPrintBody(mod, "runtime.printint")) &&
 		(!needNL || hasPrintBody(mod, "runtime.printnl")) &&
-		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) {
+		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) &&
+		(!needCmpstr || hasPrintBody(mod, "runtime.cmpstring")) {
 		return nil
 	}
 	if rewriteDir == "" {
@@ -51,7 +52,7 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 			return err
 		}
 	}
-	if needStreq {
+	if needStreq || needCmpstr {
 		if err := add("stringeq.go"); err != nil {
 			return err
 		}
@@ -68,7 +69,7 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	return nil
 }
 
-func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq bool) {
+func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq, needCmpstr bool) {
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
@@ -80,6 +81,8 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needStreq bool
 				needNL = true
 			case "runtime.stringeq":
 				needStreq = true
+			case "runtime.cmpstring":
+				needCmpstr = true
 			}
 		})
 	}
@@ -112,6 +115,7 @@ func stripPrintFuncs(mod *ir.Module) {
 		"runtime.printnl":     true,
 		"runtime.printuint":   true,
 		"runtime.stringeq":    true,
+		"runtime.cmpstring":   true,
 	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {

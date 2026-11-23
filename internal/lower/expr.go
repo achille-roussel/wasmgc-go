@@ -18,7 +18,7 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.BasicLit:
 		return fl.basicLit(e, want)
 	case *ast.Ident:
-		return fl.ident(e)
+		return fl.ident(e, want)
 	case *ast.ParenExpr:
 		return fl.expr(e.X, want)
 	case *ast.UnaryExpr:
@@ -46,7 +46,7 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	}
 }
 
-func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
+func (fl *funcLower) ident(e *ast.Ident, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	if e.Name == "true" {
 		return fl.i32const(1), nil, nil
 	}
@@ -59,6 +59,10 @@ func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
 			ty, err := fl.mapType(c.Type())
 			if err != nil {
 				return nil, nil, fl.errorf(e, "%v", err)
+			}
+			// Prefer contextual want for untyped ints used as uint64 (math/bits).
+			if want != nil && irNumWidth(want) == ir.I64 && irNumWidth(ty) == ir.I32 {
+				ty = want
 			}
 			ex, err := fl.constVal(c.Val(), ty)
 			return ex, nil, err
@@ -90,7 +94,22 @@ func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
 			}
 		}
 	}
-	return fl.useVar(v), nil, nil
+	ex := ir.Expr(fl.useVar(v))
+	// Widen i32 locals when the context wants i64 (e.g. shift counts into uint64).
+	if want != nil && irNumWidth(want) == ir.I64 && v.Typ != nil && irNumWidth(v.Typ) == ir.I32 {
+		unsigned := false
+		if obj := fl.info.Uses[e]; obj != nil {
+			if vr, ok := obj.(*types.Var); ok {
+				unsigned = isUnsigned(vr.Type())
+			}
+		}
+		if unsigned {
+			ex = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{ex}}
+		} else {
+			ex = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{ex}}
+		}
+	}
+	return ex, nil, nil
 }
 
 func (fl *funcLower) basicLit(e *ast.BasicLit, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -343,6 +362,13 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			}
 		}
 	}
+	// string < <= > >= → runtime.cmpstring
+	if e.Op == token.LSS || e.Op == token.LEQ || e.Op == token.GTR || e.Op == token.GEQ {
+		xt, yt := fl.typeOf(e.X), fl.typeOf(e.Y)
+		if isString(xt) || isString(yt) {
+			return fl.stringOrderedCompare(e, e.Op)
+		}
+	}
 
 	xt := fl.typeOf(e.X)
 	xWant, err := fl.mapType(xt)
@@ -355,6 +381,16 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		if m, err := fl.mapType(yt); err == nil {
 			yWant = m
 		}
+	}
+	// Prefer the expression's type when it is numeric (not bool from ==/<).
+	if et := fl.typeOf(e); et != nil && !isBoolean(et) {
+		if m, err := fl.mapType(et); err == nil && m != nil {
+			xWant, yWant = m, m
+		}
+	}
+	// Untyped consts used with uint64 / int64 must become i64.
+	if irNumWidth(xWant) == ir.I64 || irNumWidth(yWant) == ir.I64 || irNumWidth(want) == ir.I64 {
+		xWant, yWant = ir.TypeI64, ir.TypeI64
 	}
 
 	// Wasm i64 shifts take an i64 count; force the RHS to the LHS width for
@@ -390,6 +426,13 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	op, err := fl.binaryOp(e.Op, xt)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
+	}
+	// If operands were widened to i64, pick the i64 opcode even when Go
+	// types look untyped/int (math/bits uint64 const folding).
+	if irNumWidth(xWant) == ir.I64 {
+		if op2, err2 := binOp(e.Op, ir.I64, isUnsigned(xt) || isUnsigned(fl.typeOf(e.Y))); err2 == nil {
+			op = op2
+		}
 	}
 	return &ir.Instr{Op: op, Args: []ir.Expr{x, y}}, stmts, nil
 }
@@ -430,6 +473,32 @@ func (fl *funcLower) stringCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, 
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
 	return eq, stmts, nil
+}
+
+func (fl *funcLower) stringOrderedCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	x, xstmts, err := fl.expr(e.X, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	cmp := &ir.Instr{Op: ir.OpCall, Func: "runtime.cmpstring", Args: []ir.Expr{x, y}}
+	zero := fl.i32const(0)
+	switch op {
+	case token.LSS:
+		return &ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{cmp, zero}}, stmts, nil
+	case token.LEQ:
+		return &ir.Instr{Op: ir.OpI32LeS, Args: []ir.Expr{cmp, zero}}, stmts, nil
+	case token.GTR:
+		return &ir.Instr{Op: ir.OpI32GtS, Args: []ir.Expr{cmp, zero}}, stmts, nil
+	case token.GEQ:
+		return &ir.Instr{Op: ir.OpI32GeS, Args: []ir.Expr{cmp, zero}}, stmts, nil
+	default:
+		return nil, nil, fl.errorf(e, "internal: bad string ordered op %v", op)
+	}
 }
 
 func (fl *funcLower) binaryOp(op token.Token, goType types.Type) (ir.Op, error) {
@@ -1294,6 +1363,33 @@ func (fl *funcLower) callMaterialize(e *ast.CallExpr, resultTypes []ir.Type) ([]
 	if fl.isBuiltinPrint(e) {
 		return nil, nil, fl.errorf(e, "print used as value")
 	}
+	if fun, ok := e.Fun.(*ast.SelectorExpr); ok {
+		if sel, isIface := fl.ifaceMethod(fun); isIface {
+			ex, stmts, err := fl.ifaceCall(e, fun, sel)
+			if err != nil {
+				return nil, nil, err
+			}
+			if resultTypes == nil {
+				fn := sel.Obj().(*types.Func)
+				sig := fn.Type().(*types.Signature)
+				for i := 0; i < sig.Results().Len(); i++ {
+					ty, err := fl.mapType(sig.Results().At(i).Type())
+					if err != nil {
+						return nil, nil, fl.errorf(e, "%v", err)
+					}
+					resultTypes = append(resultTypes, ty)
+				}
+			}
+			temps := make([]*ir.Temp, len(resultTypes))
+			lhs := make([]ir.Dest, len(resultTypes))
+			for i, ty := range resultTypes {
+				temps[i] = fl.newTemp(ty)
+				lhs[i] = ir.Dest{Temp: temps[i], Name: temps[i].Name}
+			}
+			stmts = append(stmts, &ir.Assign{Lhs: lhs, Rhs: ex})
+			return temps, stmts, nil
+		}
+	}
 	name, results, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -1480,12 +1576,12 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 			if sig == nil {
 				if obj, _ := fl.info.Uses[id].(*types.Func); obj != nil {
 					sig, _ = obj.Type().(*types.Signature)
-					// Origin generic sig still has type params; prefer instantiated.
-					if sig != nil && sig.TypeParams().Len() > 0 && len(fl.pkg.subst) > 0 {
-						if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
-							sig = s
-						}
-					}
+				}
+			}
+			// Origin / Instance sig may still mention type params; apply mono subst.
+			if sig != nil && len(fl.pkg.subst) > 0 {
+				if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+					sig = s
 				}
 			}
 		}

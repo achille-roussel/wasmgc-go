@@ -697,6 +697,14 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.I64Sub()
 	case ir.OpI64Mul:
 		fe.enc.I64Mul()
+	case ir.OpI64DivS:
+		fe.enc.I64DivS()
+	case ir.OpI64DivU:
+		fe.enc.I64DivU()
+	case ir.OpI64RemS:
+		fe.enc.I64RemS()
+	case ir.OpI64RemU:
+		fe.enc.I64RemU()
 	case ir.OpI64And:
 		fe.enc.I64And()
 	case ir.OpI64Or:
@@ -738,6 +746,20 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.Raw(0x65)
 	case ir.OpF64Ge:
 		fe.enc.Raw(0x66)
+	case ir.OpF32Abs:
+		fe.enc.Raw(0x8B)
+	case ir.OpF32Neg:
+		fe.enc.Raw(0x8C)
+	case ir.OpF32Ceil:
+		fe.enc.Raw(0x8D)
+	case ir.OpF32Floor:
+		fe.enc.Raw(0x8E)
+	case ir.OpF32Trunc:
+		fe.enc.Raw(0x8F)
+	case ir.OpF32Nearest:
+		fe.enc.Raw(0x90)
+	case ir.OpF32Sqrt:
+		fe.enc.Raw(0x91)
 	case ir.OpF32Add:
 		fe.enc.Raw(0x92)
 	case ir.OpF32Sub:
@@ -746,8 +768,26 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.Raw(0x94)
 	case ir.OpF32Div:
 		fe.enc.Raw(0x95)
-	case ir.OpF32Neg:
-		fe.enc.Raw(0x8C)
+	case ir.OpF32Min:
+		fe.enc.Raw(0x96)
+	case ir.OpF32Max:
+		fe.enc.Raw(0x97)
+	case ir.OpF32Copysign:
+		fe.enc.Raw(0x98)
+	case ir.OpF64Abs:
+		fe.enc.Raw(0x99)
+	case ir.OpF64Neg:
+		fe.enc.Raw(0x9A)
+	case ir.OpF64Ceil:
+		fe.enc.Raw(0x9B)
+	case ir.OpF64Floor:
+		fe.enc.Raw(0x9C)
+	case ir.OpF64Trunc:
+		fe.enc.Raw(0x9D)
+	case ir.OpF64Nearest:
+		fe.enc.Raw(0x9E)
+	case ir.OpF64Sqrt:
+		fe.enc.Raw(0x9F)
 	case ir.OpF64Add:
 		fe.enc.Raw(0xA0)
 	case ir.OpF64Sub:
@@ -756,8 +796,40 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.Raw(0xA2)
 	case ir.OpF64Div:
 		fe.enc.Raw(0xA3)
-	case ir.OpF64Neg:
-		fe.enc.Raw(0x9A)
+	case ir.OpF64Min:
+		fe.enc.Raw(0xA4)
+	case ir.OpF64Max:
+		fe.enc.Raw(0xA5)
+	case ir.OpF64Copysign:
+		fe.enc.Raw(0xA6)
+	case ir.OpI32TruncF32S:
+		fe.enc.Raw(0xA8)
+	case ir.OpI32TruncF32U:
+		fe.enc.Raw(0xA9)
+	case ir.OpI32TruncF64S:
+		fe.enc.Raw(0xAA)
+	case ir.OpI32TruncF64U:
+		fe.enc.Raw(0xAB)
+	case ir.OpF32ConvertI32S:
+		fe.enc.Raw(0xB2)
+	case ir.OpF32ConvertI32U:
+		fe.enc.Raw(0xB3)
+	case ir.OpF32ConvertI64S:
+		fe.enc.Raw(0xB4)
+	case ir.OpF32ConvertI64U:
+		fe.enc.Raw(0xB5)
+	case ir.OpF32DemoteF64:
+		fe.enc.Raw(0xB6)
+	case ir.OpF64ConvertI32S:
+		fe.enc.Raw(0xB7)
+	case ir.OpF64ConvertI32U:
+		fe.enc.Raw(0xB8)
+	case ir.OpF64ConvertI64S:
+		fe.enc.Raw(0xB9)
+	case ir.OpF64ConvertI64U:
+		fe.enc.Raw(0xBA)
+	case ir.OpF64PromoteF32:
+		fe.enc.Raw(0xBB)
 	case ir.OpI32ReinterpretF32:
 		fe.enc.Raw(0xBC)
 	case ir.OpI64ReinterpretF64:
@@ -766,6 +838,30 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.Raw(0xBE)
 	case ir.OpF64ReinterpretI64:
 		fe.enc.Raw(0xBF)
+	case ir.OpI64TruncF32S:
+		fe.enc.Raw(0xAE)
+	case ir.OpI64TruncF32U:
+		fe.enc.Raw(0xAF)
+	case ir.OpI64TruncF64S:
+		fe.enc.Raw(0xB0)
+	case ir.OpI64TruncF64U:
+		fe.enc.Raw(0xB1)
+	case ir.OpI32TruncSatF32S:
+		fe.enc.Raw(0xFC).Raw(0x00)
+	case ir.OpI32TruncSatF32U:
+		fe.enc.Raw(0xFC).Raw(0x01)
+	case ir.OpI32TruncSatF64S:
+		fe.enc.Raw(0xFC).Raw(0x02)
+	case ir.OpI32TruncSatF64U:
+		fe.enc.Raw(0xFC).Raw(0x03)
+	case ir.OpI64TruncSatF32S:
+		fe.enc.Raw(0xFC).Raw(0x04)
+	case ir.OpI64TruncSatF32U:
+		fe.enc.Raw(0xFC).Raw(0x05)
+	case ir.OpI64TruncSatF64S:
+		fe.enc.Raw(0xFC).Raw(0x06)
+	case ir.OpI64TruncSatF64U:
+		fe.enc.Raw(0xFC).Raw(0x07)
 
 	case ir.OpStructNew:
 		idx, err := fe.g.typeIndexOf(in.Type)

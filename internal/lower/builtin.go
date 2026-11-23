@@ -2,6 +2,7 @@ package lower
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/types"
 	"strings"
 
@@ -508,12 +509,34 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 	if len(e.Args) < 1 {
 		return nil, nil, fl.errorf(e, "append needs a slice")
 	}
+	ty := want
+	if ty == nil {
+		ty, _ = fl.mapType(fl.typeOf(e))
+	}
 	slice, stmts, err := fl.expr(e.Args[0], nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	args := []ir.Expr{slice}
-	for _, a := range e.Args[1:] {
+	for i, a := range e.Args[1:] {
+		isEllipsis := e.Ellipsis.IsValid() && i == len(e.Args)-2
+		if isEllipsis {
+			at := fl.typeOf(a)
+			if isString(at) {
+				if tv, ok := fl.info.Types[a]; ok && tv.Value != nil && tv.Value.Kind() == constant.String {
+					s := constant.StringVal(tv.Value)
+					for j := 0; j < len(s); j++ {
+						args = append(args, fl.i32const(int64(s[j])))
+					}
+					continue
+				}
+				return fl.appendStringSpread(e, a, args, stmts, ty)
+			}
+			if isSlice(at) {
+				// append(dst, src...): copy elements from src slice.
+				return fl.appendSliceSpread(e, a, args, stmts, ty)
+			}
+		}
 		ex, st, err := fl.expr(a, nil)
 		if err != nil {
 			return nil, nil, err
@@ -521,9 +544,73 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 		stmts = append(stmts, st...)
 		args = append(args, ex)
 	}
-	ty := want
-	if ty == nil {
-		ty, _ = fl.mapType(fl.typeOf(e))
-	}
 	return &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: args}, stmts, nil
+}
+
+// appendSliceSpread lowers append(dst, src...) for a slice by appending one
+// element at a time.
+func (fl *funcLower) appendSliceSpread(e *ast.CallExpr, srcArg ast.Expr, prefix []ir.Expr, stmts []ir.Stmt, ty ir.Type) (ir.Expr, []ir.Stmt, error) {
+	src, st, err := fl.expr(srcArg, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, st...)
+	srcTy, _ := fl.mapType(fl.typeOf(srcArg))
+	dstV := fl.newVar("apdst", ty)
+	srcV := fl.newVar("apsrc", srcTy)
+	iV := fl.newVar("api", ir.TypeI32)
+	lenV := fl.newVar("aplen", ir.TypeI32)
+	stmts = append(stmts, fl.assignVar(dstV, &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: prefix}))
+	stmts = append(stmts, fl.assignVar(srcV, src))
+	stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(srcV)}}))
+	stmts = append(stmts, fl.assignVar(iV, fl.i32const(0)))
+	elemTy, _ := fl.mapType(fl.typeOf(e).Underlying().(*types.Slice).Elem())
+	breakL := fl.freshLabel("break")
+	loopL := fl.freshLabel("L")
+	body := &ir.Seq{}
+	body.Stmts = append(body.Stmts, &ir.Br{
+		Label: breakL,
+		Cond:  &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{fl.useVar(iV), fl.useVar(lenV)}}}},
+	})
+	elemEx := &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{fl.useVar(srcV), fl.useVar(iV)}, Type: elemTy}
+	body.Stmts = append(body.Stmts, fl.assignVar(dstV, &ir.Instr{
+		Op: ir.OpSliceAppend, Type: ty, Args: []ir.Expr{fl.useVar(dstV), elemEx},
+	}))
+	body.Stmts = append(body.Stmts, fl.assignVar(iV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(iV), fl.i32const(1)}}))
+	body.Stmts = append(body.Stmts, &ir.Br{Label: loopL})
+	stmts = append(stmts, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Loop{Name: loopL, Body: body}}}})
+	return fl.useVar(dstV), stmts, nil
+}
+
+// appendStringSpread lowers append(dst, s...) for a non-constant string by
+// appending one byte at a time (fmt/strconv float formatting).
+func (fl *funcLower) appendStringSpread(e *ast.CallExpr, strArg ast.Expr, prefix []ir.Expr, stmts []ir.Stmt, ty ir.Type) (ir.Expr, []ir.Stmt, error) {
+	str, st, err := fl.expr(strArg, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, st...)
+	dstV := fl.newVar("apdst", ty)
+	strV := fl.newVar("apstr", typeString)
+	iV := fl.newVar("api", ir.TypeI32)
+	lenV := fl.newVar("aplen", ir.TypeI32)
+	stmts = append(stmts, fl.assignVar(dstV, &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: prefix}))
+	stmts = append(stmts, fl.assignVar(strV, str))
+	stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(strV)}}))
+	stmts = append(stmts, fl.assignVar(iV, fl.i32const(0)))
+	breakL := fl.freshLabel("break")
+	loopL := fl.freshLabel("L")
+	body := &ir.Seq{}
+	body.Stmts = append(body.Stmts, &ir.Br{
+		Label: breakL,
+		Cond:  &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{fl.useVar(iV), fl.useVar(lenV)}}}},
+	})
+	byteEx := &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{fl.useVar(strV), fl.useVar(iV)}}
+	body.Stmts = append(body.Stmts, fl.assignVar(dstV, &ir.Instr{
+		Op: ir.OpSliceAppend, Type: ty, Args: []ir.Expr{fl.useVar(dstV), byteEx},
+	}))
+	body.Stmts = append(body.Stmts, fl.assignVar(iV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(iV), fl.i32const(1)}}))
+	body.Stmts = append(body.Stmts, &ir.Br{Label: loopL})
+	stmts = append(stmts, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Loop{Name: loopL, Body: body}}}})
+	return fl.useVar(dstV), stmts, nil
 }

@@ -201,6 +201,7 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsureMaps(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	rtlink.EnsurePool(mod)
 	// Reflect helpers (runtime.Reflect*) before desc fills their body-less IR.
 	if err := rtlink.EnsureReflect(mod, rewriteDir); err != nil {
 		return nil, err

@@ -116,6 +116,100 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{ptr}, Type: ty}, stmts, nil
 }
 
+// fieldGetChain lowers a FieldVal selection, following Selection.Index() for
+// promoted embedded fields (e.g. f.zero → f.fmtFlags.zero).
+func (fl *funcLower) fieldGetChain(base ir.Expr, baseTy types.Type, sel *types.Selection) (ir.Expr, error) {
+	idx := sel.Index()
+	if len(idx) == 0 {
+		return nil, fmt.Errorf("empty field selection index")
+	}
+	cur := base
+	ty := baseTy
+	for i, fi := range idx {
+		st := structOf(ty)
+		if st == nil || fi < 0 || fi >= st.NumFields() {
+			return nil, fmt.Errorf("field index %d out of range for %s", fi, ty)
+		}
+		fld := st.Field(fi)
+		stName := ""
+		if irt, err := fl.mapType(ty); err == nil {
+			stName = refTypeName(irt)
+		}
+		if stName == "" {
+			return nil, fmt.Errorf("no IR type for %s", ty)
+		}
+		cur = &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: stName},
+			Field: fld.Name(),
+			Args:  []ir.Expr{cur},
+		}
+		if i+1 < len(idx) {
+			ty = fld.Type()
+			// Embedded pointer fields are rare; unwrap *T → T for the next step.
+			if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+				ty = p.Elem()
+			}
+		}
+	}
+	return cur, nil
+}
+
+// fieldSetChain assigns through a FieldVal selection, chaining gets for all
+// but the last index, then struct.set on the leaf field.
+func (fl *funcLower) fieldSetChain(base ir.Expr, baseTy types.Type, sel *types.Selection, rhs ir.Expr) ([]ir.Stmt, error) {
+	idx := sel.Index()
+	if len(idx) == 0 {
+		return nil, fmt.Errorf("empty field selection index")
+	}
+	cur := base
+	ty := baseTy
+	for i, fi := range idx {
+		st := structOf(ty)
+		if st == nil || fi < 0 || fi >= st.NumFields() {
+			return nil, fmt.Errorf("field index %d out of range for %s", fi, ty)
+		}
+		fld := st.Field(fi)
+		stName := ""
+		if irt, err := fl.mapType(ty); err == nil {
+			stName = refTypeName(irt)
+		}
+		if stName == "" {
+			return nil, fmt.Errorf("no IR type for %s", ty)
+		}
+		if i+1 == len(idx) {
+			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+				Op:    ir.OpStructSet,
+				Type:  &ir.Ref{Named: stName},
+				Field: fld.Name(),
+				Args:  []ir.Expr{cur, rhs},
+			}}}, nil
+		}
+		cur = &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: stName},
+			Field: fld.Name(),
+			Args:  []ir.Expr{cur},
+		}
+		ty = fld.Type()
+		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			ty = p.Elem()
+		}
+	}
+	return nil, fmt.Errorf("field set: empty path")
+}
+
+func structOf(t types.Type) *types.Struct {
+	if t == nil {
+		return nil
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, _ := types.Unalias(t).Underlying().(*types.Struct)
+	return st
+}
+
 func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	sel := fl.info.Selections[e]
 	if sel == nil {
@@ -161,19 +255,13 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 			ty, _ = fl.mapType(fl.typeOf(e))
 		}
 		// Direct struct.get when base is a struct / *struct object ref.
+		// Promoted embedded fields use Selection.Index() as a chain of gets.
 		if xt != nil && (isStruct(xt) || isObjectPointer(xt)) {
-			stName := ""
-			if irt, err := fl.mapType(xt); err == nil {
-				stName = refTypeName(irt)
+			ex, err := fl.fieldGetChain(base, xt, sel)
+			if err != nil {
+				return nil, nil, fl.errorf(e, "%v", err)
 			}
-			if stName != "" {
-				return &ir.Instr{
-					Op:    ir.OpStructGet,
-					Type:  &ir.Ref{Named: stName},
-					Field: e.Sel.Name,
-					Args:  []ir.Expr{base},
-				}, stmts, nil
-			}
+			return ex, stmts, nil
 		}
 		// Fat-pointer path for other bases: set ptr kind from field type.
 		kind, _ := fatPtrKind(sel.Type())
@@ -211,6 +299,12 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		return nil, nil, err
 	}
 	stmts = append(stmts, istmts...)
+	// Wasm array/slice indices are i32; Go may compute them as int64/uint64.
+	if it := fl.typeOf(e.Index); it != nil {
+		if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+			idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
+		}
+	}
 	ty := want
 	if ty == nil {
 		ty, _ = fl.mapType(fl.typeOf(e))

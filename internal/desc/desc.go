@@ -8,6 +8,7 @@ package desc
 import (
 	"fmt"
 	"go/types"
+	"strconv"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -946,11 +947,57 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 	for i := 0; i < msig.Params().Len(); i++ {
 		callArgs = append(callArgs, &ir.Name{Raw: fmt.Sprintf("a%d", i), Var: params[i+1]})
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	var call ir.Expr
+	// Promoted method from an embedded interface: call through the itab.
+	if _, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+		ifaceKey := TypeKey(recvGo)
+		methodIdx := 0
+		if iface, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+			for i := 0; i < iface.NumMethods(); i++ {
+				if iface.Method(i).Name() == m.Name() {
+					methodIdx = i
+					break
+				}
+			}
+		}
+		fnSig := "$go.ifacefn." + sanitize(ifaceKey) + "." + m.Name()
+		g.ensureIfaceFnType(fnSig, m)
+		var res ir.Type
+		if len(results) > 0 {
+			res = results[0]
+		}
+		call = &ir.Instr{
+			Op:     ir.OpIfaceCall,
+			Type:   res,
+			Type2:  &ir.Ref{Named: "$go.itabtype." + sanitize(ifaceKey)},
+			Global: ifaceKey,
+			Func:   m.Name(),
+			Field:  strconv.Itoa(methodIdx),
+			Str:    fnSig,
+			Args:   callArgs,
+		}
+	} else {
+		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	}
 	if len(results) == 0 {
 		stmts = append(stmts, &ir.ExprStmt{X: call}, &ir.Return{})
 	} else {
-		stmts = append(stmts, &ir.Return{Results: []ir.Expr{call}})
+		// Assign call to N temps typed as ifacefn results. Call may produce a
+		// more specific ref ([]byte vs any); cast on the return edge.
+		temps := make([]*ir.Temp, len(results))
+		lhs := make([]ir.Dest, len(results))
+		rets := make([]ir.Expr, len(results))
+		for i, rt := range results {
+			temps[i] = &ir.Temp{Name: fmt.Sprintf("%%wr%d", i), Typ: rt}
+			lhs[i] = ir.Dest{Temp: temps[i], Name: temps[i].Name}
+			var ex ir.Expr = &ir.Name{Raw: temps[i].Name, Temp: temps[i]}
+			if _, ok := rt.(*ir.Ref); ok {
+				ex = &ir.Instr{Op: ir.OpRefCast, Type: rt, Args: []ir.Expr{ex}}
+			}
+			rets[i] = ex
+		}
+		stmts = append(stmts, &ir.Assign{Lhs: lhs, Rhs: call})
+		stmts = append(stmts, &ir.Return{Results: rets})
 	}
 	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
 		Name:    name,
@@ -981,8 +1028,18 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	} else if isStruct(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 	} else {
-		// Scalar boxed — leave as any; method wrappers for scalars uncommon.
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		// Scalar concrete types are stored as $go.box.{i32,i64,f32,f64}.
+		boxName, elem := scalarBoxOf(wantIR)
+		if boxName == "" {
+			boxName, elem = scalarBoxOf(baseIR)
+		}
+		if boxName == "" {
+			return nil, nil, fmt.Errorf("desc: cannot unbox scalar receiver %s", concrete)
+		}
+		boxTy := &ir.Ref{Named: boxName}
+		boxed := &ir.Instr{Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{expr}}
+		expr = &ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{boxed}}
+		_ = elem
 		return stmts, expr, nil
 	}
 
@@ -1457,6 +1514,21 @@ func findTypeByKey(pkg *types.Package, key string) types.Type {
 		}
 	}
 	return nil
+}
+
+// scalarBoxOf returns the $go.box.* type and element type for a scalar IR type.
+func scalarBoxOf(t ir.Type) (boxName string, elem ir.Type) {
+	switch t {
+	case ir.TypeI32, ir.TypeI8, ir.TypeI16:
+		return "$go.box.i32", ir.TypeI32
+	case ir.TypeI64:
+		return "$go.box.i64", ir.TypeI64
+	case ir.TypeF32:
+		return "$go.box.f32", ir.TypeF32
+	case ir.TypeF64:
+		return "$go.box.f64", ir.TypeF64
+	}
+	return "", nil
 }
 
 func isPointer(t types.Type) bool {
