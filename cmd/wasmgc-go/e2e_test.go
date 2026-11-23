@@ -45,7 +45,7 @@ func TestM3AppendE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
-	runM2(t, "append", "4\n4\n", 0)
+	runM2(t, "append", "4\n4\n", 16384)
 }
 
 // TestM3StructValueE2E: callee field write does not change caller.
@@ -53,7 +53,7 @@ func TestM3StructValueE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
-	runM2(t, "struct_value", "1\n", 0)
+	runM2(t, "struct_value", "1\n", 16384)
 }
 
 // TestM3FieldPtrE2E: global *int = &s.X; write through; print s.X.
@@ -61,7 +61,7 @@ func TestM3FieldPtrE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
-	runM2(t, "field_ptr", "7\n", 0)
+	runM2(t, "field_ptr", "7\n", 16384)
 }
 
 // TestM3NewIntE2E: new(int) written through.
@@ -69,7 +69,7 @@ func TestM3NewIntE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer wired in pipeline.Default")
 	}
-	runM2(t, "new_int", "42\n", 0)
+	runM2(t, "new_int", "3\n", 16384)
 }
 
 func runM2(t *testing.T, name, wantStdout string, maxSize int) {

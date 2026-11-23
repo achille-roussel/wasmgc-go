@@ -142,6 +142,12 @@ func (g *gen) emitFuncBodies() error {
 		case f.Name == "runtime.printnl" && g.fillPrintNL:
 			g.wm.AddCode(g.bodyPrintNL())
 			continue
+		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
+			g.wm.AddCode(bodyUnreachable())
+			continue
+		case f.Name == "runtime.panicSliceB" && g.fillPanicSliceB:
+			g.wm.AddCode(bodyUnreachable())
+			continue
 		}
 		body, err := g.emitFunc(f)
 		if err != nil {

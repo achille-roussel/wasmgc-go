@@ -2,6 +2,6 @@ package main
 
 func main() {
 	p := new(int)
-	*p = 42
+	*p = 3
 	println(*p)
 }

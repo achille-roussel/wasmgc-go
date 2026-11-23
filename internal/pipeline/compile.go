@@ -155,8 +155,8 @@ func DumpIR(opts Options) (string, *Result, error) {
 	return ir.Format(mod), &Result{Program: prog, IR: mod, Warnings: warnings}, nil
 }
 
-// lowerProgram runs PackageHigh, links rewrite runtime print (stream F), then
-// RuntimeOps. Stub lowerers skip rtlink (empty main has no print).
+// lowerProgram runs PackageHigh, links rewrite runtime print/slice panics
+// (stream F), then RuntimeOps. Stub lowerers skip rtlink.
 func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, error) {
 	if isStubLowerer(b.Lower) {
 		return b.Lower.Package(prog.Packages, prog.Main)
@@ -170,6 +170,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 		return nil, err
 	}
 	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	if err := rtlink.EnsureSlice(mod, rewriteDir); err != nil {
 		return nil, err
 	}
 	if err := lower.RuntimeOps(mod); err != nil {

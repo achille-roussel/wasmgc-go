@@ -669,7 +669,7 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	})
 	growSeq.Stmts = append(growSeq.Stmts, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{useV(ncapV), useV(nlenV)}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Unreachable{}}},
+		Then: &ir.Seq{Stmts: rt.panicSliceB()},
 	})
 	growSeq.Stmts = append(growSeq.Stmts, assignV(ndataV, &ir.Instr{
 		Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{useV(ncapV)},
@@ -727,10 +727,10 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 	} else {
 		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{&ir.Name{Temp: capT, Raw: capT.Name}, lo}}
 	}
-	// Bounds: lo > hi or hi > cap → unreachable
+	// Bounds: lo > hi → panicSliceB (trap until M5).
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{lo, hi}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Unreachable{}}},
+		Then: &ir.Seq{Stmts: rt.panicSliceB()},
 	})
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
@@ -783,7 +783,7 @@ func (rt *runtimeLower) expandSliceGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	)
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Unreachable{}}},
+		Then: &ir.Seq{Stmts: rt.panicIndex()},
 	})
 	at := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{&ir.Name{Temp: offT, Raw: offT.Name}, idx}}
 	getOp := ir.OpArrayGet
@@ -834,7 +834,7 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Unreachable{}}},
+			Then: &ir.Seq{Stmts: rt.panicIndex()},
 		},
 		&ir.ExprStmt{X: &ir.Instr{
 			Op:   ir.OpArraySet,

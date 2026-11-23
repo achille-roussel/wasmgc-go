@@ -80,10 +80,10 @@ func TestM3NewIntSmoke(t *testing.T) {
 	runM3(t, `package main
 func main() {
 	p := new(int)
-	*p = 42
+	*p = 3
 	println(*p)
 }
-`, "42\n")
+`, "3\n")
 }
 
 func TestM3EscapeFieldIR(t *testing.T) {
