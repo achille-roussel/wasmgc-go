@@ -13,24 +13,27 @@ import (
 )
 
 // EnsurePrint links runtime.printstring / printint / printnl / printfloat*
-// / printcomplex* from std/src/runtime/print.go when the module calls them
-// and they are missing. printstring stays body-less (codegen intrinsic until
-// WAT); printnl, printint, and float/complex helpers are ordinary Go.
+// / printcomplex* / printbool / printpointer / printiface / printslice from
+// std/src/runtime/print.go when the module calls them and they are missing.
+// printstring stays body-less (codegen intrinsic until WAT); the rest are
+// ordinary Go.
 func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	needString, needInt, needNL, needFloat, needComplex, needStreq, needCmpstr := scanPrintCalls(mod)
-	if !needString && !needInt && !needNL && !needFloat && !needComplex && !needStreq && !needCmpstr {
+	needString, needInt, needNL, needFloat, needComplex, needBool, needPtr, needStreq, needCmpstr := scanPrintCalls(mod)
+	if !needString && !needInt && !needNL && !needFloat && !needComplex && !needBool && !needPtr && !needStreq && !needCmpstr {
 		return nil
 	}
-	needPrintGo := needString || needInt || needNL || needFloat || needComplex
+	needPrintGo := needString || needInt || needNL || needFloat || needComplex || needBool || needPtr
 	// Linked when decls exist: printstring may be body-less; others need bodies.
 	if (!needString || mod.LookupFunc("runtime.printstring") != nil) &&
 		(!needInt || hasPrintBody(mod, "runtime.printint")) &&
 		(!needNL || hasPrintBody(mod, "runtime.printnl")) &&
 		(!needFloat || hasPrintBody(mod, "runtime.printfloat64")) &&
 		(!needComplex || hasPrintBody(mod, "runtime.printcomplex128")) &&
+		(!needBool || hasPrintBody(mod, "runtime.printbool")) &&
+		(!needPtr || hasPrintBody(mod, "runtime.printpointer")) &&
 		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) &&
 		(!needCmpstr || hasPrintBody(mod, "runtime.cmpstring")) {
 		return nil
@@ -73,7 +76,7 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 	return nil
 }
 
-func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needFloat, needComplex, needStreq, needCmpstr bool) {
+func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needFloat, needComplex, needBool, needPtr, needStreq, needCmpstr bool) {
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
@@ -87,6 +90,10 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needFloat, nee
 				needFloat = true
 			case "runtime.printcomplex64", "runtime.printcomplex128":
 				needComplex = true
+			case "runtime.printbool":
+				needBool = true
+			case "runtime.printpointer", "runtime.printiface", "runtime.printslice":
+				needPtr = true
 			case "runtime.stringeq":
 				needStreq = true
 			case "runtime.cmpstring":
@@ -140,6 +147,10 @@ func stripPrintFuncs(mod *ir.Module) {
 		"runtime.printfloat64":     true,
 		"runtime.printcomplex64":   true,
 		"runtime.printcomplex128":  true,
+		"runtime.printbool":        true,
+		"runtime.printpointer":     true,
+		"runtime.printiface":       true,
+		"runtime.printslice":       true,
 		"runtime.printF64bits":     true,
 		"runtime.printFloatUint":   true,
 		"runtime.printFloatDigits": true,

@@ -953,8 +953,8 @@ func TestPkgStringBytesE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// bool prints via printint → 1 for true.
-	runM2(t, "pkg_string_bytes", "2\n1\n", 0)
+	// bool prints via printbool → true.
+	runM2(t, "pkg_string_bytes", "2\ntrue\n", 0)
 }
 
 func TestSwitchFallthroughReturnE2E(t *testing.T) {
