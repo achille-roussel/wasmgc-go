@@ -39,6 +39,18 @@ type funcLower struct {
 	breakStack    []string
 	continueStack []string
 	labels        map[string]*labelTargets
+
+	// M5: closures, defer, recover.
+	cells                 map[types.Object]*ir.Var
+	cellInits             []cellInit
+	hasDefer              bool
+	deferUsesList         bool
+	deferInLoop           bool
+	deferCount            int
+	defersVar             *ir.Var
+	mayPanic              bool
+	needsRecoverPrologue  bool
+	allowVar              *ir.Var
 }
 
 func (fl *funcLower) errorf(n ast.Node, format string, args ...any) error {

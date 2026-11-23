@@ -1,12 +1,8 @@
 package runtime
 
-// Slice / index panic helpers the lowerer emits for bounds and growslice
-// overflow (docs/design/04). Bodies are empty until M5 EH: codegen fills
-// them with unreachable (trap). After M5 they call throwPanic with the
-// usual Go messages.
+// Slice helpers. Bounds panics live in panic.go (M5 EH).
+// concatstrings is body-less; codegen fills array.new + array.copy until the
+// WAT hatch binds a kernel (docs/design/04, 12).
 
-// panicIndex is called on slice/array/string index OOB.
-func panicIndex()
-
-// panicSliceB is called on growslice overflow / slice bounds failures.
-func panicSliceB()
+// concatstrings returns the concatenation of a and b.
+func concatstrings(a, b string)

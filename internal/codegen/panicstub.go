@@ -5,9 +5,8 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/wasm"
 )
 
-// panicIndex / panicSliceB are body-less until M5 EH. Codegen fills empty
-// IR bodies (linked by rtlink) with unreachable, and synthesizes missing
-// decls when unit tests skip rtlink but RuntimeOps still emits the calls.
+// panicIndex / panicSliceB stubs for unit tests that skip rtlink.
+// With EH enabled they throw; otherwise unreachable (pre-M5 behavior).
 
 func (g *gen) ensurePanicStubs() {
 	needIndex, needSliceB := g.scanPanicCalls()
@@ -23,7 +22,7 @@ func (g *gen) ensurePanicStubs() {
 	}
 	if needIndex {
 		if _, ok := g.funcs["runtime.panicIndex"]; !ok {
-			g.panicIndexIdx = g.wm.AddFunc(g.internFuncType(nil, nil))
+			g.panicIndexIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{wasm.I32(), wasm.I32()}, nil))
 			g.funcs["runtime.panicIndex"] = g.panicIndexIdx
 		}
 		if g.m.LookupFunc("runtime.panicIndex") == nil {
@@ -67,15 +66,43 @@ func (g *gen) scanPanicCalls() (needIndex, needSliceB bool) {
 
 func (g *gen) emitPanicStubBodies() {
 	if g.stubNeedPanicIndex {
-		g.wm.AddCode(bodyUnreachable())
+		if g.hasEH {
+			g.wm.AddCode(g.bodyThrowNullPanic())
+		} else {
+			g.wm.AddCode(bodyUnreachable())
+		}
 	}
 	if g.stubNeedPanicSliceB {
-		g.wm.AddCode(bodyUnreachable())
+		if g.hasEH {
+			g.wm.AddCode(g.bodyThrowNullPanic())
+		} else {
+			g.wm.AddCode(bodyUnreachable())
+		}
 	}
 }
 
 func bodyUnreachable() wasm.Code {
 	enc := wasm.NewEncoder()
+	enc.Unreachable()
+	return wasm.CodeFrom(nil, enc)
+}
+
+// bodyPanicMsg is used when filling IR-declared empty panicIndex/panicSliceB.
+func (g *gen) bodyPanicMsg(msg string) wasm.Code {
+	_ = msg
+	return g.bodyThrowNullPanic()
+}
+
+// bodyThrowNullPanic throws tag $go.panic with a null iface value via
+// runtime.throwPanic when available. Safe for any param arity.
+func (g *gen) bodyThrowNullPanic() wasm.Code {
+	enc := wasm.NewEncoder()
+	if idx, ok := g.funcs["runtime.throwPanic"]; ok {
+		enc.RefNull(wasm.TypeIndexHeap(g.types.ByName["$go.iface"]))
+		enc.Call(idx)
+		enc.Unreachable()
+		return wasm.CodeFrom(nil, enc)
+	}
 	enc.Unreachable()
 	return wasm.CodeFrom(nil, enc)
 }

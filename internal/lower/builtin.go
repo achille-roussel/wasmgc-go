@@ -37,7 +37,7 @@ func (fl *funcLower) builtinName(e *ast.CallExpr) string {
 
 func (fl *funcLower) isBuiltinCall(e *ast.CallExpr) bool {
 	switch fl.builtinName(e) {
-	case "make", "new", "append", "len", "cap", "print", "println":
+	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover":
 		return true
 	}
 	return false
@@ -133,6 +133,10 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 		return fl.builtinNew(e, want)
 	case "append":
 		return fl.builtinAppend(e, want)
+	case "recover":
+		return fl.builtinRecover(e)
+	case "panic":
+		return nil, nil, fl.errorf(e, "panic used as value")
 	case "print", "println":
 		return nil, nil, fl.errorf(e, "print used as value")
 	default:

@@ -174,6 +174,16 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		return nil, err
 	}
 
+	// Pre-scan for recover so the prologue is installed before body lowering
+	// finishes (recover sites set the flag during expr lowering too).
+	if containsRecover(fd.Body, fl.info) {
+		fl.needsRecoverPrologue = true
+		fl.allowVar = fl.newVar("allow", ir.TypeI32)
+	}
+	if containsPanicCall(fd.Body, fl.info) {
+		fl.mayPanic = true
+	}
+
 	body, err := fl.stmtBlock(fd.Body)
 	if err != nil {
 		return nil, err
@@ -221,18 +231,99 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	for _, v := range fl.extraLocals {
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
+	// Allocate capture cells and copy initial values.
+	for _, ci := range fl.cellInits {
+		preamble = append(preamble, fl.assignVar(ci.cell, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: ci.cellTy},
+			Args: []ir.Expr{fl.useVar(ci.orig)},
+		}))
+	}
 	preamble = append(preamble, clones...)
+	if fl.needsRecoverPrologue && !fl.hasDefer {
+		preamble = append(preamble, fl.recoverPrologue()...)
+	}
 	if len(preamble) > 0 {
 		seq.Stmts = append(preamble, seq.Stmts...)
 	}
 
+	if fl.hasDefer {
+		seq, err = fl.applyDeferPass(seq)
+		if err != nil {
+			return nil, err
+		}
+		fl.pkg.meta.needsEH = true
+	}
+	if fl.mayPanic || fl.needsRecoverPrologue {
+		fl.pkg.meta.needsEH = true
+	}
+
+	locals := append(fl.namedResults, fl.extraLocals...)
+	if fl.allowVar != nil {
+		locals = append(locals, fl.allowVar)
+	}
+	if fl.defersVar != nil {
+		locals = append(locals, fl.defersVar)
+	}
 	return &ir.Func{
 		Name:    irName,
 		Params:  fl.params,
 		Results: fl.results,
 		Body:    seq,
-		Locals:  append(fl.namedResults, fl.extraLocals...),
+		Locals:  locals,
 	}, nil
+}
+
+func containsRecover(body *ast.BlockStmt, info *types.Info) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if obj := info.Uses[id]; obj != nil {
+			if b, ok := obj.(*types.Builtin); ok && b.Name() == "recover" {
+				found = true
+				return false
+			}
+		}
+		if id.Name == "recover" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func containsPanicCall(body *ast.BlockStmt, info *types.Info) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if obj := info.Uses[id]; obj != nil {
+			if b, ok := obj.(*types.Builtin); ok && b.Name() == "panic" {
+				found = true
+				return false
+			}
+		}
+		if id.Name == "panic" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // lowerBodyless emits an IR func with an empty body for asm/intrinsic binding.

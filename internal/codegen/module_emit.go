@@ -19,6 +19,12 @@ func (g *gen) emitImports() error {
 		g.hasWrite = true
 		g.funcs["go.runtime.write"] = g.importWrite
 	}
+	if g.ehNeeded {
+		exitTy := g.internFuncType([]wasm.ValType{wasm.I32()}, nil)
+		g.exitIdx = g.wm.ImportFunc("go", "runtime.exit", exitTy)
+		g.funcs["go.runtime.exit"] = g.exitIdx
+		g.hasExit = true
+	}
 	return nil
 }
 
@@ -143,10 +149,34 @@ func (g *gen) emitFuncBodies() error {
 			g.wm.AddCode(g.bodyPrintNL())
 			continue
 		case f.Name == "runtime.panicIndex" && g.fillPanicIndex:
-			g.wm.AddCode(bodyUnreachable())
+			if g.hasEH {
+				g.wm.AddCode(g.bodyPanicMsg("runtime error: index out of range"))
+			} else {
+				g.wm.AddCode(bodyUnreachable())
+			}
 			continue
 		case f.Name == "runtime.panicSliceB" && g.fillPanicSliceB:
-			g.wm.AddCode(bodyUnreachable())
+			if g.hasEH {
+				g.wm.AddCode(g.bodyPanicMsg("runtime error: slice bounds out of range"))
+			} else {
+				g.wm.AddCode(bodyUnreachable())
+			}
+			continue
+		case g.ehFill[f.Name]:
+			switch f.Name {
+			case "runtime.throwPanic":
+				g.wm.AddCode(g.bodyThrowPanic())
+			case "runtime.gorecover":
+				g.wm.AddCode(g.bodyGorecover())
+			case "runtime.deferRun":
+				g.wm.AddCode(g.bodyDeferRun())
+			case "runtime.unrecoveredPanic":
+				g.wm.AddCode(g.bodyUnrecoveredPanic())
+			case "runtime.concatstrings":
+				g.wm.AddCode(g.bodyConcatStrings())
+			default:
+				g.wm.AddCode(bodyUnreachable())
+			}
 			continue
 		}
 		body, err := g.emitFunc(f)

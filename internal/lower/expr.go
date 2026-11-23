@@ -35,7 +35,7 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.CompositeLit:
 		return fl.compositeLit(e, want)
 	case *ast.FuncLit:
-		return nil, nil, fl.errorf(e, "function literals not supported in M3")
+		return fl.funcLit(e, want)
 	case *ast.StarExpr:
 		return fl.starExpr(e, want)
 	case *ast.TypeAssertExpr:
@@ -62,6 +62,17 @@ func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
 			ex, err := fl.constVal(c.Val(), ty)
 			return ex, nil, err
 		}
+		if fn, ok := obj.(*types.Func); ok {
+			return fl.topLevelFuncValue(fn)
+		}
+		if _, ok := obj.(*types.Var); ok {
+			if fl.cells != nil {
+				if _, boxed := fl.cells[obj]; boxed {
+					ex, err := fl.readVar(obj)
+					return ex, nil, err
+				}
+			}
+		}
 	}
 	if g := fl.lookupGlobal(e); g != nil {
 		return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
@@ -69,6 +80,14 @@ func (fl *funcLower) ident(e *ast.Ident) (ir.Expr, []ir.Stmt, error) {
 	v, err := fl.lookupVar(e)
 	if err != nil {
 		return nil, nil, err
+	}
+	if obj := fl.info.Uses[e]; obj != nil {
+		if fl.cells != nil {
+			if _, boxed := fl.cells[obj]; boxed {
+				ex, err := fl.readVar(obj)
+				return ex, nil, err
+			}
+		}
 	}
 	return fl.useVar(v), nil, nil
 }
@@ -326,8 +345,16 @@ func (fl *funcLower) stringConcat(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error)
 		s := constant.StringVal(tx.Value) + constant.StringVal(ty.Value)
 		return &ir.Instr{Op: ir.OpStringLit, Str: s}, nil, nil
 	}
-	// Non-constant concat deferred (runtime.concatstrings is available later).
-	return nil, nil, fl.errorf(e, "string concatenation of non-constants deferred past M2; use runtime.concatstrings later")
+	x, xstmts, err := fl.expr(e.X, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, typeString)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{x, y}}, stmts, nil
 }
 
 func (fl *funcLower) binaryOp(op token.Token, goType types.Type) (ir.Op, error) {
@@ -559,6 +586,26 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			return fl.useTemp(t), stmts, nil
 		}
 	}
+	if sig := fl.funcValueSig(e.Fun); sig != nil {
+		ex, stmts, err := fl.callFuncValue(e.Fun, e.Args, sig)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sig.Results().Len() == 0 {
+			return nil, nil, fl.errorf(e, "call used as value but returns no results")
+		}
+		if sig.Results().Len() > 1 {
+			return nil, nil, fl.errorf(e, "multi-value call used in single-value context")
+		}
+		ty, err := fl.mapType(sig.Results().At(0).Type())
+		if err != nil {
+			return nil, nil, err
+		}
+		t := fl.newTemp(ty)
+		stmts = append(stmts, fl.assignTemp(t, ex))
+		_ = want
+		return fl.useTemp(t), stmts, nil
+	}
 	name, results, err := fl.resolveCallee(e)
 	if err != nil {
 		return nil, nil, err
@@ -578,6 +625,46 @@ func (fl *funcLower) callAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	stmts = append(stmts, fl.assignTemp(t, call))
 	_ = want
 	return fl.useTemp(t), stmts, nil
+}
+
+// funcValueSig returns the signature when Fun is a func value (not a direct
+// known function or method call).
+func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
+	switch fun := fun.(type) {
+	case *ast.Ident:
+		obj := fl.info.Uses[fun]
+		if obj == nil {
+			return nil
+		}
+		if _, ok := obj.(*types.Func); ok {
+			return nil // direct call
+		}
+		if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
+			return sig
+		}
+	case *ast.SelectorExpr:
+		if sel := fl.info.Selections[fun]; sel != nil {
+			return nil // method call / value handled elsewhere
+		}
+		if id, ok := fun.X.(*ast.Ident); ok {
+			if _, ok := fl.info.Uses[id].(*types.PkgName); ok {
+				return nil // package.Func direct call
+			}
+		}
+		tv := fl.info.Types[fun]
+		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+			return sig
+		}
+	case *ast.FuncLit, *ast.CallExpr, *ast.IndexExpr, *ast.ParenExpr:
+		tv := fl.info.Types[fun]
+		if tv.Type == nil {
+			return nil
+		}
+		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+			return sig
+		}
+	}
+	return nil
 }
 
 func (fl *funcLower) isConversion(e *ast.CallExpr) bool {
@@ -726,16 +813,47 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 		st, err := fl.lowerPrint(e)
 		return nil, st, err
 	}
+	if fl.builtinName(e) == "panic" {
+		st, err := fl.builtinPanic(e)
+		return nil, st, err
+	}
 	if fl.isBuiltinCall(e) {
 		ex, st, err := fl.builtinAsValue(e, nil)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !asValue {
+			if ex == nil {
+				return nil, st, nil
+			}
 			stmts = append(st, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
 			return nil, stmts, nil
 		}
 		return nil, st, nil
+	}
+	if sig := fl.funcValueSig(e.Fun); sig != nil {
+		ex, st, err := fl.callFuncValue(e.Fun, e.Args, sig)
+		if err != nil {
+			return nil, nil, err
+		}
+		var results []ir.Type
+		for i := 0; i < sig.Results().Len(); i++ {
+			ty, err := fl.mapType(sig.Results().At(i).Type())
+			if err != nil {
+				return nil, nil, err
+			}
+			results = append(results, ty)
+		}
+		if !asValue {
+			if len(results) == 0 {
+				st = append(st, &ir.ExprStmt{X: ex})
+			} else {
+				t := fl.newTemp(results[0])
+				st = append(st, fl.assignTemp(t, ex))
+			}
+			return results, st, nil
+		}
+		return results, st, nil
 	}
 	if fl.isConversion(e) {
 		return nil, nil, fl.errorf(e, "conversion used as statement")

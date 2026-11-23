@@ -266,7 +266,7 @@ func (fe *funcEmitter) emitRegion(r ir.Region) error {
 	case *ir.Dispatch:
 		return fe.emitDispatch(r)
 	case *ir.Try:
-		return fmt.Errorf("try regions not yet emitted in M1/M2 codegen")
+		return fe.emitTry(r)
 	default:
 		return fmt.Errorf("unknown region %T", r)
 	}
@@ -856,6 +856,16 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		fe.enc.MemoryCopy()
 	case ir.OpMemoryFill:
 		fe.enc.MemoryFill()
+
+	case ir.OpThrow:
+		if !fe.g.panicTagDeclared {
+			if err := fe.g.ensurePanicTag(); err != nil {
+				return err
+			}
+		}
+		fe.enc.Throw(fe.g.panicTagIdx)
+	case ir.OpThrowRef:
+		fe.enc.ThrowRef()
 
 	default:
 		if in.Op.IsHigh() {

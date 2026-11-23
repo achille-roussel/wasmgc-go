@@ -1,72 +1,89 @@
 package runtime
 
-// Panic / defer surface (docs/design/04). Full try_table lowering is M5 in
-// stream D; this package owns deferRun, the panic object shape, and the
-// unrecovered-panic print+exit(2) path. Bodies that need EH opcodes are
-// exercised by std/src/runtime/testdata/m5_defer_panic.wat until the WAT
-// hatch binds them.
+// Panic / defer surface (docs/design/04). throwPanic / deferRun / gorecover /
+// unrecoveredPanic are body-less: codegen emits EH opcodes. Message builders
+// below are ordinary Go so the recoverable index text matches gc.
+//
+// deferRun / unrecoveredPanic take opaque pointers; rtlink rewrites their
+// IR param types to $go.defer / $go.panicObj after linking.
 
-// panicObj is the payload of tag $go.panic.
-// Layout matches $go.panicObj in 03-type-mapping.md:
-//   value (iface), recovered (i32), next (*panicObj).
-type panicObj struct {
-	value     interface{}
-	recovered int32
-	next      *panicObj
+func deferRun(d *byte)
+func throwPanic(v interface{})
+func gorecover(allow int32) interface{}
+func goexit()
+func unrecoveredPanic(p *byte)
+
+func panicIndex(x, y int) {
+	throwPanic("runtime error: index out of range [" + itoa(x) + "] with length " + itoa(y))
 }
 
-// defer_ is one frame's defer list node. The closure is called by deferRun.
-// Argument values were captured when the defer statement ran.
-type defer_ struct {
-	fn   func()
-	link *defer_
+func panicSliceB() {
+	throwPanic("runtime error: slice bounds out of range")
 }
 
-// deferRun walks d LIFO, setting recoverOk around each call (04).
-// A panic inside a deferred call becomes the panic being propagated; remaining
-// defers still run. Until the lowerer emits try_table, this Go body is a
-// scaffold: it runs the list without EH. The WAT driver tests the real protocol.
-func deferRun(d *defer_) {
-	for d != nil {
-		fn := d.fn
-		d = d.link
-		if fn != nil {
-			fn()
-		}
+func panicNil() {
+	throwPanic("runtime error: invalid memory address or nil pointer dereference")
+}
+
+func panicDivide() {
+	throwPanic("runtime error: integer divide by zero")
+}
+
+func panicUncomparable() {
+	throwPanic("runtime error: comparing uncomparable type")
+}
+
+func panicTypeAssert() {
+	throwPanic("interface conversion: type assertion failed")
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
 	}
-}
-
-// throwPanic throws tag $go.panic with value v.
-// Wants WAT / EH intrinsic; scaffold panics via Go panic for host tests.
-func throwPanic(v interface{}) {
-	panic(v)
-}
-
-// gorecover implements the recover builtin when recoverOk is set.
-func gorecover() interface{} {
-	return nil
-}
-
-// goexit throws tag $go.goexit. Defers run; recover returns nil.
-func goexit() {
-	throw("runtime.Goexit")
-}
-
-// unrecoveredPanic is called from the goroutine entry catch_all_ref path when
-// a $go.panic escapes with recovered clear. Prints the value and exits 2.
-func unrecoveredPanic(p *panicObj) {
-	printstring("panic: ")
-	printIface(p.value)
-	printnl()
-	exit(2)
-}
-
-// printIface prints a panic value. M5 WAT driver uses i32 payloads; the Go
-// path prints a placeholder until reflect/fmt exist.
-func printIface(v interface{}) {
-	if v == nil {
-		printstring("<nil>")
-		return
+	neg := false
+	if v < 0 {
+		neg = true
+		v = -v
 	}
-	printstring("<panic>")
+	s := ""
+	for v > 0 {
+		s = digit(v%10) + s
+		v /= 10
+	}
+	if neg {
+		s = "-" + s
+	}
+	return s
+}
+
+func digit(d int) string {
+	if d == 0 {
+		return "0"
+	}
+	if d == 1 {
+		return "1"
+	}
+	if d == 2 {
+		return "2"
+	}
+	if d == 3 {
+		return "3"
+	}
+	if d == 4 {
+		return "4"
+	}
+	if d == 5 {
+		return "5"
+	}
+	if d == 6 {
+		return "6"
+	}
+	if d == 7 {
+		return "7"
+	}
+	if d == 8 {
+		return "8"
+	}
+	return "9"
 }

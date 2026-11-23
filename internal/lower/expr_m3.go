@@ -134,7 +134,10 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Field: e.Sel.Name}
 		return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{addr}, Type: ty}, stmts, nil
 	case types.MethodVal:
-		return nil, nil, fl.errorf(e, "method value not supported in M3; call the method")
+		return fl.methodValue(e, sel, want)
+	case types.MethodExpr:
+		fn := sel.Obj().(*types.Func)
+		return fl.methodExpr(fn)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported selection kind %v", sel.Kind())
 	}
