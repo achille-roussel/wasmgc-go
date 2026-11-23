@@ -39,7 +39,9 @@ Format (em dash required):
 
 A skip without a reason fails `TestSkipListFormat`. Growing the list relative to
 `origin/main` (or `WASMGC_SKIP_BASE`) fails `TestSkipListGrowth` unless
-`skip_bump.txt` exists with a one-line reviewed justification.
+`skip_bump.txt` exists with a one-line reviewed justification. The baseline ref
+must resolve (`git fetch origin main`); a missing ref is an error, not an empty
+baseline. CI unit jobs use `fetch-depth: 0` for this.
 
 Regenerate skips after a broad sweep:
 
@@ -62,3 +64,7 @@ Per-package skips (including historical StructOf entries) live under `stdlib/`.
 | `WASMGC_STDLIB_TEST=1` | Force full packages.txt stdlib suite even under `-short` |
 | `WASMGC_UPDATE_SKIP=1` | Allow `-update-skip` to rewrite `skip.txt` |
 | `WASMGC_SKIP_BASE` | Git ref for skip growth comparison (default `origin/main`) |
+
+## Skip categories
+
+Post-M10 root-cause breakdown and burn-down order: [`docs/gotest-skip-categories.md`](../../docs/gotest-skip-categories.md).
