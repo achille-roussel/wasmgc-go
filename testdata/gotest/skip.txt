@@ -250,7 +250,7 @@ fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue38496.go — runtime error
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40367.go — failed: build: pipeline: IR verify: br target $goto.top not in scope pipeline: IR verify: br target $goto.to…
-fixedbugs/issue40629.go — compile error: lower: range over *[40]int not supported
+fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue4085b.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue42703.go — runtime error
@@ -461,13 +461,13 @@ method5.go — compile error: codegen
 method7.go — compile error: codegen
 named.go — compile error: lower: unsupported binary op &^ for width i32
 newexpr.go — wasm validate/compile error
-nil.go — compile error: lower: range over *[10]int not supported
+nil.go — runtime error: nil *[N]T element access (range/len compile OK)
 nilptr.go — unsupported: unsafe
 nilptr2.go — codegen: missing struct field in closure
 noinit.go — wasm validate/compile error
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
-range.go — compile error: lower: range over *[5]int not supported
+range.go — codegen: unknown function unicode.utf8.AppendRune
 range3.go — failed: panic: must not be executed
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
@@ -596,7 +596,6 @@ typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (i
 typeparam/typeswitch3.go — compile error: codegen
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
 typeparam/typeswitch5.go — output mismatch
-typeparam/typeswitch6.go — compile error: lower: untyped nil needs a typed context
 typeparam/typeswitch7.go — compile error: lower: untyped nil needs a typed context
 typeswitch.go — wasm validate/compile error
 typeswitch1.go — compile error: lower: variable xx has no IR local (in main.whatis)
