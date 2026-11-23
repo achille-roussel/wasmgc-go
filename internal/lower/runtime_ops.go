@@ -632,15 +632,18 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	add := len(elemEx)
 	st := &ir.Ref{Null: true, Named: sliceName}
 
+	// Array refs are nullable so locals are defaultable: grow-only ndata is
+	// unset on the fit path, and Wasm rejects uninitialized non-defaultable locals.
+	arrT := &ir.Ref{Null: true, Named: arrName}
 	sl := rt.newVar("sl", st)
 	lenV := rt.newVar("len", ir.TypeI32)
 	capV := rt.newVar("cap", ir.TypeI32)
 	offV := rt.newVar("off", ir.TypeI32)
-	dataV := rt.newVar("data", &ir.Ref{Named: arrName})
+	dataV := rt.newVar("data", arrT)
 	nlenV := rt.newVar("nlen", ir.TypeI32)
 	ncapV := rt.newVar("ncap", ir.TypeI32)
 	twocapV := rt.newVar("twocap", ir.TypeI32)
-	ndataV := rt.newVar("ndata", &ir.Ref{Named: arrName})
+	ndataV := rt.newVar("ndata", arrT)
 
 	defs := []*ir.Var{sl, lenV, capV, offV, dataV, nlenV, ncapV, twocapV, ndataV}
 	for _, v := range defs {
@@ -670,6 +673,9 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	)
 
 	fits := &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(nlenV), useV(capV)}}
+	nnData := func(v *ir.Var) ir.Expr {
+		return &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(v)}}
+	}
 
 	fitSeq := &ir.Seq{}
 	for i, el := range elemEx {
@@ -679,12 +685,12 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		}}
 		fitSeq.Stmts = append(fitSeq.Stmts, &ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpArraySet, Type: &ir.Ref{Named: arrName},
-			Args: []ir.Expr{useV(dataV), idx, el},
+			Args: []ir.Expr{nnData(dataV), idx, el},
 		}})
 	}
 	fitSeq.Stmts = append(fitSeq.Stmts, &ir.Assign{
 		Lhs: s.Lhs,
-		Rhs: &ir.Instr{Op: ir.OpStructNew, Type: st, Args: []ir.Expr{useV(dataV), useV(offV), useV(nlenV), useV(capV)}},
+		Rhs: &ir.Instr{Op: ir.OpStructNew, Type: st, Args: []ir.Expr{nnData(dataV), useV(offV), useV(nlenV), useV(capV)}},
 	})
 
 	growSeq := &ir.Seq{}
@@ -703,19 +709,19 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	}))
 	growSeq.Stmts = append(growSeq.Stmts, &ir.ExprStmt{X: &ir.Instr{
 		Op: ir.OpArrayCopy, Type: &ir.Ref{Named: arrName}, Type2: &ir.Ref{Named: arrName},
-		Args: []ir.Expr{useV(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, useV(dataV), useV(offV), useV(lenV)},
+		Args: []ir.Expr{nnData(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, nnData(dataV), useV(offV), useV(lenV)},
 	}})
 	for i, el := range elemEx {
 		idx := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: int64(i)}}}
 		growSeq.Stmts = append(growSeq.Stmts, &ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpArraySet, Type: &ir.Ref{Named: arrName},
-			Args: []ir.Expr{useV(ndataV), idx, el},
+			Args: []ir.Expr{nnData(ndataV), idx, el},
 		}})
 	}
 	growSeq.Stmts = append(growSeq.Stmts, &ir.Assign{
 		Lhs: s.Lhs,
 		Rhs: &ir.Instr{Op: ir.OpStructNew, Type: st, Args: []ir.Expr{
-			useV(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, useV(nlenV), useV(ncapV),
+			nnData(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, useV(nlenV), useV(ncapV),
 		}},
 	})
 

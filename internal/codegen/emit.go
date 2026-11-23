@@ -244,6 +244,8 @@ func (fe *funcEmitter) emitRegion(r ir.Region) error {
 		if err := fe.emitExpr(r.Cond); err != nil {
 			return err
 		}
+		// Wasm if creates a label; push a placeholder so br depths match.
+		fe.labels = append(fe.labels, "")
 		fe.enc.If(wasm.BlockEmpty())
 		if r.Then != nil {
 			if err := fe.emitRegion(r.Then); err != nil {
@@ -257,6 +259,7 @@ func (fe *funcEmitter) emitRegion(r ir.Region) error {
 			}
 		}
 		fe.enc.End()
+		fe.labels = fe.labels[:len(fe.labels)-1]
 		return nil
 	case *ir.Switch:
 		return fe.emitSwitch(r)
@@ -439,13 +442,17 @@ func (fe *funcEmitter) emitStmt(s ir.Stmt) error {
 				return err
 			}
 		}
+		// Always resolve by label when present — Depth from Verify may omit
+		// if-labels that Wasm still counts.
 		depth := s.Depth
-		if depth < 0 {
+		if s.Label != "" {
 			d, ok := fe.findLabel(s.Label)
 			if !ok {
 				return fmt.Errorf("br target %s not in scope", s.Label)
 			}
 			depth = d
+		} else if depth < 0 {
+			return fmt.Errorf("br with no label and unset depth")
 		}
 		if s.Cond != nil {
 			if err := fe.emitExpr(s.Cond); err != nil {

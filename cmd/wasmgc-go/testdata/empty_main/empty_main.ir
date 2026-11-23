@@ -1,5 +1,47 @@
 low
 
+type $go.object struct {}
+
+type $go.bytes array mut i8
+
+type $go.string sub $go.object struct {
+  data ref $go.bytes
+  off i32
+  len i32
+}
+
+type $go.type sub $go.object struct {
+  id i32
+  kind i32
+  name refnull $go.string
+  extra refnull $go.object
+}
+
+type $go.itab sub $go.object struct {
+  type ref $go.type
+}
+
+type $go.iface sub $go.object struct {
+  itab ref $go.itab
+  data refnull any
+}
+
+type $go.box.i32 sub $go.object struct {
+  v i32
+}
+
+type $go.box.i64 sub $go.object struct {
+  v i64
+}
+
+type $go.box.f32 sub $go.object struct {
+  v f32
+}
+
+type $go.box.f64 sub $go.object struct {
+  v f64
+}
+
 func export "run" main.run() {
   call main.main()
   return

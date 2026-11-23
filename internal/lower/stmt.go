@@ -45,7 +45,7 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 	case *ast.ForStmt:
 		return fl.forStmt(s, "")
 	case *ast.RangeStmt:
-		return nil, fl.errorf(s, "range not supported in M1/M2")
+		return fl.rangeStmt(s, "")
 	case *ast.SwitchStmt:
 		return fl.switchStmt(s, "")
 	case *ast.TypeSwitchStmt:
@@ -94,16 +94,31 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 			fl.extraLocals = append(fl.extraLocals, v)
 			// VarDef is emitted once in lowerFunc preamble.
 			if vs.Values != nil && i < len(vs.Values) {
-				ex, stmts, err := fl.expr(vs.Values[i], ty)
+				ex, stmts, err := fl.coerceExpr(vs.Values[i], obj.Type(), ty)
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignVar(v, ex))
+			} else if needsZeroInit(ty) {
+				z, err := fl.zeroValue(ty)
+				if err != nil {
+					return nil, fl.errorf(name, "%v", err)
+				}
+				out = append(out, fl.assignVar(v, z))
 			}
 		}
 	}
 	return out, nil
+}
+
+func needsZeroInit(ty ir.Type) bool {
+	r, ok := ty.(*ir.Ref)
+	if !ok {
+		return false
+	}
+	// Non-nullable refs have no Wasm default; initialize to the Go zero value.
+	return !r.Null && r.Heap == 0 && r.Named != ""
 }
 
 func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
@@ -534,7 +549,7 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 	case *ast.SwitchStmt:
 		return fl.switchStmt(body, name)
 	case *ast.RangeStmt:
-		return nil, fl.errorf(s, "range not supported in M1/M2")
+		return fl.rangeStmt(body, name)
 	default:
 		breakL := "$" + name
 		fl.labels[name] = &labelTargets{breakLabel: breakL}
@@ -549,6 +564,113 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 		}
 		return []ir.Stmt{&ir.Block{Name: breakL, Body: &ir.Seq{Stmts: stmts}}}, nil
 	}
+}
+
+// rangeStmt lowers for-range over slices (and arrays) to an index loop.
+// Maps/chans/strings wait for later milestones.
+func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
+	xType := fl.typeOf(s.X)
+	if xType == nil {
+		return nil, fl.errorf(s.X, "range: no type")
+	}
+	u := xType.Underlying()
+	switch u.(type) {
+	case *types.Slice, *types.Array:
+		// ok
+	default:
+		return nil, fl.errorf(s.X, "range over %s not supported in M4", xType)
+	}
+	xIR, err := fl.mapType(xType)
+	if err != nil {
+		return nil, fl.errorf(s.X, "%v", err)
+	}
+	x, xstmts, err := fl.expr(s.X, xIR)
+	if err != nil {
+		return nil, err
+	}
+	var out []ir.Stmt
+	out = append(out, xstmts...)
+	xv := fl.newVar("rng", xIR)
+	out = append(out, fl.assignVar(xv, x))
+
+	lenEx := &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(xv)}}
+	lenV := fl.newVar("rlen", ir.TypeI32)
+	out = append(out, fl.assignVar(lenV, lenEx))
+
+	i := fl.newVar("ri", ir.TypeI32)
+	out = append(out, fl.assignVar(i, fl.i32const(0)))
+
+	// Bind range vars if present.
+	var keyObj, valObj types.Object
+	if s.Key != nil {
+		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
+			keyObj = fl.info.Defs[id]
+			if keyObj != nil {
+				fl.vars[keyObj] = i
+			}
+		}
+	}
+	var valVar *ir.Var
+	if s.Value != nil {
+		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
+			valObj = fl.info.Defs[id]
+			if valObj != nil {
+				vt, err := fl.mapType(valObj.Type())
+				if err != nil {
+					return nil, fl.errorf(s.Value, "%v", err)
+				}
+				valVar = &ir.Var{Name: id.Name, Typ: vt}
+				fl.vars[valObj] = valVar
+				fl.extraLocals = append(fl.extraLocals, valVar)
+			}
+		}
+	}
+	_ = keyObj
+
+	var breakL, contL, loopL string
+	if goLabel != "" {
+		breakL = "$" + goLabel + ".break"
+		contL = "$" + goLabel + ".cont"
+		loopL = "$" + goLabel
+		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
+	} else {
+		breakL = fl.freshLabel("break")
+		contL = fl.freshLabel("cont")
+		loopL = fl.freshLabel("L")
+	}
+	fl.breakStack = append(fl.breakStack, breakL)
+	fl.continueStack = append(fl.continueStack, contL)
+	defer func() {
+		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
+		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
+		if goLabel != "" {
+			delete(fl.labels, goLabel)
+		}
+	}()
+
+	bodySeq := &ir.Seq{}
+	// if i >= len { br break }
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
+		Label: breakL,
+		Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
+	})
+	if valVar != nil {
+		elem := &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
+	}
+	inner, err := fl.stmtBlock(s.Body)
+	if err != nil {
+		return nil, err
+	}
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Block{Name: contL, Body: inner})
+	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(i, &ir.Instr{
+		Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(1)},
+	}))
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
+
+	loop := &ir.Loop{Name: loopL, Body: bodySeq}
+	out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{loop}}})
+	return out, nil
 }
 
 func (fl *funcLower) branchStmt(s *ast.BranchStmt) ([]ir.Stmt, error) {
@@ -914,6 +1036,8 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 	ifaceV := fl.newVar("ts", typeIface)
 	out = append(out, fl.assignVar(ifaceV, ifaceEx))
 
+	// If-else chain implements case exclusivity; no outer break block needed
+	// (a trailing br after return left functions with results failing validation).
 	breakL := fl.freshLabel("tsbreak")
 	fl.breakStack = append(fl.breakStack, breakL)
 	defer func() { fl.breakStack = fl.breakStack[:len(fl.breakStack)-1] }()
@@ -975,7 +1099,9 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 			}
 			bodySeq.Stmts = append(bodySeq.Stmts, ss...)
 		}
-		bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: breakL})
+		if !regionEndsWithReturn(bodySeq) {
+			bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: breakL})
+		}
 
 		if len(cc.List) == 0 {
 			// default
@@ -1020,7 +1146,6 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 	if def != nil {
 		ordered = append(ordered, def)
 	}
-	// Rebuild body list temporarily via local copy
 	orig := s.Body.List
 	s.Body.List = make([]ast.Stmt, len(ordered))
 	for i, c := range ordered {
@@ -1033,4 +1158,13 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 	}
 	out = append(out, &ir.Block{Name: breakL, Body: r})
 	return out, nil
+}
+
+func regionEndsWithReturn(r ir.Region) bool {
+	seq, ok := r.(*ir.Seq)
+	if !ok || len(seq.Stmts) == 0 {
+		return false
+	}
+	_, ok = seq.Stmts[len(seq.Stmts)-1].(*ir.Return)
+	return ok
 }

@@ -144,7 +144,9 @@ func ValueOf(i any) Value {
 }
 
 func Swapper(slice any) func(i, j int) {
-	return func(i, j int) {}
+	// Closures are not available yet; sort must not reach Swapper on wasmgc until M8+.
+	var f func(i, j int)
+	return f
 }
 
 // typeOf reads the dynamic type from an interface value.

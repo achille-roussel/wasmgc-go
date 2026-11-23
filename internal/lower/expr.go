@@ -248,8 +248,23 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			(isNilIdent(e.Y) && isIface(xt)) {
 			return fl.ifaceCompare(e, e.Op)
 		}
+		// pointer/ref == nil → ref.is_null
+		if isNilIdent(e.Y) && xt != nil {
+			if irt, err := fl.mapType(xt); err == nil {
+				if _, ok := irt.(*ir.Ref); ok {
+					return fl.refNilCompare(e.X, irt, e.Op)
+				}
+			}
+		}
+		if isNilIdent(e.X) && yt != nil {
+			if irt, err := fl.mapType(yt); err == nil {
+				if _, ok := irt.(*ir.Ref); ok {
+					return fl.refNilCompare(e.Y, irt, e.Op)
+				}
+			}
+		}
 		// ref.eq for comparable pointer / string refs
-		if (e.Op == token.EQL || e.Op == token.NEQ) && xt != nil {
+		if xt != nil {
 			if irt, err := fl.mapType(xt); err == nil {
 				if r, ok := irt.(*ir.Ref); ok && r.Named != "" && r.Named != "$go.string" {
 					return fl.refCompare(e, e.Op)
@@ -586,6 +601,13 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
+	// (*T)(nil) / (func)(nil) → null ref of the destination type.
+	if isUntypedNil(src) {
+		if _, ok := dstIR.(*ir.Ref); ok {
+			return &ir.Instr{Op: ir.OpRefNull, Type: dstIR}, nil, nil
+		}
+		return nil, nil, fl.errorf(e, "nil conversion to non-ref type %s", dst)
+	}
 	srcIR, err := fl.mapType(src)
 	if err != nil {
 		return nil, nil, fl.errorf(e.Args[0], "%v", err)
@@ -622,6 +644,18 @@ func (fl *funcLower) refCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []i
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
 	return eq, stmts, nil
+}
+
+func (fl *funcLower) refNilCompare(x ast.Expr, typ ir.Type, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	ex, stmts, err := fl.expr(x, typ)
+	if err != nil {
+		return nil, nil, err
+	}
+	isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ex}}
+	if op == token.NEQ {
+		isnull = &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{isnull}}
+	}
+	return isnull, stmts, nil
 }
 
 func numericConv(src, dst ir.Type, srcU, dstU bool) (ir.Op, error) {
@@ -947,16 +981,19 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 	_ = paramOff
 	for i, a := range e.Args {
 		var want ir.Type
+		var dstGo types.Type
 		if sig != nil && i < sig.Params().Len() {
+			dstGo = sig.Params().At(i).Type()
 			var err error
-			want, err = fl.mapType(sig.Params().At(i).Type())
+			want, err = fl.mapType(dstGo)
 			if err != nil {
 				return nil, nil, fl.errorf(a, "%v", err)
 			}
 		} else if t := fl.typeOf(a); t != nil {
+			dstGo = t
 			want, _ = fl.mapType(t)
 		}
-		ex, st, err := fl.expr(a, want)
+		ex, st, err := fl.coerceExpr(a, dstGo, want)
 		if err != nil {
 			return nil, nil, err
 		}

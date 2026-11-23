@@ -185,11 +185,25 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		args = append(args, ex)
 	}
 	ifaceKey := desc.TypeKey(recvType)
-	methodIdx := methodIndex(recvType.Underlying().(*types.Interface), fn)
+	iface, _ := recvType.Underlying().(*types.Interface)
+	if iface == nil {
+		return nil, nil, fl.errorf(fun, "receiver is not an interface")
+	}
+	methodIdx := methodIndex(iface, fn)
 	sigName := "$go.ifacefn." + sanitizeName(ifaceKey) + "." + fn.Name()
 	var res ir.Type
 	if sig.Results().Len() > 0 {
-		res, _ = fl.mapType(sig.Results().At(0).Type())
+		var err error
+		res, err = fl.mapType(sig.Results().At(0).Type())
+		if err != nil {
+			return nil, nil, fl.errorf(e, "iface call result: %v", err)
+		}
+	}
+	// Prefer the type-checked call expression type when present.
+	if ct := fl.typeOf(e); ct != nil && !isIface(ct) {
+		if mapped, err := fl.mapType(ct); err == nil {
+			res = mapped
+		}
 	}
 	return &ir.Instr{
 		Op:    ir.OpIfaceCall,
@@ -313,6 +327,12 @@ func (fl *funcLower) coerceExpr(e ast.Expr, dstGo types.Type, want ir.Type) (ir.
 		}
 		if !isIface(src) || !types.Identical(src.Underlying(), dstGo.Underlying()) {
 			return fl.convertToIface(e, src, dstGo, typeIface)
+		}
+	}
+	// nil → slice/map/chan/pointer/func/unsafe.Pointer
+	if (src == nil || isUntypedNil(src)) && want != nil {
+		if r, ok := want.(*ir.Ref); ok {
+			return &ir.Instr{Op: ir.OpRefNull, Type: r}, nil, nil
 		}
 	}
 	return fl.expr(e, want)

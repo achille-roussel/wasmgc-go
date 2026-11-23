@@ -44,7 +44,9 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Interface:
 		return typeIface, nil
 	case *types.Signature:
-		return nil, fmt.Errorf("function type not supported as value in M4: %s", t)
+		// Opaque funcref — enough for reflectlite.Swapper's result type; calling
+		// through an arbitrary func value is not supported until closures land.
+		return &ir.Ref{Null: true, Heap: ir.HeapFunc}, nil
 	case *types.Tuple:
 		return nil, fmt.Errorf("tuple type not a single value: %s", t)
 	case *types.Map:
@@ -77,6 +79,9 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 		return ir.TypeF64, nil
 	case types.String:
 		return typeString, nil
+	case types.UnsafePointer:
+		// unsafe.Pointer is anyref (05-unsafe-and-reflect).
+		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
 	case types.UntypedBool:
 		return ir.TypeI32, nil
 	case types.UntypedInt, types.UntypedRune:
@@ -87,8 +92,10 @@ func mapBasic(t *types.Basic) (ir.Type, error) {
 		return typeString, nil
 	case types.UntypedNil:
 		return nil, fmt.Errorf("untyped nil needs a typed context")
-	case types.Complex64, types.Complex128, types.UntypedComplex:
-		return nil, fmt.Errorf("complex numbers not supported in M3")
+	case types.Complex64:
+		return &ir.Ref{Null: true, Named: "$go.complex64"}, nil
+	case types.Complex128, types.UntypedComplex:
+		return &ir.Ref{Null: true, Named: "$go.complex128"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported basic type %s", t)
 	}

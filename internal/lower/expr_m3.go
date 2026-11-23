@@ -352,6 +352,16 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 		if t.Named == "$go.string" {
 			return &ir.Instr{Op: ir.OpStringLit, Str: ""}, nil
 		}
+		if t.Named == "$go.complex64" || t.Named == "$go.complex128" {
+			fl.pkg.mod.InternType(&ir.TypeDef{
+				Name: t.Named, Kind: ir.TypeStruct, Super: "$go.object",
+				Fields: []ir.Field{
+					{Name: "real", Type: ir.TypeF64, Mut: true},
+					{Name: "imag", Type: ir.TypeF64, Mut: true},
+				},
+			})
+			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	default:
 		return nil, fmt.Errorf("no zero value for %s", t)

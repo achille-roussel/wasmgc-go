@@ -147,7 +147,27 @@ func (rt *runtimeLower) expandIfaceCall(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		Args: callArgs,
 	}
 	if s != nil && len(s.Lhs) > 0 {
-		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: call})
+		// Ensure LHS temps carry a real result type (codegen defaults nil → i32).
+		var resTy ir.Type = in.Type
+		if td := rt.mod.LookupType(sigName); td != nil && len(td.Results) > 0 {
+			resTy = td.Results[0]
+		}
+		if resTy == nil {
+			resTy = &ir.Ref{Named: "$go.string"} // last-resort; better than i32
+		}
+		lhs := make([]ir.Dest, len(s.Lhs))
+		for i := range s.Lhs {
+			lhs[i] = s.Lhs[i]
+			if lhs[i].Temp != nil {
+				nt := &ir.Temp{Name: lhs[i].Temp.Name, Typ: resTy}
+				lhs[i].Temp = nt
+				lhs[i].Name = nt.Name
+			}
+			if lhs[i].Var != nil {
+				lhs[i].Var.Typ = resTy
+			}
+		}
+		pre = append(pre, &ir.Assign{Lhs: lhs, Rhs: call})
 	} else {
 		pre = append(pre, &ir.ExprStmt{X: call})
 	}
@@ -267,13 +287,22 @@ func (rt *runtimeLower) assertTest(ifaceV *ir.Var, typeGlobal string) testResult
 	okV := rt.newVar("ok", ir.TypeI32)
 	pre := []ir.Stmt{
 		&ir.VarDef{Var: itabV}, &ir.VarDef{Var: typV}, &ir.VarDef{Var: okV},
+		assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+	}
+	// Nil interface → not a match.
+	match := &ir.Seq{Stmts: []ir.Stmt{
 		assignV(itabV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(ifaceV)}}),
 		assignV(typV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itabV)}}),
 		assignV(okV, &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
 			useV(typV),
 			&ir.Instr{Op: ir.OpGlobalGet, Global: typeGlobal},
 		}}),
-	}
+	}}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+		Then: &ir.Seq{},
+		Else: match,
+	})
 	return testResult{pre: pre, ok: useV(okV)}
 }
 
@@ -378,14 +407,15 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 		assignV(dB, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(bv)}}),
 	)
 	sameTy := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{useV(tyA), useV(tyB)}}
-	// Equal data via ref.eq (works for pointer dynamic types; scalars boxed share shape).
-	dataEq := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{useV(dA), useV(dB)}}
-	// Also try calling $go.eq.* — we don't have the key here; ref.eq on data is
-	// correct for *T and same-box identity. For boxed equal values that are
-	// distinct boxes, use a generic path: call equal by looking up... For M4
-	// exit (error == nil and pointer dynamic types), ref.eq on data is enough
-	// when types match; two New() with same text are unequal. Scalar iface
-	// equality needs unbox compare — call $go.eq via id later.
+	// ref.eq requires eqref; iface data is anyref.
+	eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+	dataEq := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dA)}},
+		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dB)}},
+	}}
+	// Identity compare on data covers *T and same-box values. Distinct boxes
+	// with equal contents need $go.eq.* (scalar unbox) — deferred when equal
+	// is looked up from the type descriptor.
 	cmpBody.Stmts = append(cmpBody.Stmts, &ir.If{
 		Cond: sameTy,
 		Then: &ir.Seq{Stmts: []ir.Stmt{assignV(res, dataEq)}},
@@ -399,6 +429,11 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 	})
 	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(res)})
 	return pre, nil
+}
+
+func isNumType(t ir.Type) bool {
+	_, ok := t.(*ir.NumType)
+	return ok
 }
 
 func (rt *runtimeLower) expandStringSlice(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {

@@ -436,11 +436,14 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 		case KindFloat64:
 			body = g.boxEqualBody("$go.box.f64", ir.TypeF64, a, b)
 		default:
-			// ref.eq on data words (pointers, strings, structs-as-refs).
+			// ref.eq requires eqref; cast anyref params first.
+			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+			ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
+			cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
 			body = &ir.Seq{Stmts: []ir.Stmt{
 				&ir.Return{Results: []ir.Expr{&ir.Instr{
 					Op:   ir.OpRefEq,
-					Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}, &ir.Name{Raw: "b", Var: b}},
+					Args: []ir.Expr{ca, cb},
 				}}},
 			}}
 		}
@@ -694,15 +697,17 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 		if err != nil {
 			return nil, nil, err
 		}
-		// struct.get field — if current expr is *Struct, it's the object ref.
-		if isPointer(obj) {
-			// already object ref
-		}
-		expr = &ir.Instr{
-			Op:    ir.OpStructGet,
-			Type:  baseIROf(obj),
-			Field: field.Name(),
-			Args:  []ir.Expr{expr},
+		// Zero-size fields (empty struct{}) are omitted from the Wasm struct
+		// (03-type-mapping). Synthesize a default value for promotion instead.
+		if isZeroSizeType(ft) {
+			expr = &ir.Instr{Op: ir.OpStructNewDefault, Type: fieldIR}
+		} else {
+			expr = &ir.Instr{
+				Op:    ir.OpStructGet,
+				Type:  baseIROf(obj),
+				Field: field.Name(),
+				Args:  []ir.Expr{expr},
+			}
 		}
 		obj = ft
 		baseIR = fieldIR
@@ -1044,6 +1049,27 @@ func isPointer(t types.Type) bool {
 func isStruct(t types.Type) bool {
 	_, ok := underlyingStruct(t)
 	return ok
+}
+
+// isZeroSizeType mirrors lower.isZeroSize: empty structs and arrays of them
+// are omitted from Wasm struct field lists (03-type-mapping).
+func isZeroSizeType(t types.Type) bool {
+	t = types.Unalias(t)
+	switch t := t.(type) {
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if !isZeroSizeType(t.Field(i).Type()) {
+				return false
+			}
+		}
+		return true
+	case *types.Array:
+		return t.Len() == 0 || isZeroSizeType(t.Elem())
+	case *types.Named:
+		return isZeroSizeType(t.Underlying())
+	default:
+		return false
+	}
 }
 
 func underlyingStruct(t types.Type) (*types.Struct, bool) {

@@ -199,6 +199,8 @@ func (v *verifier) region(r Region) {
 				v.errorf(r.Cond.GetPos(), "if condition must be i32, got %s", ct)
 			}
 		}
+		// Wasm if creates a label; count it so br depths match codegen.
+		v.pushLabel("", labelBlock, nil)
 		// Outer temps are readable in both arms (they lower to function locals).
 		// Temps defined inside an arm do not escape: each arm gets a fresh clone.
 		saved := v.temps
@@ -209,6 +211,7 @@ func (v *verifier) region(r Region) {
 			v.region(r.Else)
 		}
 		v.temps = saved
+		v.popLabel()
 	case *Switch:
 		_ = v.exprType(r.Tag)
 		saved := v.temps
@@ -313,7 +316,11 @@ func (v *verifier) stmt(s Stmt) {
 				if _, ok := v.temps[d.Temp.Name]; ok {
 					v.errorf(d.Pos, "temp %s redefined in region", d.Temp.Name)
 				}
-				d.Temp.Typ = got
+				// Prefer inferred rhs type; keep an existing typ when inference
+				// returns nothing (e.g. incomplete call_ref metadata).
+				if got != nil {
+					d.Temp.Typ = got
+				}
 				v.temps[d.Temp.Name] = d.Temp
 			} else if d.Var != nil {
 				if want := d.Var.Typ; got != nil && want != nil && !typesCompatible(want, got) {
@@ -585,6 +592,17 @@ func (v *verifier) instrTypes(e *Instr) []Type {
 		// external / not yet defined — unknown
 		return nil
 	case OpCallRef:
+		// Type immediate is the funcref signature ($go.ifacefn… / $go.get…).
+		if e.Type != nil {
+			if td := v.m.LookupType(typeNameOf(e.Type)); td != nil && td.Kind == TypeFunc {
+				return append([]Type(nil), td.Results...)
+			}
+			if r, ok := e.Type.(*Ref); ok && r.Named != "" {
+				if td := v.m.LookupType(r.Named); td != nil && td.Kind == TypeFunc {
+					return append([]Type(nil), td.Results...)
+				}
+			}
+		}
 		return nil
 	case OpStringLit:
 		return []Type{&Ref{Named: "$go.string"}}
