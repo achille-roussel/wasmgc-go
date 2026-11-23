@@ -11,5 +11,7 @@ The WAT escape hatch ([`12-wasm-assembly.md`](../../../docs/design/12-wasm-assem
 | map hash of `string` / `[]byte` | Hot M6 path | Go scaffold when M6 lands |
 | `deferRun` catch / `throw` edges | EH-heavy; clearer in WAT | Go scaffold + `testdata/m5_defer_panic.wat` |
 | `mapAssign` / `mapAccess` hash kernels | Hot byte/string hashing | Go scaffold + `testdata/m6_map.wat` |
+| `gopark` `$g` save/restore | Must wrap suspending `park` (04) | Go `gopark` + `prototypes/jspi-sched` / `testdata/m7_*.wat` |
+| `chanSend` / `chanRecv` typed buffer ops | Per-T `array.get`/`array.set` | Shared Go + `chanOps`; `testdata/m7_chan.wat` |
 
-Generic Go remains correct; WAT is an optimization lane, not a link requirement.
+Generic Go remains correct; WAT is an optimization lane, not a link requirement. M7 park/ready/spawn live in `lib/wasmgc.js` (embedded via `internal/jsglue`).

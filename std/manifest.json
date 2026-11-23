@@ -3,7 +3,7 @@
   "packages": {
     "runtime": {
       "tier": "rewrite",
-      "notes": "Wasm GC runtime (04); print linked via rtlink from std/src/runtime even when GOROOT materialize is skipped"
+      "notes": "Wasm GC scheduler, channels, select, print; M7 park/chan in proc/chan/select"
     },
     "internal/abi": {
       "tier": "rewrite",

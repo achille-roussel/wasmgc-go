@@ -24,7 +24,8 @@ Every emitted module is passed to `wasm-tools validate`. A module that does not 
 |---|---|---|
 | `prototypes/eh-panic` | pass | pass |
 | `prototypes/fat-pointer` | pass | pass |
-| `prototypes/jspi-sched` | pass | exits: no `WebAssembly.Suspending` |
+| `prototypes/jspi-sched` | pass (includes `run_glue.mjs` vs `lib/wasmgc.js`) | exits: no `WebAssembly.Suspending` |
+| `std/src/runtime/testdata/run_m7.mjs` | pass (channels, select, timer) | skips: no Suspending |
 
 They are re-run by `node prototypes/eh-panic/run.mjs` and the two siblings. `wasm-tools` 1.263.0 parsed them. wabt 1.0.42's `wat2wasm` does not recognize `struct.get`, so the suite depends on `wasm-tools`, not on wabt.
 

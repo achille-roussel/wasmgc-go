@@ -217,16 +217,22 @@ These names are stable. Codegen and the runtime workstream share this list.
 | `runtime.gorecover() interface{}` | the `recover` builtin |
 | `runtime.goexit()` | the `Goexit` tag |
 | `runtime.mapAccess` / `mapAssign` / `mapDelete` | shared map path |
-| `runtime.chanSend` / `chanRecv` / `chanClose` | shared queue path; payload moves stay in generated code |
-| `runtime.selectGo(cases *select_) int32` | the select algorithm |
+| `runtime.chanSend` / `chanRecv` / `chanClose` | shared queue path; payload moves via `chanOps` (generated per T) |
+| `runtime.selectGo(cases []scase) int32` | the select algorithm (waiter queues; never 1 ms poll) |
+| `runtime.timeSleep(ns int64)` | `scheduleTimer` + `gopark` (time.Sleep) |
+| `runtime.semacquire` / `semrelease` | sync.Mutex / WaitGroup hooks |
+| `runtime.sched` | export `_sched`: dequeue one runq closure |
 | `runtime.concatstrings` and the slice/string copies | when the lowerer does not inline |
-| `runtime.fastrand() int32` | xorshift on a global, seeded from `go.runtime.rand` |
+| `runtime.fastrand() uint32` / `fastrandn` | xorshift on a global, seeded from `go.runtime.rand` |
 | `runtime.nanotime() int64` / `runtime.walltime() (int64, int32)` | host clocks |
 | `runtime.printstring` / `printint` / `printnl` | the builtins |
 | `runtime.panicIndex` | slice/array/string index OOB |
 | `runtime.panicSliceB` | growslice overflow / slice bounds |
+| `runtime.preemptCheck()` | v1 no-op; reserved for loop-back-edge yields |
 | `runtime.exit(code int32)` | host exit |
 
 **M3 note.** Bounds checks and growslice overflow call `runtime.panicIndex` / `runtime.panicSliceB`. Until M5 EH, those symbols are body-less and codegen fills them with Wasm `unreachable` (trap). After M5 they throw a panic object via `throwPanic`. `internal/rtlink.EnsureSlice` links the decls from `std/src/runtime/slice.go` before `RuntimeOps`.
+
+**M7 note.** Glue (`lib/wasmgc.js`, embedded by `internal/jsglue`) owns `park` / `ready` / `spawn` / `gosched` / `scheduleTimer` / `clearTimer`. `spawn` is a macrotask calling `promising(_sched)`; the main export's promise reaction exits as a microtask so a returning `main` does not run queued goroutines. `chanOps` is the narrow payload-move interface: generated send/recv trampolines supply `toRecv` / `bufGet` / `bufSet` / `toWaiter` / `fromWaiter` / `zero`; the shared path never indexes typed buffers. The lowerer must emit: `runtime.go_` (or `newproc`) for `go f()`, `chanSend`/`chanRecv`/`chanClose` around typed moves, and a `select` rewrite to `selectGo`. Closures and `go` are not lowered yet; behavior is tested by `prototypes/jspi-sched` and `std/src/runtime/testdata/m7_*.wat`.
 
 `runtime.GOMAXPROCS` returns 1. `runtime.NumGoroutine` returns the count of goroutines that have been started and have not returned. `runtime.KeepAlive` is a call the escape pass treats as a use. `runtime.GC` is a no-op: the host collects when it collects.

@@ -17,6 +17,10 @@ func TestM6MapWAT(t *testing.T) {
 	runRuntimeHarness(t, "run_m6.mjs")
 }
 
+func TestM7ChanSelectWAT(t *testing.T) {
+	runRuntimeHarness(t, "run_m7.mjs")
+}
+
 func runRuntimeHarness(t *testing.T, script string) {
 	t.Helper()
 	if _, err := exec.LookPath("wasm-tools"); err != nil {
