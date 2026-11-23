@@ -12,6 +12,8 @@ Nothing here depends on a calendar. The order is the dependency order.
 
 **Exit.** `node` on the glue, on Node 22 and Node 26, prints nothing and exits 0. `wasm-tools validate` accepts the bytes. A type index of 64 survives a round trip (the signed-LEB test from `08-testing.md`).
 
+**Artifact.** `internal/wasm.EmptyRunModule` encodes the module; `testdata/m0/empty.wasm` is the checked-in bytes. `node lib/wasmgc.js testdata/m0/empty.wasm` is the host smoke test. CI runs `go vet`, `go test ./...`, `wasm-tools validate`, that Node smoke test on **22.23.4** and **26.13.1**, and the EH/fat-pointer prototypes on both (JSPI prototype on 26 only). Node 26 is the newest line with unflagged JSPI used here; Node 25 would also work for JSPI.
+
 **Streams.** Wasm encoder (A), JS glue (B). No dependency on each other beyond the export name `run`.
 
 ### M1 — empty `main`
