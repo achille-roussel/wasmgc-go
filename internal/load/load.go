@@ -305,7 +305,12 @@ func (imp *programImporter) loadOne(lp *listPackage) (*Package, error) {
 		return pkg, nil
 	}
 
-	standard := lp.Goroot || lp.Standard || isStdImportPath(lp.ImportPath)
+	// Trust go list's Goroot/Standard flags. Do not use the "no dot in the
+	// first path element" heuristic here: a main module path without a dot
+	// (e.g. module hello) is not a standard package, and cmd/go would not
+	// treat it as one. isStdImportPath remains for synthetic std entries
+	// when go list did not return a package (lpOrStd).
+	standard := lp.Goroot || lp.Standard
 	dir := lp.Dir
 	var goFiles []string
 	var err error
