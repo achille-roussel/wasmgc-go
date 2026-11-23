@@ -3,22 +3,23 @@ package sync
 import "runtime"
 
 // A Mutex is a mutual exclusion lock. The zero value is an unlocked mutex.
+// Single-activation wasmgc: no spin; contested Lock parks via Semacquire (04).
 type Mutex struct {
-	locked uint32
-	wait   uint32
+	state uint32 // 0 unlocked, 1 locked
+	sema  uint32
 }
 
-// Lock locks m.
+// Lock locks m. If the lock is already in use, the calling goroutine parks
+// until it becomes available.
 func (m *Mutex) Lock() {
-	if m.locked == 0 {
-		m.locked = 1
+	if m.state == 0 {
+		m.state = 1
 		return
 	}
 	for {
-		m.wait = 0
-		runtime.Semacquire(&m.wait)
-		if m.locked == 0 {
-			m.locked = 1
+		runtime.Semacquire(&m.sema)
+		if m.state == 0 {
+			m.state = 1
 			return
 		}
 	}
@@ -26,14 +27,14 @@ func (m *Mutex) Lock() {
 
 // Unlock unlocks m.
 func (m *Mutex) Unlock() {
-	m.locked = 0
-	runtime.Semrelease(&m.wait)
+	m.state = 0
+	runtime.Semrelease(&m.sema)
 }
 
 // TryLock tries to lock m and reports whether it succeeded.
 func (m *Mutex) TryLock() bool {
-	if m.locked == 0 {
-		m.locked = 1
+	if m.state == 0 {
+		m.state = 1
 		return true
 	}
 	return false

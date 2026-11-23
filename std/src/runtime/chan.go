@@ -37,6 +37,7 @@ type waiter struct {
 	next   *waiter
 	elem   any // send: value waiting; recv: destination slot after write
 	isSend bool
+	cas    *scase // select case object (same ref as cases[casi])
 }
 
 // chanOps is the narrow payload-move interface (04). Generated send/recv
@@ -114,7 +115,6 @@ func (q *waitq) releaseAll() {
 		}
 		if w.sel != nil {
 			trySelectReady(w)
-			continue
 		}
 		goready(w.park)
 	}
@@ -144,6 +144,11 @@ func chanSend(c *hchan, v any, ops *chanOps, block bool) bool {
 			continue // lost select race
 		}
 		ops.toRecv(w, v)
+		// Publish into the select case (write-before-ready).
+		if w.cas != nil {
+			w.cas.elem = v
+			w.cas.ok = true
+		}
 		goready(w.park)
 		return true
 	}

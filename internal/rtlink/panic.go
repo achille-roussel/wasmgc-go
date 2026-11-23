@@ -11,6 +11,8 @@ import (
 
 // EnsurePanic links body-less runtime panic/defer symbols from
 // std/src/runtime/panic.go when the module needs them. Codegen fills EH bodies.
+// panicIndex + itoa live in panic_index.go and are linked only when needed so
+// closure/nil-check programs do not pull digit tables (M5 size).
 //
 // When package sync (or anything else) imports runtime, PackageHigh already
 // lowers panic.go with opaque *byte params; we still must rewrite those to
@@ -21,6 +23,7 @@ func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 	}
 	need := scanPanicNeeds(mod)
 	missing := panicSymsMissing(mod)
+	needIndex := scanPanicIndex(mod)
 	// Also fix signatures when runtime was loaded as a package dependency
 	// (opaque *byte params) even if scanPanicNeeds is currently false.
 	hasPanicSyms := mod.LookupFunc("runtime.unrecoveredPanic") != nil ||
@@ -44,9 +47,56 @@ func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 		}
 		hasPanicSyms = true
 	}
+	if needIndex && mod.LookupFunc("runtime.panicIndex") == nil {
+		if rewriteDir == "" {
+			return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime panic_index")
+		}
+		path := filepath.Join(rewriteDir, "runtime", "panic_index.go")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("rtlink: read %s: %w", path, err)
+		}
+		// Type-check with panic.go so throwPanic is in scope.
+		core := filepath.Join(rewriteDir, "runtime", "panic.go")
+		coreSrc, err := os.ReadFile(core)
+		if err != nil {
+			return fmt.Errorf("rtlink: read %s: %w", core, err)
+		}
+		fset, files, pkg, info, err := lower.TypeCheckFiles(
+			[]string{core, path},
+			[]string{string(coreSrc), string(src)},
+		)
+		if err != nil {
+			return fmt.Errorf("rtlink: typecheck panic_index.go: %w", err)
+		}
+		// Only append the index file's funcs: strip index syms, lower both,
+		// then drop duplicate core symbols that AppendFiles would re-add.
+		stripPanicIndexFuncs(mod)
+		prior := append([]*ir.Func(nil), mod.Funcs...)
+		if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
+			return fmt.Errorf("rtlink: lower panic_index.go: %w", err)
+		}
+		// Keep prior funcs; add only panicIndex/itoa/digit from the append.
+		index := map[string]*ir.Func{}
+		for _, f := range mod.Funcs {
+			switch f.Name {
+			case "runtime.panicIndex", "runtime.itoa", "runtime.digit":
+				index[f.Name] = f
+			}
+		}
+		mod.Funcs = prior
+		for _, name := range []string{"runtime.panicIndex", "runtime.itoa", "runtime.digit"} {
+			if f := index[name]; f != nil && mod.LookupFunc(name) == nil {
+				mod.Funcs = append(mod.Funcs, f)
+			}
+		}
+		hasPanicSyms = true
+	}
 	if hasPanicSyms {
 		fixPanicSignatures(mod)
 	}
+	// Drop unused static panic helpers (divide/uncomparable/…) when unreferenced.
+	stripUnreferencedPanicHelpers(mod)
 	return nil
 }
 
@@ -66,18 +116,34 @@ func panicSymsMissing(mod *ir.Module) bool {
 			return true
 		}
 	}
-	// High ops / try also need the core panic suite even without direct calls.
+	// Core suite (without panicIndex — that is optional / separate file).
 	for _, s := range []string{
-		"runtime.throwPanic", "runtime.deferRun", "runtime.panicIndex",
-		"runtime.panicTypeAssert", "runtime.panicNil",
+		"runtime.throwPanic", "runtime.deferRun", "runtime.panicNil",
 	} {
 		if mod.LookupFunc(s) == nil {
-			// Only require if scanPanicNeeds already said we need panics;
-			// missing any core symbol means we should (re)link.
 			return true
 		}
 	}
 	return false
+}
+
+func scanPanicIndex(mod *ir.Module) bool {
+	need := false
+	for _, f := range mod.Funcs {
+		walkCalls(f.Body, func(name string) {
+			if name == "runtime.panicIndex" {
+				need = true
+			}
+		})
+		walkHighOps(f.Body, func(op ir.Op) {
+			switch op {
+			case ir.OpSliceGet, ir.OpSliceSet, ir.OpStringGet,
+				ir.OpSliceAppend, ir.OpSliceSlice, ir.OpStringSlice:
+				need = true
+			}
+		})
+	}
+	return need
 }
 
 func fixPanicSignatures(mod *ir.Module) {
@@ -151,9 +217,61 @@ func stripPanicFuncs(mod *ir.Module) {
 	for _, s := range panicSyms {
 		names[s] = true
 	}
+	names["runtime.itoa"] = true
+	names["runtime.digit"] = true
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
 		if names[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
+func stripPanicIndexFuncs(mod *ir.Module) {
+	names := map[string]bool{
+		"runtime.panicIndex": true,
+		"runtime.itoa":       true,
+		"runtime.digit":      true,
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if names[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
+// stripUnreferencedPanicHelpers removes static panic* message funcs that nothing
+// calls. Keeps EH body-less symbols and anything still referenced.
+func stripUnreferencedPanicHelpers(mod *ir.Module) {
+	optional := []string{
+		"runtime.panicSliceB",
+		"runtime.panicDivide",
+		"runtime.panicUncomparable",
+		"runtime.panicTypeAssert",
+		"runtime.panicNil",
+		"runtime.goexit",
+	}
+	refs := map[string]bool{}
+	for _, f := range mod.Funcs {
+		walkCalls(f.Body, func(name string) { refs[name] = true })
+	}
+	drop := map[string]bool{}
+	for _, s := range optional {
+		if !refs[s] {
+			drop[s] = true
+		}
+	}
+	if len(drop) == 0 {
+		return
+	}
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if drop[f.Name] {
 			continue
 		}
 		out = append(out, f)

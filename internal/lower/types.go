@@ -96,6 +96,7 @@ func (l *pkgLower) ensureChanBaseTypes() {
 		})
 	}
 	if td := l.mod.LookupType("$go.waiter"); td != nil && len(td.Fields) == 0 {
+		// Match runtime.waiter (incl. cas for select publish).
 		td.Fields = []ir.Field{
 			{Name: "park", Type: ir.TypeI32, Mut: true},
 			{Name: "sel", Type: &ir.Ref{Null: true, Named: "$go.select"}, Mut: true},
@@ -103,6 +104,7 @@ func (l *pkgLower) ensureChanBaseTypes() {
 			{Name: "next", Type: &ir.Ref{Null: true, Named: "$go.waiter"}, Mut: true},
 			{Name: "elem", Type: typeIface, Mut: true},
 			{Name: "isSend", Type: ir.TypeI32, Mut: true},
+			{Name: "cas", Type: &ir.Ref{Null: true, Named: "$go.scase"}, Mut: true},
 		}
 	}
 	if l.mod.LookupType("$go.chan") == nil {

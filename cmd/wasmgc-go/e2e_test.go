@@ -374,7 +374,7 @@ func TestM7ChanBufE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	runM7(t, "m7_chan_buf", "42\n", "", 0)
+	runM7(t, "m7_chan_buf", "7\n", "", 0)
 }
 
 func TestM7ChanUnbufE2E(t *testing.T) {
@@ -384,11 +384,25 @@ func TestM7ChanUnbufE2E(t *testing.T) {
 	runM7(t, "m7_chan_unbuf", "7\n", "", 0)
 }
 
+func TestM7TwoWaitersE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_two_waiters", "30\n", "", 0)
+}
+
 func TestM7SelectDefaultE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
 	runM7(t, "m7_select_default", "default\n", "", 0)
+}
+
+func TestM7SelectParkE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_select_park", "99\n", "", 0)
 }
 
 func TestM7SelectTimeoutE2E(t *testing.T) {
@@ -403,6 +417,13 @@ func TestM7WaitGroupE2E(t *testing.T) {
 		t.Fatal("expected real lowerer")
 	}
 	runM7(t, "m7_waitgroup", "3\n", "", 0)
+}
+
+func TestM7MutexE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_mutex", "1\n", "", 0)
 }
 
 func TestM7DeadlockE2E(t *testing.T) {

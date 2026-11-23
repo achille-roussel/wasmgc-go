@@ -37,15 +37,16 @@ type runqnode struct {
 }
 
 var (
-	gp          *g       // current goroutine; Wasm lowers this to global $g
-	runqHead    *runqnode
-	runqTail    *runqnode
-	runqLen     int32
-	goidGen   int32
-	ngo       int32 // started and not yet returned
-	nparked   int32 // currently parked (waiting for ready)
-	ntimers   int32 // armed timers that can call ready
-	parkIDGen int32
+	gp            *g // current goroutine; Wasm lowers this to global $g
+	runqHead      *runqnode
+	runqTail      *runqnode
+	runqLen       int32
+	goidGen       int32
+	ngo           int32 // started and not yet returned
+	nparked       int32 // currently parked (waiting for ready)
+	npendingReady int32 // readied but not yet resumed (JSPI)
+	ntimers       int32 // armed timers that can call ready
+	parkIDGen     int32
 )
 
 func init() {
@@ -140,11 +141,18 @@ func gopark(id int32, reason int32) {
 		gp.park = 0
 	}
 	nparked--
+	// Pair with goready's npendingReady++ when this park was readied early.
+	if npendingReady > 0 {
+		npendingReady--
+	}
 }
 
 // goready signals park id. Non-suspending.
+// A readied goroutine will resume when the current activation parks; count it
+// as runnable for deadlock checks until its gopark returns.
 func goready(id int32) {
 	ready(id)
+	npendingReady++
 }
 
 // Gosched yields to a macrotask so spawned goroutines and timers can run.
@@ -164,8 +172,9 @@ func checkDeadlock(reason int32) {
 	if reason == waitReasonHostCallback {
 		return
 	}
-	// Runnable after this park: other unparked goroutines, the run queue, timers.
-	runnableElse := (ngo - nparked - 1) + runqLen
+	// Runnable after this park: other unparked goroutines, the run queue,
+	// timers, and goroutines already readied but not yet resumed.
+	runnableElse := (ngo - nparked - 1) + runqLen + npendingReady
 	if runnableElse > 0 || ntimers > 0 {
 		return
 	}

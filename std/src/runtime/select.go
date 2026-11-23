@@ -81,7 +81,7 @@ func selectGo(cases []scase) int32 {
 		if cs.kind == 2 || cs.c == nil {
 			continue
 		}
-		w := &waiter{park: sel.park, sel: sel, casi: i, isSend: cs.kind == 1}
+		w := &waiter{park: sel.park, sel: sel, casi: i, isSend: cs.kind == 1, cas: cs}
 		if cs.kind == 1 {
 			cs.ops.toWaiter(w, cs.elem)
 		}
@@ -100,7 +100,7 @@ func selectGo(cases []scase) int32 {
 		if w == nil {
 			continue
 		}
-		cs := &cases[i]
+		cs := cases[i] // ref-typed struct; do not take &cases[i] (no alias)
 		if i != win {
 			if cs.kind == 1 {
 				cs.c.sendq.remove(w)
@@ -110,6 +110,7 @@ func selectGo(cases []scase) int32 {
 			continue
 		}
 		if cs.kind == 0 {
+			// Assign through the local ref (same object as cases[i] in the array).
 			if cs.c.closed != 0 && w.elem == nil {
 				cs.elem = cs.ops.zero()
 				cs.ok = false
