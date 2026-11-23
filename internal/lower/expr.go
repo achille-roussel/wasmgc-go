@@ -8,6 +8,7 @@ import (
 	"go/types"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 // expr lowers e to an IR expression. want is a hint for untyped constants.
@@ -673,7 +674,19 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 				return sig
 			}
 		}
-	case *ast.FuncLit, *ast.CallExpr, *ast.IndexExpr, *ast.ParenExpr:
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		// Max[int](...) is a direct generic call, not a func-value call.
+		if fl.indexExprGenericFunc(fun) != nil {
+			return nil
+		}
+		tv := fl.info.Types[fun]
+		if tv.Type == nil {
+			return nil
+		}
+		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+			return sig
+		}
+	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr:
 		tv := fl.info.Types[fun]
 		if tv.Type == nil {
 			return nil
@@ -683,6 +696,37 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		}
 	}
 	return nil
+}
+
+// indexExprGenericFunc returns the generic Func origin when fun is F[T] / F[T,U]
+// naming a generic function (instantiation used as a call callee).
+func (fl *funcLower) indexExprGenericFunc(fun ast.Expr) *types.Func {
+	var x ast.Expr
+	switch fun := fun.(type) {
+	case *ast.IndexExpr:
+		x = fun.X
+	case *ast.IndexListExpr:
+		x = fun.X
+	default:
+		return nil
+	}
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	fn, ok := fl.info.Uses[id].(*types.Func)
+	if !ok {
+		return nil
+	}
+	origin := fn.Origin()
+	if origin == nil {
+		origin = fn
+	}
+	sig, _ := origin.Type().(*types.Signature)
+	if sig == nil || sig.TypeParams().Len() == 0 {
+		return nil
+	}
+	return origin
 }
 
 func (fl *funcLower) isConversion(e *ast.CallExpr) bool {
@@ -973,7 +1017,18 @@ func (fl *funcLower) callAsExpr(e *ast.CallExpr, resultTypes []ir.Type) (ir.Expr
 }
 
 func (fl *funcLower) resolveCallee(e *ast.CallExpr) (name string, results []ir.Type, err error) {
-	switch fun := e.Fun.(type) {
+	if name, results, ok, err := fl.resolveGenericCallee(e); ok || err != nil {
+		return name, results, err
+	}
+	// Unwrap Max[int](...) / Max[A,B](...) to the function Ident.
+	fun := e.Fun
+	switch x := fun.(type) {
+	case *ast.IndexExpr:
+		fun = x.X
+	case *ast.IndexListExpr:
+		fun = x.X
+	}
+	switch fun := fun.(type) {
 	case *ast.Ident:
 		obj := fl.info.Uses[fun]
 		if obj == nil {
@@ -1066,18 +1121,18 @@ func methodIRName(fn *types.Func) string {
 		pkg = fn.Pkg().Name()
 	}
 	rt := recv.Type()
+	ptr := false
 	if p, ok := types.Unalias(rt).(*types.Pointer); ok {
-		named, _ := types.Unalias(p.Elem()).(*types.Named)
-		tname := "T"
-		if named != nil {
-			tname = named.Obj().Name()
-		}
-		return pkg + ".(*" + tname + ")." + fn.Name()
+		ptr = true
+		rt = p.Elem()
 	}
 	named, _ := types.Unalias(rt).(*types.Named)
 	tname := "T"
 	if named != nil {
-		tname = named.Obj().Name()
+		tname = named.Obj().Name() + mono.NamedIRSuffix(named)
+	}
+	if ptr {
+		return pkg + ".(*" + tname + ")." + fn.Name()
 	}
 	return pkg + "." + tname + "." + fn.Name()
 }
@@ -1105,8 +1160,23 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		}
 	}
 	if sig == nil {
-		if obj, _ := fl.info.Uses[identOf(e.Fun)].(*types.Func); obj != nil {
-			sig, _ = obj.Type().(*types.Signature)
+		if id := identOf(e.Fun); id != nil {
+			if inst, ok := fl.info.Instances[id]; ok {
+				if s, ok := inst.Type.(*types.Signature); ok {
+					sig = s
+				}
+			}
+			if sig == nil {
+				if obj, _ := fl.info.Uses[id].(*types.Func); obj != nil {
+					sig, _ = obj.Type().(*types.Signature)
+					// Origin generic sig still has type params; prefer instantiated.
+					if sig != nil && sig.TypeParams().Len() > 0 && len(fl.pkg.subst) > 0 {
+						if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+							sig = s
+						}
+					}
+				}
+			}
 		}
 	}
 

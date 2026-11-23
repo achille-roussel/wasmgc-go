@@ -1,6 +1,12 @@
-// Package mono will monomorphize generic functions and methods into concrete
-// IR instantiations (docs/design/01-architecture.md, decision in 10).
+// Package mono monomorphizes generic functions and methods into concrete
+// IR instantiations (docs/design/01-architecture.md, decision 6 in 10).
 //
-// For M1/M2 this package is a stub: programs without type parameters need no
-// work, and Package rejects unsupported generics with a clear error.
+// Every reachable instantiation becomes one IR function. Identical type-argument
+// lists share one function. Generic methods are not itable entries: a call on a
+// concrete receiver specializes; a call through an interface uses the ordinary
+// (already concrete) method set.
+//
+// Dictionaries are not used. Naming uses '$' as the type-argument separator so
+// IR identifiers stay lexer-safe: pkg.Max$int, pkg.Pair$int.Sum,
+// pkg.(*Pair$int).Get.
 package mono

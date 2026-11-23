@@ -146,7 +146,11 @@ func (fl *funcLower) freshLabel(prefix string) string {
 
 func (fl *funcLower) typeOf(e ast.Expr) types.Type {
 	if t, ok := fl.info.Types[e]; ok && t.Type != nil {
-		return t.Type
+		ty := t.Type
+		if len(fl.pkg.subst) > 0 {
+			ty = fl.pkg.subst.Apply(ty)
+		}
+		return ty
 	}
 	return nil
 }
@@ -165,7 +169,11 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	if v, ok := fl.vars[obj]; ok {
 		return v, nil, nil
 	}
-	ty, err := fl.mapType(obj.Type())
+	objTy := obj.Type()
+	if len(fl.pkg.subst) > 0 {
+		objTy = fl.pkg.subst.Apply(objTy)
+	}
+	ty, err := fl.mapType(objTy)
 	if err != nil {
 		return nil, nil, fl.errorf(id, "%v", err)
 	}

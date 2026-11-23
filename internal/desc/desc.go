@@ -926,7 +926,26 @@ func TypeKey(t types.Type) string {
 		if t.Obj().Pkg() != nil {
 			pkg = t.Obj().Pkg().Name() + "."
 		}
-		return pkg + t.Obj().Name()
+		suffix := ""
+		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
+			var b strings.Builder
+			ok := true
+			for i := 0; i < targs.Len(); i++ {
+				a := targs.At(i)
+				if _, isTP := types.Unalias(a).(*types.TypeParam); isTP {
+					ok = false
+					break
+				}
+				if i > 0 {
+					b.WriteByte('$')
+				}
+				b.WriteString(TypeKey(a))
+			}
+			if ok {
+				suffix = "$" + b.String()
+			}
+		}
+		return pkg + t.Obj().Name() + suffix
 	case *types.Pointer:
 		return "*" + TypeKey(t.Elem())
 	case *types.Interface:
@@ -965,18 +984,36 @@ func methodIRName(fn *types.Func) string {
 		return pkg + "." + fn.Name()
 	}
 	rt := recv.Type()
+	ptr := false
 	if p, ok := types.Unalias(rt).(*types.Pointer); ok {
-		named, _ := types.Unalias(p.Elem()).(*types.Named)
-		tname := "T"
-		if named != nil {
-			tname = named.Obj().Name()
-		}
-		return pkg + ".(*" + tname + ")." + fn.Name()
+		ptr = true
+		rt = p.Elem()
 	}
 	named, _ := types.Unalias(rt).(*types.Named)
 	tname := "T"
 	if named != nil {
 		tname = named.Obj().Name()
+		if targs := named.TypeArgs(); targs != nil && targs.Len() > 0 {
+			var b strings.Builder
+			ok := true
+			for i := 0; i < targs.Len(); i++ {
+				a := targs.At(i)
+				if _, isTP := types.Unalias(a).(*types.TypeParam); isTP {
+					ok = false
+					break
+				}
+				if i > 0 {
+					b.WriteByte('$')
+				}
+				b.WriteString(TypeKey(a))
+			}
+			if ok {
+				tname += "$" + b.String()
+			}
+		}
+	}
+	if ptr {
+		return pkg + ".(*" + tname + ")." + fn.Name()
 	}
 	return pkg + "." + tname + "." + fn.Name()
 }
@@ -1030,7 +1067,26 @@ func structName(t *types.Named) string {
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name()
 	}
-	return "$go.struct." + pkg + "." + t.Obj().Name()
+	suffix := ""
+	if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
+		var b strings.Builder
+		ok := true
+		for i := 0; i < targs.Len(); i++ {
+			a := targs.At(i)
+			if _, isTP := types.Unalias(a).(*types.TypeParam); isTP {
+				ok = false
+				break
+			}
+			if i > 0 {
+				b.WriteByte('$')
+			}
+			b.WriteString(TypeKey(a))
+		}
+		if ok {
+			suffix = "$" + b.String()
+		}
+	}
+	return "$go.struct." + pkg + "." + t.Obj().Name() + suffix
 }
 
 // runtimeStructAliasName mirrors lower.runtimeStructAlias for eq bodies.

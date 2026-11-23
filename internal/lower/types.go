@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 // TypeStringRef is the IR type of a Go string value.
@@ -18,8 +19,13 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	if t == nil {
 		return nil, fmt.Errorf("nil type")
 	}
+	if len(l.subst) > 0 {
+		t = l.subst.Apply(t)
+	}
 	t = types.Unalias(t)
 	switch t := t.(type) {
+	case *types.TypeParam:
+		return nil, fmt.Errorf("unsubstituted type parameter %s", t)
 	case *types.Basic:
 		return mapBasic(t)
 	case *types.Named:
@@ -510,7 +516,7 @@ func structTypeName(t *types.Named) string {
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name()
 	}
-	return "$go.struct." + pkg + "." + t.Obj().Name()
+	return "$go.struct." + pkg + "." + t.Obj().Name() + mono.NamedIRSuffix(t)
 }
 
 // runtimeStructAlias maps runtime named structs onto the shared $go.* layouts

@@ -39,6 +39,14 @@ func TestM2FibE2E(t *testing.T) {
 	runM2(t, "fib", "6765\n", 0)
 }
 
+// TestGenericMaxE2E: monomorphized Max/Identity and Pair[T].First.
+func TestGenericMaxE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "generic_max", "7\n2\n9\n5\n", 16384)
+}
+
 
 // TestM3AppendE2E: slice lit + append → 4\n4\n.
 func TestM3AppendE2E(t *testing.T) {
