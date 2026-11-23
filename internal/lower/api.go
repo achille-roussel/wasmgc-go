@@ -120,6 +120,8 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package) error {
 //	}
 //
 // It does not set Module.Low; Package calls RuntimeOps after Finish.
+// Inits linked later via AppendFiles (rtlink.EnsureSched, etc.) are wired by
+// LinkPendingInits after those Ensure* calls.
 func Finish(mod *ir.Module) error {
 	if mod == nil {
 		return fmt.Errorf("lower.Finish: nil module")
@@ -153,6 +155,88 @@ func Finish(mod *ir.Module) error {
 	mod.Funcs = append([]*ir.Func{run}, mod.Funcs...)
 	md.finished = true
 	return nil
+}
+
+// LinkPendingInits prepends any meta.initOrder entries not yet called from
+// main.run. EnsureSched / EnsureMaps AppendFiles after Finish can register
+// runtime.init (sets gp / ngo); without this hook the first park deadlocks
+// ("all goroutines are asleep") and DCE drops the unreachable init.
+func LinkPendingInits(mod *ir.Module) {
+	if mod == nil {
+		return
+	}
+	md := metaOf(mod)
+	if md == nil || len(md.initOrder) == 0 {
+		return
+	}
+	run := mod.LookupFunc("main.run")
+	if run == nil || run.Body == nil {
+		return
+	}
+	called := map[string]bool{}
+	walkInitCalls(run.Body, func(name string) { called[name] = true })
+	var missing []string
+	for _, name := range md.initOrder {
+		if called[name] {
+			continue
+		}
+		if mod.LookupFunc(name) == nil {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) == 0 {
+		return
+	}
+	seq, ok := run.Body.(*ir.Seq)
+	if !ok {
+		return
+	}
+	// Insert before main.main (or at start if the body was EH-wrapped later).
+	insert := make([]ir.Stmt, 0, len(missing))
+	for _, name := range missing {
+		insert = append(insert, &ir.ExprStmt{
+			X: &ir.Instr{Op: ir.OpCall, Func: name},
+		})
+	}
+	idx := 0
+	for i, s := range seq.Stmts {
+		if es, ok := s.(*ir.ExprStmt); ok {
+			if in, ok := es.X.(*ir.Instr); ok && in.Op == ir.OpCall && in.Func == "main.main" {
+				idx = i
+				break
+			}
+		}
+	}
+	out := make([]ir.Stmt, 0, len(seq.Stmts)+len(insert))
+	out = append(out, seq.Stmts[:idx]...)
+	out = append(out, insert...)
+	out = append(out, seq.Stmts[idx:]...)
+	seq.Stmts = out
+}
+
+func walkInitCalls(r ir.Region, fn func(string)) {
+	if r == nil {
+		return
+	}
+	switch r := r.(type) {
+	case *ir.Seq:
+		for _, s := range r.Stmts {
+			if es, ok := s.(*ir.ExprStmt); ok {
+				if in, ok := es.X.(*ir.Instr); ok && in.Op == ir.OpCall {
+					fn(in.Func)
+				}
+			}
+			if nested, ok := s.(ir.Region); ok {
+				walkInitCalls(nested, fn)
+			}
+		}
+	case *ir.Block:
+		walkInitCalls(r.Body, fn)
+	case *ir.Try:
+		walkInitCalls(r.Body, fn)
+		walkInitCalls(r.Handler, fn)
+	}
 }
 
 // meta holds whole-program state shared across package lowering.
