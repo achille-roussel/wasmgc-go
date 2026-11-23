@@ -623,8 +623,8 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 	}
 }
 
-// rangeStmt lowers for-range over slices (and arrays) to an index loop.
-// Maps/chans/strings wait for later milestones.
+// rangeStmt lowers for-range over slices/arrays (index loop) and channels
+// (recv until !ok). Maps/strings wait for later milestones.
 func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
 	prevDeferLoop := fl.deferInLoop
 	fl.deferInLoop = true
@@ -637,8 +637,10 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	switch u.(type) {
 	case *types.Slice, *types.Array:
 		// ok
+	case *types.Chan:
+		return fl.rangeChanStmt(s, goLabel)
 	default:
-		return nil, fl.errorf(s.X, "range over %s not supported in M4", xType)
+		return nil, fl.errorf(s.X, "range over %s not supported", xType)
 	}
 	xIR, err := fl.mapType(xType)
 	if err != nil {
@@ -726,6 +728,117 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(i, &ir.Instr{
 		Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(1)},
 	}))
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
+
+	loop := &ir.Loop{Name: loopL, Body: bodySeq}
+	out = append(out, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{loop}}})
+	return out, nil
+}
+
+// rangeChanStmt lowers `for v := range ch` / `for range ch` to recv-until-!ok.
+func (fl *funcLower) rangeChanStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
+	if s.Key != nil && s.Value != nil {
+		return nil, fl.errorf(s, "range over chan allows at most one iteration variable")
+	}
+	fl.pkg.ensureChanBaseTypes()
+	if fl.pkg.meta != nil {
+		fl.pkg.meta.needsSched = true
+	}
+	xType := fl.typeOf(s.X)
+	xIR, err := fl.mapType(xType)
+	if err != nil {
+		return nil, fl.errorf(s.X, "%v", err)
+	}
+	x, xstmts, err := fl.expr(s.X, xIR)
+	if err != nil {
+		return nil, err
+	}
+	var out []ir.Stmt
+	out = append(out, xstmts...)
+	xv := fl.newVar("rch", xIR)
+	out = append(out, fl.assignVar(xv, x))
+
+	elemGo := chanElem(xType)
+	var valTy ir.Type = typeIface
+	if elemGo != nil {
+		if t, err := fl.mapType(elemGo); err == nil {
+			valTy = t
+		}
+	}
+	var valVar *ir.Var
+	iter := s.Key
+	if s.Value != nil {
+		iter = s.Value
+	}
+	if iter != nil {
+		if id, ok := iter.(*ast.Ident); ok && id.Name != "_" {
+			obj := fl.info.Defs[id]
+			if obj != nil {
+				vt, err := fl.mapType(obj.Type())
+				if err != nil {
+					return nil, fl.errorf(iter, "%v", err)
+				}
+				valVar = &ir.Var{Name: id.Name, Typ: vt}
+				fl.vars[obj] = valVar
+				fl.extraLocals = append(fl.extraLocals, valVar)
+				valTy = vt
+			}
+		}
+	}
+
+	var breakL, contL, loopL string
+	if goLabel != "" {
+		breakL = "$" + goLabel + ".break"
+		contL = "$" + goLabel + ".cont"
+		loopL = "$" + goLabel
+		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
+	} else {
+		breakL = fl.freshLabel("break")
+		contL = fl.freshLabel("cont")
+		loopL = fl.freshLabel("L")
+	}
+	fl.breakStack = append(fl.breakStack, breakL)
+	fl.continueStack = append(fl.continueStack, contL)
+	defer func() {
+		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
+		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
+		if goLabel != "" {
+			delete(fl.labels, goLabel)
+		}
+	}()
+
+	bodySeq := &ir.Seq{}
+	recv := &ir.Instr{
+		Op:   ir.OpChanRecv,
+		Type: valTy,
+		Str:  "ok",
+		Args: []ir.Expr{fl.useVar(xv)},
+	}
+	if elemGo != nil {
+		recv.Global = desc.TypeKey(elemGo)
+		recv.Field = boxKind(elemGo)
+	}
+	vt := fl.newTemp(valTy)
+	ot := fl.newTemp(ir.TypeI32)
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Assign{
+		Lhs: []ir.Dest{
+			{Temp: vt, Name: vt.Name},
+			{Temp: ot, Name: ot.Name},
+		},
+		Rhs: recv,
+	})
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
+		Label: breakL,
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useTemp(ot)}},
+	})
+	if valVar != nil {
+		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, fl.useTemp(vt)))
+	}
+	inner, err := fl.stmtBlock(s.Body)
+	if err != nil {
+		return nil, err
+	}
+	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Block{Name: contL, Body: inner})
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{Label: loopL})
 
 	loop := &ir.Loop{Name: loopL, Body: bodySeq}

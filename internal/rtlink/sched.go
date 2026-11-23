@@ -10,12 +10,15 @@ import (
 )
 
 // EnsureSched links M7 scheduler / channel / select / sema / timer sources when
-// the module uses go, channels, or parking imports.
+// the module uses go, channels, or parking imports. Optional pieces (select,
+// timers, sema, rand) are linked only when the IR references them so a plain
+// channel program does not pay for selectGo / timeSleep / mutex support.
 func EnsureSched(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	if !scanSchedNeeds(mod) {
+	need := scanSchedNeeds(mod)
+	if !need.any {
 		return nil
 	}
 	if mod.LookupFunc("runtime.go_") != nil && mod.LookupFunc("runtime.sched") != nil {
@@ -26,9 +29,18 @@ func EnsureSched(mod *ir.Module, rewriteDir string) error {
 		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime scheduler")
 	}
 	files := []string{
-		"proc.go", "chan.go", "select.go", "sema.go", "time.go", "rand.go",
+		"proc.go", "chan.go",
 		// throw / fatal / panicObj; exit; print* for fatal.
 		"fatal.go", "bridge.go", "print.go",
+	}
+	if need.select_ {
+		files = append(files, "select.go", "rand.go")
+	}
+	if need.time {
+		files = append(files, "time.go")
+	}
+	if need.sema {
+		files = append(files, "sema.go")
 	}
 	var filenames []string
 	var srcs []string
@@ -174,33 +186,61 @@ var schedSyms = []string{
 	"runtime.go_", "runtime.newproc", "runtime.sched", "runtime.gopark",
 	"runtime.goready", "runtime.makechan", "runtime.chanSend", "runtime.chanRecv",
 	"runtime.chanClose", "runtime.selectGo", "runtime.defaultChanOps",
-	"runtime.timeSleep", "runtime.semacquire", "runtime.semrelease",
+	"runtime.chanRecvNonblock", "runtime.trySelectReady",
+	"runtime.timeSleep", "runtime.TimeSleep", "runtime.semacquire", "runtime.semrelease",
 	"runtime.runtime_Semacquire", "runtime.runtime_Semrelease",
+	"runtime.runtime_SemacquireMutex", "runtime.runtime_SemacquireRWMutex",
+	"runtime.runtime_SemacquireRWMutexR", "runtime.runtime_SemacquireWaitGroup",
+	"runtime.Semacquire", "runtime.Semrelease",
 	"runtime.park", "runtime.ready", "runtime.spawn", "runtime.goschedImport",
 	"runtime.scheduleTimer", "runtime.clearTimer", "runtime.throw", "runtime.fatal",
 	"runtime.Gosched", "runtime.getg", "runtime.mintParkID",
 	"runtime.fastrand", "runtime.fastrandn",
 }
 
-func scanSchedNeeds(mod *ir.Module) bool {
-	need := false
+// schedNeed is the granular set of runtime pieces a module requires.
+type schedNeed struct {
+	any     bool
+	select_ bool
+	time    bool
+	sema    bool
+}
+
+func scanSchedNeeds(mod *ir.Module) schedNeed {
+	var need schedNeed
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
 			case "runtime.go_", "runtime.newproc", "runtime.chanSend", "runtime.chanRecv",
-				"runtime.chanClose", "runtime.selectGo", "runtime.makechan",
-				"runtime.timeSleep", "runtime.semacquire", "runtime.semrelease",
-				"runtime.runtime_Semacquire", "runtime.runtime_Semrelease",
+				"runtime.chanClose", "runtime.makechan", "runtime.defaultChanOps",
 				"runtime.gopark", "runtime.goready", "runtime.Gosched",
 				"runtime.park", "runtime.ready", "runtime.spawn",
-				"runtime.defaultChanOps":
-				need = true
+				"runtime.trySelectReady":
+				need.any = true
+			case "runtime.selectGo", "runtime.chanRecvNonblock",
+				"runtime.fastrand", "runtime.fastrandn":
+				need.any = true
+				need.select_ = true
+			case "runtime.timeSleep", "runtime.TimeSleep",
+				"runtime.scheduleTimer", "runtime.clearTimer":
+				need.any = true
+				need.time = true
+			case "runtime.semacquire", "runtime.semrelease",
+				"runtime.runtime_Semacquire", "runtime.runtime_Semrelease",
+				"runtime.runtime_SemacquireMutex", "runtime.runtime_SemacquireRWMutex",
+				"runtime.runtime_SemacquireRWMutexR", "runtime.runtime_SemacquireWaitGroup",
+				"runtime.Semacquire", "runtime.Semrelease":
+				need.any = true
+				need.sema = true
 			}
 		})
 		walkHighOps(f.Body, func(op ir.Op) {
 			switch op {
-			case ir.OpGo, ir.OpChanMake, ir.OpChanSend, ir.OpChanRecv, ir.OpChanClose, ir.OpSelect:
-				need = true
+			case ir.OpGo, ir.OpChanMake, ir.OpChanSend, ir.OpChanRecv, ir.OpChanClose:
+				need.any = true
+			case ir.OpSelect:
+				need.any = true
+				need.select_ = true
 			}
 		})
 	}

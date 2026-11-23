@@ -321,13 +321,25 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 		}})
 	}
 
-	// chosen := selectGo(cases)
+	// chosen, recv, recvOK := selectGo(cases)
+	// Recv payload is returned directly: mutating cases[i].elem across a park
+	// is not reliably visible to the caller (struct value / slice slot).
 	chosen := fl.newVar("chosen", ir.TypeI32)
-	out = append(out, fl.assignVar(chosen, &ir.Instr{
+	recvIface := fl.newVar("selRecv", typeIface)
+	recvOK := fl.newVar("selOK", ir.TypeI32)
+	callSel := &ir.Instr{
 		Op:   ir.OpCall,
 		Func: "runtime.selectGo",
 		Args: []ir.Expr{fl.useVar(cases)},
-	}))
+	}
+	out = append(out, &ir.Assign{
+		Lhs: []ir.Dest{
+			{Var: chosen, Name: chosen.Name},
+			{Var: recvIface, Name: recvIface.Name},
+			{Var: recvOK, Name: recvOK.Name},
+		},
+		Rhs: callSel,
+	})
 
 	// Dispatch on chosen index.
 	breakL := fl.freshLabel("sel")
@@ -341,52 +353,39 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 		}
 		meta := casesMeta[i]
 		body := &ir.Seq{}
-		// Bind recv results from cases[i].elem / .ok when assign form.
+		// Bind recv results from selectGo's returned iface/ok when assign form.
 		if meta.kind == 0 && meta.assign != nil {
-			// Reload scase from slice.
-			scT := fl.newTemp(scaseTy)
-			body.Stmts = append(body.Stmts, fl.assignTemp(scT, &ir.Instr{
-				Op:   ir.OpSliceGet,
-				Type: scaseTy,
-				Args: []ir.Expr{fl.useVar(cases), fl.i32const(int64(i))},
-			}))
-			elemGet := &ir.Instr{
-				Op:    ir.OpStructGet,
-				Type:  &ir.Ref{Named: "$go.scase"},
-				Field: "elem",
-				Args:  []ir.Expr{fl.useTemp(scT)},
-			}
-			// Unbox iface → element type via iface.assert.
-			valTy, err := fl.lhsType(meta.assign.Lhs[0])
-			if err != nil {
-				return nil, err
-			}
-			elemGo := chanElem(fl.typeOf(meta.recvExpr.X))
-			ifaceT := fl.newTemp(typeIface)
-			body.Stmts = append(body.Stmts, fl.assignTemp(ifaceT, elemGet))
-			assert := &ir.Instr{
-				Op:    ir.OpIfaceAssert,
-				Type:  valTy,
-				Field: boxKind(elemGo),
-				Str:   "concrete",
-				Args:  []ir.Expr{fl.useTemp(ifaceT)},
-			}
-			if elemGo != nil {
-				assert.Global = desc.TypeKey(elemGo)
-			}
-			as0, err := fl.assignTo(meta.assign.Lhs[0], assert)
-			if err != nil {
-				return nil, err
-			}
-			body.Stmts = append(body.Stmts, as0...)
-			if meta.recvOk {
-				okGet := &ir.Instr{
-					Op:    ir.OpStructGet,
-					Type:  &ir.Ref{Named: "$go.scase"},
-					Field: "ok",
-					Args:  []ir.Expr{fl.useTemp(scT)},
+			lhs0 := meta.assign.Lhs[0]
+			if id, ok := lhs0.(*ast.Ident); ok && id.Name == "_" {
+				// Discard; do not iface-assert a possibly-unused recv.
+				body.Stmts = append(body.Stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op:   ir.OpDrop,
+					Args: []ir.Expr{fl.useVar(recvIface)},
+				}})
+			} else {
+				valTy, err := fl.lhsType(lhs0)
+				if err != nil {
+					return nil, err
 				}
-				as1, err := fl.assignTo(meta.assign.Lhs[1], okGet)
+				elemGo := chanElem(fl.typeOf(meta.recvExpr.X))
+				assert := &ir.Instr{
+					Op:    ir.OpIfaceAssert,
+					Type:  valTy,
+					Field: boxKind(elemGo),
+					Str:   "concrete",
+					Args:  []ir.Expr{fl.useVar(recvIface)},
+				}
+				if elemGo != nil {
+					assert.Global = desc.TypeKey(elemGo)
+				}
+				as0, err := fl.assignTo(lhs0, assert)
+				if err != nil {
+					return nil, err
+				}
+				body.Stmts = append(body.Stmts, as0...)
+			}
+			if meta.recvOk {
+				as1, err := fl.assignTo(meta.assign.Lhs[1], fl.useVar(recvOK))
 				if err != nil {
 					return nil, err
 				}

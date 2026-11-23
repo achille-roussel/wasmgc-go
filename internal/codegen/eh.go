@@ -300,11 +300,18 @@ func typeIfaceRef() ir.Type {
 }
 
 func (g *gen) wrapRunForUnrecovered() {
-	run := g.m.LookupFunc("main.run")
-	if run == nil || run.Body == nil {
+	// Goroutine entries that can throw $go.panic: main.run and _sched.
+	// An unrecovered panic in either exits 2 with "panic: ..." (04).
+	g.wrapEntryForUnrecovered("main.run")
+	g.wrapEntryForUnrecovered("runtime.sched")
+}
+
+func (g *gen) wrapEntryForUnrecovered(name string) {
+	fn := g.m.LookupFunc(name)
+	if fn == nil || fn.Body == nil {
 		return
 	}
-	if seq, ok := run.Body.(*ir.Seq); ok {
+	if seq, ok := fn.Body.(*ir.Seq); ok {
 		for _, s := range seq.Stmts {
 			if _, ok := s.(*ir.Try); ok {
 				return
@@ -321,12 +328,12 @@ func (g *gen) wrapRunForUnrecovered() {
 		&ir.Unreachable{},
 	}}
 	try := &ir.Try{
-		Body:    run.Body,
+		Body:    fn.Body,
 		Tag:     "$go.panic",
 		Params:  []*ir.Var{payload, exn},
 		Handler: handler,
 	}
-	run.Body = &ir.Seq{Stmts: []ir.Stmt{try}}
+	fn.Body = &ir.Seq{Stmts: []ir.Stmt{try}}
 }
 
 func (fe *funcEmitter) emitTry(r *ir.Try) error {

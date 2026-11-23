@@ -395,14 +395,43 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
 		// User named structs ($go.struct.*) are values: zero is an empty heap
-		// object. Runtime / iface / chan / slice / clos zeros stay null refs.
+		// object. Nested struct fields are filled by structZero (non-null).
+		// Runtime / iface / chan / slice / clos zeros stay null refs.
 		if strings.HasPrefix(t.Named, "$go.struct.") {
 			if td := fl.mod.LookupType(t.Named); td != nil && td.Kind == ir.TypeStruct {
-				return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+				return fl.structZero(td, t, map[string]bool{})
 			}
 		}
 		return &ir.Instr{Op: ir.OpRefNull, Type: t}, nil
 	default:
 		return nil, fmt.Errorf("no zero value for %s", t)
 	}
+}
+
+func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
+	if seen[td.Name] {
+		return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
+	}
+	seen[td.Name] = true
+	args := make([]ir.Expr, len(td.Fields))
+	for i, f := range td.Fields {
+		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			ntd := fl.mod.LookupType(r.Named)
+			if ntd != nil && ntd.Kind == ir.TypeStruct {
+				z, err := fl.structZero(ntd, r, seen)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = z
+				continue
+			}
+		}
+		z, err := fl.zeroValue(f.Type)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = z
+	}
+	delete(seen, td.Name)
+	return &ir.Instr{Op: ir.OpStructNew, Type: t, Args: args}, nil
 }

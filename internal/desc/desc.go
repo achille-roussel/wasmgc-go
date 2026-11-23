@@ -197,6 +197,13 @@ func (g *gen) scanModule() {
 				if in.Global != "" {
 					g.needTypeKey(in.Global) // type key
 				}
+			case ir.OpChanRecv, ir.OpChanSend:
+				// Typed moves / comma-ok unbox need the element descriptor
+				// even when the program never boxes that type via iface.make
+				// (e.g. recv-only from a closed chan).
+				if in.Global != "" {
+					g.needTypeKey(in.Global)
+				}
 			case ir.OpConv:
 				if in.Str == "iface.eq" {
 					// equality uses descriptors already registered via makes

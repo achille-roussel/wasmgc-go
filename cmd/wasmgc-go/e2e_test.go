@@ -405,6 +405,48 @@ func TestM7SelectParkE2E(t *testing.T) {
 	runM7(t, "m7_select_park", "99\n", "", 0)
 }
 
+func TestM7SelectCommaOkE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_select_commaok", "7\n", "", 0)
+}
+
+func TestM7ChanRangeE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_chan_range", "6\n", "", 0)
+}
+
+func TestM7ChanCloseE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_chan_close", "1\n", "", 0)
+}
+
+func TestM7ChanLenCapE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_chan_lencap", "2\n4\n", "", 0)
+}
+
+func TestM7OnceE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_once", "1\n", "", 0)
+}
+
+func TestM7PanicGoroutineE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_panic_g", "", "panic: boom", 2)
+}
+
 func TestM7SelectTimeoutE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")

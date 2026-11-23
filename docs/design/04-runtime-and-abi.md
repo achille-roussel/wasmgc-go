@@ -218,7 +218,7 @@ These names are stable. Codegen and the runtime workstream share this list.
 | `runtime.goexit()` | the `Goexit` tag |
 | `runtime.mapAccess` / `mapAssign` / `mapDelete` | shared map path |
 | `runtime.chanSend` / `chanRecv` / `chanClose` | shared queue path; payload moves via `chanOps` (generated per T) |
-| `runtime.selectGo(cases []scase) int32` | the select algorithm (waiter queues; never 1 ms poll) |
+| `runtime.selectGo(cases []scase) (int32, any, bool)` | the select algorithm (waiter queues; never 1 ms poll); recv win also returns elem, ok |
 | `runtime.timeSleep(ns int64)` | `scheduleTimer` + `gopark` (time.Sleep) |
 | `runtime.semacquire` / `semrelease` | sync.Mutex / WaitGroup hooks |
 | `runtime.sched` | export `_sched`: dequeue one runq closure |

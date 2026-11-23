@@ -324,11 +324,15 @@ func (fe *funcEmitter) emitSwitch(r *ir.Switch) error {
 		caseByVal[c.Value] = c
 	}
 
-	// Blocks: one per table slot + default outermost.
+	// Blocks: one per table slot + exit outermost.
 	// Depths for br_table targets: innermost block = 0.
-	fe.enc.Block(wasm.BlockEmpty()) // default / exit
+	// Push "" placeholders so findLabel depths count these Wasm blocks
+	// (a br $outer from a case body must skip them).
+	fe.enc.Block(wasm.BlockEmpty()) // exit
+	fe.labels = append(fe.labels, "")
 	for i := 0; i < width; i++ {
 		fe.enc.Block(wasm.BlockEmpty())
+		fe.labels = append(fe.labels, "")
 	}
 	if err := fe.emitExpr(r.Tag); err != nil {
 		return err
@@ -341,19 +345,23 @@ func (fe *funcEmitter) emitSwitch(r *ir.Switch) error {
 	for i := 0; i < width; i++ {
 		labels[i] = uint32(i)
 	}
-	fe.enc.BrTable(labels, uint32(width)) // default = outermost of the inner set = width
+	fe.enc.BrTable(labels, uint32(width)) // default = exit at depth width
 
 	for i := 0; i < width; i++ {
 		fe.enc.End() // close case block i
+		fe.labels = fe.labels[:len(fe.labels)-1]
 		val := min + int64(i)
 		if c, ok := caseByVal[val]; ok && c.Body != nil {
 			if err := fe.emitRegion(c.Body); err != nil {
 				return err
 			}
 		}
-		fe.enc.Br(uint32(width - i)) // branch to exit (default outer)
+		// After popping case i, remaining: (width-1-i) case blocks + exit.
+		// Exit is outermost → depth width-i-1.
+		fe.enc.Br(uint32(width - i - 1))
 	}
-	fe.enc.End() // default block
+	fe.enc.End() // exit
+	fe.labels = fe.labels[:len(fe.labels)-1]
 	if r.Default != nil {
 		if err := fe.emitRegion(r.Default); err != nil {
 			return err

@@ -7,31 +7,18 @@ package runtime
 // 3. Default if present.
 // 4. Else enqueue one waiter per case and park once.
 // 5. Partner sets winner and readies; on wake dequeue other waiters.
+//
+// scase / select_ / trySelectReady live in chan.go so programs that only
+// use channels need not link this file (rtlink.EnsureSched).
 
-// scase is one select case. Kind: 0=recv, 1=send, 2=default.
-type scase struct {
-	kind int32
-	c    *hchan
-	ops  *chanOps
-	elem any // send value, or recv result after win
-	ok   bool
-}
-
-// select_ is the park object shared by waiters of one select.
-type select_ struct {
-	park   int32
-	winner int32 // case index, or -1
-	ncase  int32
-	slice  []scase
-	done   int32 // 1 once a case won
-}
-
-// selectGo runs the algorithm. Returns the winning case index.
-func selectGo(cases []scase) int32 {
+// selectGo runs the algorithm. Returns the winning case index and, for a
+// receive win, the received value and ok. The lowerer binds assign-form
+// recv cases from those return values (reliable across park).
+func selectGo(cases []scase) (chosen int32, recv any, recvOK bool) {
 	n := int32(len(cases))
 	if n == 0 {
 		gopark(mintParkID(), waitReasonChanSelect)
-		return -1
+		return -1, nil, false
 	}
 
 	order := make([]int32, n)
@@ -45,25 +32,26 @@ func selectGo(cases []scase) int32 {
 
 	var def int32 = -1
 	for _, oi := range order {
-		cs := &cases[oi]
-		switch cs.kind {
-		case 2:
+		cs := cases[oi]
+		kind := cs.kind
+		if kind == 2 {
 			def = oi
-		case 1:
+		} else if kind == 1 {
 			if chanSend(cs.c, cs.elem, cs.ops, false) {
-				return oi
+				return oi, nil, false
 			}
-		case 0:
+		} else if kind == 0 {
 			v, ok, proceed := chanRecvNonblock(cs.c, cs.ops)
 			if proceed {
 				cs.elem = v
 				cs.ok = ok
-				return oi
+				cases[oi] = cs
+				return oi, v, ok
 			}
 		}
 	}
 	if def >= 0 {
-		return def
+		return def, nil, false
 	}
 
 	sel := &select_{
@@ -77,11 +65,11 @@ func selectGo(cases []scase) int32 {
 	}
 	waiters := make([]*waiter, n)
 	for i := int32(0); i < n; i++ {
-		cs := &cases[i]
+		cs := cases[i]
 		if cs.kind == 2 || cs.c == nil {
 			continue
 		}
-		w := &waiter{park: sel.park, sel: sel, casi: i, isSend: cs.kind == 1, cas: cs}
+		w := &waiter{park: sel.park, sel: sel, casi: i, isSend: cs.kind == 1, cas: &cases[i]}
 		if cs.kind == 1 {
 			cs.ops.toWaiter(w, cs.elem)
 		}
@@ -95,12 +83,14 @@ func selectGo(cases []scase) int32 {
 	gopark(sel.park, waitReasonChanSelect)
 
 	win := sel.winner
+	var out any
+	var outOK bool
 	for i := int32(0); i < n; i++ {
 		w := waiters[i]
 		if w == nil {
 			continue
 		}
-		cs := cases[i] // ref-typed struct; do not take &cases[i] (no alias)
+		cs := cases[i]
 		if i != win {
 			if cs.kind == 1 {
 				cs.c.sendq.remove(w)
@@ -110,13 +100,19 @@ func selectGo(cases []scase) int32 {
 			continue
 		}
 		if cs.kind == 0 {
-			// Assign through the local ref (same object as cases[i] in the array).
 			if cs.c.closed != 0 && w.elem == nil {
-				cs.elem = cs.ops.zero()
-				cs.ok = false
+				out = cs.ops.zero()
+				outOK = false
 			} else {
-				cs.elem = w.elem
-				cs.ok = true
+				out = w.elem
+				outOK = true
+			}
+			cs.elem = out
+			cs.ok = outOK
+			cases[i] = cs
+			if w.cas != nil {
+				w.cas.elem = out
+				w.cas.ok = outOK
 			}
 		}
 	}
@@ -126,7 +122,7 @@ func selectGo(cases []scase) int32 {
 	if win < 0 {
 		throw("select: no winner after park")
 	}
-	return win
+	return win, out, outOK
 }
 
 func chanRecvNonblock(c *hchan, ops *chanOps) (any, bool, bool) {
@@ -141,18 +137,4 @@ func chanRecvNonblock(c *hchan, ops *chanOps) (any, bool, bool) {
 		return ops.zero(), false, true
 	}
 	return nil, false, false
-}
-
-// trySelectReady claims sel for waiter w. Returns true if this waiter won.
-func trySelectReady(w *waiter) bool {
-	sel := w.sel
-	if sel == nil {
-		return true
-	}
-	if sel.done != 0 {
-		return false
-	}
-	sel.done = 1
-	sel.winner = w.casi
-	return true
 }
