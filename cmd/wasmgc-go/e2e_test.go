@@ -636,6 +636,93 @@ func TestM7MainParkE2E(t *testing.T) {
 	runM7(t, "m7_main_park", "9\n", "", 0)
 }
 
+// --- M8: fmt (docs/design/03, 08, 09) ---
+
+func TestM8FmtHelloE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m8_fmt_hello", "hello\n", 128*1024)
+}
+
+func TestM8FmtIntE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m8_fmt_int", "42\n", 0)
+}
+
+func TestM8FmtStructE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM8(t, "m8_fmt_struct", "{3}\n", 0)
+}
+
+func TestM8FmtMapE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	// Single-key map so %v text is deterministic without sorting in the test.
+	runM8(t, "m8_fmt_map", "map[b:2]\n", 0)
+}
+
+// runM8 builds/runs a fmt program against a materialized GOROOT.
+// maxSize > 0 enforces a names-off Wasm size budget (bytes).
+func runM8(t *testing.T, name, wantStdout string, maxSize int) {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := buildDriver(t)
+	goroot := materializeGOROOT(t, exe)
+
+	wasmPath := filepath.Join(dir, name+".wasm")
+	cmd := exec.Command(exe, "build", "-goroot", goroot, "-o", wasmPath, ".")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	wasm, err := os.ReadFile(wasmPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s.wasm size = %d (names off)", name, len(wasm))
+	if maxSize > 0 && len(wasm) > maxSize {
+		t.Fatalf("%s.wasm size %d exceeds budget %d", name, len(wasm), maxSize)
+	}
+
+	cmd = exec.Command(exe, "run", "-goroot", goroot, ".")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	ec := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			ec = ee.ExitCode()
+		} else {
+			t.Fatalf("run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
+	}
+	if ec != 0 {
+		t.Fatalf("exit %d, want 0\nstdout=%q stderr=%q", ec, stdout.String(), stderr.String())
+	}
+	if stdout.String() != wantStdout {
+		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
+	}
+}
+
 func TestM7SizeBudgets(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")

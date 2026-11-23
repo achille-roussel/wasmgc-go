@@ -232,6 +232,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	// AppendFiles from Ensure* may have registered package inits (e.g.
 	// runtime.init for gp/ngo) after Finish already built main.run.
 	lower.LinkPendingInits(mod)
+	// Blank fmt type-switch arms for types never boxed as any in this
+	// program so float/complex strconv paths die before DCE (M8 size).
+	ir.PruneDeadFmtTypeCases(mod)
 	// Drop runtime (and other) funcs not reachable from exports / ref.func
 	// sites so GOROOT import "runtime" cannot keep unused map/select/Frames.
 	ir.PruneUnreachable(mod)

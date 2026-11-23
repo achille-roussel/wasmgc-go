@@ -1,10 +1,15 @@
 package ir
 
-// PruneUnreachable removes functions that are not reachable from exports or
-// from ref.func / call sites in live functions and global initializers.
-// Used so a GOROOT import of rewrite package runtime (via sync, etc.) does not
-// keep every runtime file that PackageHigh lowered — same end state as
-// EnsureSched's selective AppendFiles.
+// PruneUnreachable removes functions and globals that are not reachable from
+// exports. Reachability is a fixpoint over:
+//
+//   - call / ref.func edges from live function bodies
+//   - global.get from live function bodies → live globals
+//   - ref.func / call in live global initializers (itabs, type extras)
+//
+// Starting from every global init (the previous approach) kept every itab's
+// method wrappers alive even when no live code loaded that itab — bloating
+// fmt.Println("hello") well past the M8 128 KiB budget.
 func PruneUnreachable(m *Module) {
 	if m == nil || len(m.Funcs) == 0 {
 		return
@@ -13,123 +18,160 @@ func PruneUnreachable(m *Module) {
 	for _, f := range m.Funcs {
 		byName[f.Name] = f
 	}
-	live := map[string]bool{}
-	var queue []string
-	mark := func(name string) {
-		if name == "" || live[name] {
+	byGlobal := make(map[string]*Global, len(m.Globals))
+	for _, g := range m.Globals {
+		byGlobal[g.Name] = g
+	}
+
+	liveFn := map[string]bool{}
+	liveGl := map[string]bool{}
+	var fnQ, glQ []string
+
+	markFn := func(name string) {
+		if name == "" || liveFn[name] {
 			return
 		}
 		if _, ok := byName[name]; !ok {
 			return
 		}
-		live[name] = true
-		queue = append(queue, name)
+		liveFn[name] = true
+		fnQ = append(fnQ, name)
 	}
+	markGl := func(name string) {
+		if name == "" || liveGl[name] {
+			return
+		}
+		if _, ok := byGlobal[name]; !ok {
+			return
+		}
+		liveGl[name] = true
+		glQ = append(glQ, name)
+	}
+
 	for _, f := range m.Funcs {
 		if f.Export != "" {
-			mark(f.Name)
+			markFn(f.Name)
 		}
 	}
-	for _, g := range m.Globals {
-		collectFuncRefsExpr(g.Init, mark)
-	}
-	for len(queue) > 0 {
-		name := queue[0]
-		queue = queue[1:]
-		f := byName[name]
-		if f == nil || f.Body == nil {
-			continue
-		}
-		collectFuncRefsRegion(f.Body, mark)
-	}
+
 	// Keep the whole print cluster if any print helper is live so println's
 	// size golden (970) stays stable across EnsurePrint linking whole print.go.
 	printCluster := []string{
 		"runtime.printstring", "runtime.printint", "runtime.printnl", "runtime.printuint",
 	}
-	keepPrint := false
+	seedPrint := false
 	for _, n := range printCluster {
-		if live[n] {
-			keepPrint = true
-			break
+		if byName[n] != nil {
+			// Only force the cluster once one member is already reached.
+			// Seed check happens after the first wave below.
+			_ = n
 		}
 	}
-	if keepPrint {
-		for _, n := range printCluster {
-			mark(n)
-		}
-		for len(queue) > 0 {
-			name := queue[0]
-			queue = queue[1:]
+
+	for len(fnQ) > 0 || len(glQ) > 0 {
+		for len(fnQ) > 0 {
+			name := fnQ[0]
+			fnQ = fnQ[1:]
 			f := byName[name]
 			if f == nil || f.Body == nil {
 				continue
 			}
-			collectFuncRefsRegion(f.Body, mark)
+			collectRefsRegion(f.Body, markFn, markGl)
+		}
+		for len(glQ) > 0 {
+			name := glQ[0]
+			glQ = glQ[1:]
+			g := byGlobal[name]
+			if g == nil {
+				continue
+			}
+			collectRefsExpr(g.Init, markFn, markGl)
+		}
+		if !seedPrint {
+			for _, n := range printCluster {
+				if liveFn[n] {
+					seedPrint = true
+					break
+				}
+			}
+			if seedPrint {
+				for _, n := range printCluster {
+					markFn(n)
+				}
+			}
 		}
 	}
+
 	out := m.Funcs[:0]
 	for _, f := range m.Funcs {
-		if live[f.Name] {
+		if liveFn[f.Name] {
 			out = append(out, f)
 		}
 	}
 	m.Funcs = out
+
+	gout := m.Globals[:0]
+	for _, g := range m.Globals {
+		if liveGl[g.Name] {
+			gout = append(gout, g)
+		}
+	}
+	m.Globals = gout
 }
 
-func collectFuncRefsRegion(r Region, mark func(string)) {
+func collectRefsRegion(r Region, markFn, markGl func(string)) {
 	if r == nil {
 		return
 	}
 	switch r := r.(type) {
 	case *Seq:
 		for _, s := range r.Stmts {
-			collectFuncRefsStmt(s, mark)
+			collectRefsStmt(s, markFn, markGl)
 		}
 	case *Block:
-		collectFuncRefsRegion(r.Body, mark)
+		collectRefsRegion(r.Body, markFn, markGl)
 	case *Loop:
-		collectFuncRefsRegion(r.Body, mark)
+		collectRefsRegion(r.Body, markFn, markGl)
 	case *If:
-		collectFuncRefsExpr(r.Cond, mark)
-		collectFuncRefsRegion(r.Then, mark)
-		collectFuncRefsRegion(r.Else, mark)
+		collectRefsExpr(r.Cond, markFn, markGl)
+		collectRefsRegion(r.Then, markFn, markGl)
+		collectRefsRegion(r.Else, markFn, markGl)
 	case *Switch:
-		collectFuncRefsExpr(r.Tag, mark)
+		collectRefsExpr(r.Tag, markFn, markGl)
 		for _, c := range r.Cases {
-			collectFuncRefsRegion(c.Body, mark)
+			collectRefsRegion(c.Body, markFn, markGl)
 		}
-		collectFuncRefsRegion(r.Default, mark)
+		collectRefsRegion(r.Default, markFn, markGl)
 	case *Try:
-		collectFuncRefsRegion(r.Body, mark)
-		collectFuncRefsRegion(r.Handler, mark)
+		collectRefsRegion(r.Body, markFn, markGl)
+		collectRefsRegion(r.Handler, markFn, markGl)
 	case *Dispatch:
 		for _, arm := range r.Arms {
-			collectFuncRefsRegion(arm, mark)
+			collectRefsRegion(arm, markFn, markGl)
 		}
 	}
 }
 
-func collectFuncRefsStmt(s Stmt, mark func(string)) {
+func collectRefsStmt(s Stmt, markFn, markGl func(string)) {
 	switch s := s.(type) {
 	case *ExprStmt:
-		collectFuncRefsExpr(s.X, mark)
+		collectRefsExpr(s.X, markFn, markGl)
 	case *Assign:
-		collectFuncRefsExpr(s.Rhs, mark)
+		collectRefsExpr(s.Rhs, markFn, markGl)
 	case *Return:
 		for _, e := range s.Results {
-			collectFuncRefsExpr(e, mark)
+			collectRefsExpr(e, markFn, markGl)
 		}
 	case *VarDef:
 		// no refs
 	case *Br:
-		collectFuncRefsExpr(s.Cond, mark)
+		collectRefsExpr(s.Cond, markFn, markGl)
 	case Region:
-		collectFuncRefsRegion(s, mark)
+		collectRefsRegion(s, markFn, markGl)
 	}
 }
 
-func collectFuncRefsExpr(e Expr, mark func(string)) {
+func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 	if e == nil {
 		return
 	}
@@ -137,10 +179,25 @@ func collectFuncRefsExpr(e Expr, mark func(string)) {
 	case *Instr:
 		switch e.Op {
 		case OpCall, OpRefFunc:
-			mark(e.Func)
+			markFn(e.Func)
+		case OpGlobalGet, OpGlobalSet:
+			markGl(e.Global)
 		}
 		for _, a := range e.Args {
-			collectFuncRefsExpr(a, mark)
+			collectRefsExpr(a, markFn, markGl)
 		}
 	}
+}
+
+// Legacy helpers kept for any external callers / tests that used the old names.
+func collectFuncRefsRegion(r Region, mark func(string)) {
+	collectRefsRegion(r, mark, func(string) {})
+}
+
+func collectFuncRefsStmt(s Stmt, mark func(string)) {
+	collectRefsStmt(s, mark, func(string) {})
+}
+
+func collectFuncRefsExpr(e Expr, mark func(string)) {
+	collectRefsExpr(e, mark, func(string) {})
 }
