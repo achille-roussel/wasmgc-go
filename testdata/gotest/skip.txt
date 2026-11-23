@@ -105,7 +105,6 @@ fixedbugs/bug294.go — wasm validate/compile error
 fixedbugs/bug295.go — could not import testing
 fixedbugs/bug296.go — wasm validate/compile error
 fixedbugs/bug312.go — runtime error
-fixedbugs/bug317.go — compile error: lower: unsupported binary op &^ for width i32
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug329.go — output mismatch: complex print/value
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
@@ -459,7 +458,7 @@ method.go — compile error: codegen
 method3.go — wasm validate/compile error
 method5.go — compile error: codegen
 method7.go — compile error: codegen
-named.go — compile error: lower: unsupported binary op &^ for width i32
+named.go — codegen: unknown function unicode.utf8.AppendRune
 newexpr.go — wasm validate/compile error
 nil.go — compile error: lower: range over *[10]int not supported
 nilptr.go — unsupported: unsafe

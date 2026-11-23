@@ -434,6 +434,17 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			// s += t for strings is concatenation, not i32.add.
 			if s.Tok == token.ADD_ASSIGN && isString(fl.typeOf(s.Lhs[i])) {
 				rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{lhsEx, rhsEx}}
+			} else if s.Tok == token.AND_NOT_ASSIGN {
+				// x &^= y → x = x & (^y); binOp has no AND_NOT for i32.
+				width := irNumWidth(want)
+				var ynot ir.Expr
+				if width == ir.I64 {
+					ynot = &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{rhsEx, fl.i64const(-1)}}
+					rhs = &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}
+				} else {
+					ynot = &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{rhsEx, fl.i32const(-1)}}
+					rhs = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}
+				}
 			} else {
 				op, err := fl.binaryOpFromAssign(s.Tok, fl.typeOf(s.Lhs[i]))
 				if err != nil {
