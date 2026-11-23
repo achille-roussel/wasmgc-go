@@ -124,6 +124,28 @@ func (v ValType) encode(buf []byte) []byte {
 	}
 }
 
+// Equal reports whether two value types are identical.
+func (v ValType) Equal(o ValType) bool {
+	if v.kind != o.kind {
+		return false
+	}
+	if v.kind == TypeRef || v.kind == TypeRefNull {
+		return v.ht.code == o.ht.code
+	}
+	return true
+}
+
+// Kind returns the valtype opcode (i32/i64/… or ref/refnull).
+func (v ValType) Kind() byte { return v.kind }
+
+// HeapCode returns the heap-type code for ref types (0 otherwise).
+func (v ValType) HeapCode() int64 {
+	if v.kind == TypeRef || v.kind == TypeRefNull {
+		return v.ht.code
+	}
+	return 0
+}
+
 // StorageType is a field storage type (valtype or packed i8/i16).
 type StorageType struct {
 	packed byte    // TypeI8, TypeI16, or 0 for valtype
