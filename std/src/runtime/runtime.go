@@ -9,24 +9,15 @@ import "unsafe"
 const GOOS = "js"
 const GOARCH = "wasmgc"
 
-func GOMAXPROCS(n int) int {
-	if n > 0 {
-		return n
-	}
-	return 1
-}
-
 func Goexit() { goexit() }
 
 func GOROOT() string { return "" }
 
 func Version() string { return "wasmgc-go" }
 
-func GC() {}
-
-func KeepAlive(x any) {}
-
-func SetFinalizer(obj any, finalizer any) {}
+// GC, KeepAlive, Caller, Stack, FuncForPC, GOMAXPROCS, SetFinalizer, and
+// Frames live in public_stubs.go so rtlink.EnsurePublic can link them alone
+// without pulling unsafe / goexit / generics from this file.
 
 func AddCleanup[T, C any](ptr *T, cleanup func(C), arg C) Cleanup {
 	return Cleanup{}
@@ -35,50 +26,6 @@ func AddCleanup[T, C any](ptr *T, cleanup func(C), arg C) Cleanup {
 type Cleanup struct{}
 
 func (c Cleanup) Stop() {}
-
-func FuncForPC(pc uintptr) *Func { return nil }
-
-type Func struct{}
-
-func (f *Func) Name() string { return "" }
-
-func (f *Func) Entry() uintptr { return 0 }
-
-func (f *Func) FileLine(pc uintptr) (string, int) { return "", 0 }
-
-func Caller(skip int) (pc uintptr, file string, line int, ok bool) {
-	return 0, "", 0, false
-}
-
-func Callers(skip int, pc []uintptr) int { return 0 }
-
-// Frames / CallersFrames are placeholders for internal/bisect and debug/stack.
-type Frames struct{}
-
-func (f *Frames) Next() (frame Frame, more bool) { return Frame{}, false }
-
-type Frame struct {
-	PC       uintptr
-	Func     *Func
-	Function string
-	File     string
-	Line     int
-	Entry    uintptr
-}
-
-func CallersFrames(callers []uintptr) *Frames { return &Frames{} }
-
-// Stack writes a stub traceback into buf. Real PC/file/line frames need
-// Callers metadata (follow-up); M10 at least returns a recognizable header.
-func Stack(buf []byte, all bool) int {
-	msg := "goroutine 1 [running]:\n"
-	n := len(msg)
-	if n > len(buf) {
-		n = len(buf)
-	}
-	copy(buf, msg[:n])
-	return n
-}
 
 type Error interface {
 	RuntimeError()
