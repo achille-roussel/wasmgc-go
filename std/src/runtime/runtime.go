@@ -1,7 +1,7 @@
 // Package runtime is the wasmgc rewrite of the Go runtime
 // (docs/design/04-runtime-and-abi.md). Print and the linear bridge live in
-// print.go / bridge.go. Other symbols here keep dependents type-checking
-// until later milestones (defer/panic M5, maps M6, goroutines M7).
+// print.go / bridge.go. Scheduler, channels, select, timers, and sema are
+// M7 (proc.go, chan.go, select.go, time.go, sema.go).
 package runtime
 
 import "unsafe"
@@ -16,15 +16,11 @@ func GOMAXPROCS(n int) int {
 	return 1
 }
 
-func Gosched() {}
-
-func Goexit() { panic("runtime.Goexit") }
+func Goexit() { goexit() }
 
 func GOROOT() string { return "" }
 
 func Version() string { return "wasmgc-go" }
-
-func NumGoroutine() int { return 1 }
 
 func GC() {}
 
@@ -91,11 +87,14 @@ func throw(s string) { panic(s) }
 
 func fatal(s string) { panic(s) }
 
-func randn(n uint32) uint32 { return 0 }
+func randn(n uint32) uint32 { return fastrandn(n) }
 
-func rand() uint64 { return 0 }
+func rand() uint64 { return uint64(fastrand()) | uint64(fastrand())<<32 }
+
+// preemptCheck is reserved for a later yield on loop back-edges; v1 is a no-op (04).
+func preemptCheck() {}
 
 // Processor pin stubs used by sync.Pool overlay.
-func procPin() int   { return 0 }
-func procUnpin()     {}
+func procPin() int { return 0 }
+func procUnpin()   {}
 func registerPoolCleanup(cleanup func()) {}

@@ -168,4 +168,22 @@ if (!(microAt !== -1 && macroAt !== -1 && microAt < macroAt)) {
 }
 console.log("ok  main promise reaction runs before spawn macrotask: " + log.join(" "));
 
+// Parked main runs a spawned child (already covered by parent/child above).
+// Returning main does not: reinforce with an explicit "child must not have
+// run before the main reaction" check on the exit case log ordering.
+check("exit case did not run child export before main reaction", microAt < macroAt, true);
+
 console.log(`node ${process.version}: JSPI prototype passed`);
+
+// Real glue (lib/wasmgc.js) park/ready/spawn/_sched — M7 streams B+F.
+const { spawnSync } = await import("node:child_process");
+const glueRun = spawnSync(process.execPath, [join(dir, "run_glue.mjs")], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+});
+if (glueRun.status !== 0) {
+  console.error(glueRun.stdout);
+  console.error(glueRun.stderr);
+  process.exit(glueRun.status ?? 1);
+}
+process.stdout.write(glueRun.stdout);

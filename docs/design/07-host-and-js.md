@@ -73,7 +73,7 @@ Returning a reference from an import works, both for a Wasm struct and for an `e
 
 There is no `_start`. WASI is not a v1 target.
 
-`run` calls the generated init functions in dependency order and then `main.main`. When `main.main` returns, `run` returns. The glue's promise reaction exits. See `04` for why the spawn is a macrotask and the reaction is a microtask.
+`run` calls the generated init functions in dependency order and then `main.main`. When `main.main` returns, `run` returns. The glue's promise reaction exits (`process.exit(0)` in Node) as a microtask, and `spawn`'s `setTimeout(0)` is a macrotask, so a returning `main` does not run queued goroutines. See `04`. Park, ready, spawn, gosched, scheduleTimer, and clearTimer are wired in `lib/wasmgc.js` (M7); `WebAssembly.Suspending` is still constructed only for imports in the suspending set.
 
 ## Linear memory
 
