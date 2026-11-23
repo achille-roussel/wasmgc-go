@@ -108,6 +108,10 @@ The glue branches on `typeof process`. Node writes with `fs.writeSync`. The brow
 
 `fetch` for the HTTP client is `globalThis.fetch` in both. Node 26 has it.
 
+## Hand-written Wasm and host imports
+
+Asm modules ([`12-wasm-assembly.md`](12-wasm-assembly.md), decision 8) may declare additional imports from the `go` module (for example a bridge helper). The glue still only installs names the merged module actually imports. An asm function must not invent a second suspending protocol; park and `js.Await` stay the imports in the table above. `//go:wasmgc nosuspend` forbids those imports in that body and is the **default** for asm in `runtime` and `internal/bytealg` (decision 11).
+
 ## What is not in the glue
 
 A Go garbage collector, a thread pool, `Atomics.wait`, a working finalizer, and any WASI import. `SetFinalizer` and `AddCleanup` are no-ops in the runtime (`04-runtime-and-abi.md`), not host calls. `GOOS=wasip1` in the wasm3 tree did not link (`docs/wasm3-study/04-open-problems.md`), and a WASI host still has no JSPI and no shipping stack switching. No WASI target in v1 was decided on 2026-11-22.

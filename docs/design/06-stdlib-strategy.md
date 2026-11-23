@@ -37,6 +37,8 @@ Build tags inside a vendored file are evaluated as `GOOS=js`, `GOARCH=wasmgc`, t
 
 So `internal/bytealg` vendors the generic implementations with no overlay, as long as the re-filter runs. The loader's re-filter is load-bearing for that. Compiling with raw `GOARCH=wasm` and no re-filter would select the assembly stub and fail.
 
+Hand-written **Wasm** kernels (`*_wasmgc.wat`) are a later optimization lane for `internal/bytealg` and runtime hashing, not a requirement for vendoring the generics. Discovery, binding, and merge are specified in [`12-wasm-assembly.md`](12-wasm-assembly.md). Native `.s` stays out of the cache tree.
+
 ## Rewrites
 
 | Package | Why it cannot be vendored |
@@ -50,7 +52,7 @@ So `internal/bytealg` vendors the generic implementations with no overlay, as lo
 | `sync/atomic` | The API stays. The bodies are the plain operations. `Value` stores one `any`, which is the wasm3 shape (`docs/wasm3-study/03-stdlib-and-unsafe.md`) and is right here because an iface value is one immutable reference. |
 | `syscall` | The upstream tree is OS calls as `uintptr`. Replaced by a JS-shaped `syscall` that returns `ENOSYS` for the filesystem and implements `Write` on fd 1 and 2 through `runtime.write`. |
 | `syscall/js` | Rewritten on `externref`. `07-host-and-js.md`. The upstream package is the linear-memory value table and does not match this ABI. |
-| `internal/bytealg` | Vendored generic Go, listed here only because the runtime and `strings` depend on it and the re-filter is what makes the generic file win. If a future pin deletes the generic file, it becomes an overlay. SIMD replacements for `IndexByte` / `Equal` / `Count` / `Compare` / `Index` wait for gated **M11** (decision 7 in `10-open-questions.md`): `$go.bytes` stays `(array i8)` until Multibyte Array Access is in CI's Node (`11-simd.md`). Not a pre-M8 rewrite. Optional earlier WAT over linear bridge memory is `12-wasm-assembly.md`, not this row. |
+| `internal/bytealg` | Vendored generic Go, listed here only because the runtime and `strings` depend on it and the re-filter is what makes the generic file win. If a future pin deletes the generic file, it becomes an overlay. Optional `*_wasmgc.wat` kernels ([`12-wasm-assembly.md`](12-wasm-assembly.md), decisions 8–12 in `10`) may replace hot paths without changing the Go API; those asm functions default to `nosuspend` (decision 11). SIMD replacements for `IndexByte` / `Equal` / `Count` / `Compare` / `Index` on GC arrays wait for gated **M11** (decision 7): `$go.bytes` stays `(array i8)` until Multibyte Array Access is in CI's Node (`11-simd.md`). Not a pre-M8 rewrite. |
 
 `runtime` is small on purpose. The entrypoint, print, panic, maps' shared path, channels' shared path, park, and the linear bridge. The study's list of seventy `*_wasm3.go` mirrors is the set of files we do not write.
 

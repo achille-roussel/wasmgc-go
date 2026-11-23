@@ -20,7 +20,7 @@ Array Access (or equivalent) ships in CI's Node without a flag
 `(array i8)`; ship scalar generics through M8–M10. Dual-rep, bridge-first
 defaults, and lane-build `Load*` are rejected for production.
 
-**Related.** Hand-written WAT (`12-wasm-assembly.md`, [PR #5](https://github.com/achille-roussel/wasmgc-go/pull/5))
+**Related.** Hand-written WAT (`12-wasm-assembly.md`, decisions 8–12 in `10`, [PR #5](https://github.com/achille-roussel/wasmgc-go/pull/5))
 is the likely escape hatch for SIMD kernels over **linear-memory** bridge data
 before Multibyte Array Access exists. That does not unblock GC `[]byte`
 `archsimd.Load*` and is not a dependency of this decision.

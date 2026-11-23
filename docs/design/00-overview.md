@@ -33,7 +33,7 @@ The branch also showed the shape this repository refuses. It was a second copy o
 
 - Registering a `GOARCH` with the upstream Go toolchain, or patching `cmd/compile`.
 - Linking the Go garbage collector, the Go allocator, or a linear-memory goroutine stack. `runtime.mallocgc` does not exist.
-- `cgo`, plugins, or assembly (`.s` files).
+- `cgo`, plugins, or native Go assembly (`.s` files). Hand-written **Wasm** assembly (`.wat`) is a separate escape hatch adopted in [`12-wasm-assembly.md`](12-wasm-assembly.md) (decisions 8–12 in `10`); it is not enabled in M0–M5.
 - `uintptr(unsafe.Pointer)` and pointer arithmetic. The supported `unsafe` subset is specified in `05-unsafe-and-reflect.md`.
 - `reflect.StructOf` and any other API that would mint a Wasm struct type at run time. Wasm types are closed at module generation.
 - WasmFX / core stack switching as a goroutine mechanism. As of the November 2026 spec check it is still a phase-3 proposal, V8's `wasmfx` flag defaults off, and Wasmtime's tracking issue ([bytecodealliance/wasmtime#10248](https://github.com/bytecodealliance/wasmtime/issues/10248), updated 2026-11-03) still lists GC integration as unfinished. The wasm3 toolchain emitted `cont.new` and then stubbed resume because engines would not run it (`docs/wasm3-study/04-open-problems.md`). This compiler emits no continuation types.
@@ -157,9 +157,11 @@ internal/codegen/       IR to Wasm
 internal/wasm/          Wasm binary writer
 std/                    rewritten packages, overlays, manifest
 lib/wasmgc.js           host glue
-prototypes/             engine spikes
-docs/design/            this set (including 11-simd.md)
+prototypes/             engine spikes (including `simd/`, `wasm-asm/`)
+docs/design/            this set (including 11-simd.md, 12-wasm-assembly.md)
 docs/wasm3-study/       the wasm3 study, verbatim
 ```
 
-Nothing under `internal/` or `cmd/` exists yet. `09-bootstrap-plan.md` is the order in which it gets built, and the boundaries that let more than one person build it.
+Hand-written Wasm assembly (body-less Go decls bound to `.wat`, merged into the one module) is specified in [`12-wasm-assembly.md`](12-wasm-assembly.md) and decided in [`10-open-questions.md`](10-open-questions.md) §§8–12. Native `.s` remains rejected. Compiler intrinsics cover tiny 1–3 opcode helpers.
+
+`09-bootstrap-plan.md` is the order in which the remaining packages get built, and the boundaries that let more than one person build them.
