@@ -100,6 +100,25 @@ func main() {}
 	compareGolden(t, "fib.ir", got)
 }
 
+func TestMultiValueArgSpread(t *testing.T) {
+	// Compile-only: variadic iface spread emits $go.iface types that Format
+	// omits supers for, so round-trip parse is not required here.
+	_ = mustCompile(t, `package main
+func pair() (int, int) { return 1, 2 }
+func add(a, b int) int { return a + b }
+func sprintf(format string, args ...any) string { return format }
+func fmter() (string, int, string) { return "%d", 1, "x" }
+var a, b = pair()
+func main() {
+	_ = add(pair())
+	_ = sprintf(fmter())
+	var c, d = pair()
+	_, _ = c, d
+	_, _ = a, b
+}
+`)
+}
+
 func TestRuntimeOpsPrintln(t *testing.T) {
 	m := mustCompile(t, `package main
 func main() { println("hi") }

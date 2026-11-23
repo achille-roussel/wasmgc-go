@@ -2079,20 +2079,75 @@ func (fl *funcLower) lowerArgsWithSig(e *ast.CallExpr, sig *types.Signature) ([]
 		return nil, nil, fl.errorf(e, "not enough arguments")
 	}
 
-	// f(g()) where g returns multiple values matching f's parameters.
-	if sig != nil && nArgs == 1 && !e.Ellipsis.IsValid() && !variadic {
+	// f(g()) / fmt.Sprintf(g()) where g returns multiple values that fan out
+	// into f's parameters (and, when f is variadic, into the ... slice elems).
+	if sig != nil && nArgs == 1 && !e.Ellipsis.IsValid() {
 		if ce, ok := e.Args[0].(*ast.CallExpr); ok {
-			_, resTys, err := fl.resolveCallee(ce)
-			if err == nil && len(resTys) == nParams && nParams > 1 {
-				temps, st, err := fl.callMaterialize(ce, resTys)
-				if err != nil {
-					return nil, nil, err
+			if tup := fl.callResultTuple(ce); tup != nil && tup.Len() > 1 {
+				nRes := tup.Len()
+				spreadOK := (!variadic && nRes == nParams) || (variadic && nRes >= nFixed)
+				if spreadOK {
+					temps, st, err := fl.callMaterialize(ce, nil)
+					if err != nil {
+						return nil, nil, err
+					}
+					stmts = append(stmts, st...)
+					srcGos := fl.callResultGoTypes(ce)
+					coerce := func(i int, dstGo types.Type, want ir.Type) (ir.Expr, error) {
+						var ex ir.Expr = fl.useTemp(temps[i])
+						var srcGo types.Type
+						if i < len(srcGos) {
+							srcGo = srcGos[i]
+						}
+						if dstGo != nil && isIface(dstGo) && srcGo != nil && !isIface(srcGo) {
+							ex = fl.boxIRToIface(ex, srcGo, dstGo)
+						}
+						if want != nil && temps[i].Typ != nil && !ir.TypesEqual(temps[i].Typ, want) {
+							nt := fl.newTemp(want)
+							stmts = append(stmts, fl.assignTemp(nt, ex))
+							ex = fl.useTemp(nt)
+						}
+						return ex, nil
+					}
+					for i := 0; i < nFixed && i < len(temps); i++ {
+						dstGo := sig.Params().At(i).Type()
+						want, err := fl.mapType(dstGo)
+						if err != nil {
+							return nil, nil, fl.errorf(ce, "%v", err)
+						}
+						ex, err := coerce(i, dstGo, want)
+						if err != nil {
+							return nil, nil, err
+						}
+						args = append(args, ex)
+					}
+					if variadic {
+						sliceGo := sig.Params().At(nFixed).Type()
+						sliceIR, err := fl.mapType(sliceGo)
+						if err != nil {
+							return nil, nil, fl.errorf(e, "%v", err)
+						}
+						elemGo := sliceGo.Underlying().(*types.Slice).Elem()
+						elemIR, err := fl.mapType(elemGo)
+						if err != nil {
+							return nil, nil, fl.errorf(e, "%v", err)
+						}
+						var elems []ir.Expr
+						for i := nFixed; i < len(temps); i++ {
+							ex, err := coerce(i, elemGo, elemIR)
+							if err != nil {
+								return nil, nil, err
+							}
+							elems = append(elems, ex)
+						}
+						if len(elems) == 0 {
+							args = append(args, &ir.Instr{Op: ir.OpRefNull, Type: sliceIR})
+						} else {
+							args = append(args, &ir.Instr{Op: ir.OpLiteral, Type: sliceIR, Args: elems})
+						}
+					}
+					return args, stmts, nil
 				}
-				stmts = append(stmts, st...)
-				for _, t := range temps {
-					args = append(args, fl.useTemp(t))
-				}
-				return args, stmts, nil
 			}
 		}
 	}

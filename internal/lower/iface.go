@@ -23,8 +23,48 @@ func (fl *funcLower) boxIRToIface(x ir.Expr, src, dst types.Type) ir.Expr {
 	}
 }
 
-// callResultGoTypes returns the Go result types of a direct call callee.
+// callResultTuple returns the *types.Tuple when e is a multi-result call.
+func (fl *funcLower) callResultTuple(e *ast.CallExpr) *types.Tuple {
+	if tv, ok := fl.info.Types[e]; ok {
+		if tup, ok := tv.Type.(*types.Tuple); ok {
+			return tup
+		}
+	}
+	if sig := fl.funcValueSig(e.Fun); sig != nil && sig.Results().Len() > 1 {
+		return sig.Results()
+	}
+	gos := fl.callResultGoTypes(e)
+	if len(gos) > 1 {
+		vars := make([]*types.Var, len(gos))
+		for i, t := range gos {
+			vars[i] = types.NewVar(token.NoPos, nil, "", t)
+		}
+		return types.NewTuple(vars...)
+	}
+	return nil
+}
+
+// callResultGoTypes returns the Go result types of a call expression.
 func (fl *funcLower) callResultGoTypes(e *ast.CallExpr) []types.Type {
+	if tv, ok := fl.info.Types[e]; ok {
+		if tup, ok := tv.Type.(*types.Tuple); ok {
+			out := make([]types.Type, tup.Len())
+			for i := 0; i < tup.Len(); i++ {
+				out[i] = tup.At(i).Type()
+			}
+			return out
+		}
+		if tv.Type != nil {
+			return []types.Type{tv.Type}
+		}
+	}
+	if sig := fl.funcValueSig(e.Fun); sig != nil {
+		out := make([]types.Type, sig.Results().Len())
+		for i := 0; i < sig.Results().Len(); i++ {
+			out[i] = sig.Results().At(i).Type()
+		}
+		return out
+	}
 	if id := identOf(e.Fun); id != nil {
 		if obj, _ := fl.info.Uses[id].(*types.Func); obj != nil {
 			sig, _ := obj.Type().(*types.Signature)

@@ -206,6 +206,15 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 	var out []ir.Stmt
 	for _, sp := range gd.Specs {
 		vs := sp.(*ast.ValueSpec)
+		// var a, b = f() / var v, ok = m[k] — one RHS, multiple LHS.
+		if len(vs.Names) > 1 && len(vs.Values) == 1 {
+			stmts, err := fl.valueSpecMultiInit(vs)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, stmts...)
+			continue
+		}
 		for i, name := range vs.Names {
 			if name.Name == "_" {
 				continue
@@ -243,6 +252,79 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 			}
 			// else: defineLocal already zero-inits non-defaultable refs.
 		}
+	}
+	return out, nil
+}
+
+// valueSpecMultiInit lowers `var a, b = f()` / `var v, ok = m[k]` inside a function.
+func (fl *funcLower) valueSpecMultiInit(vs *ast.ValueSpec) ([]ir.Stmt, error) {
+	var out []ir.Stmt
+	lhs := make([]ast.Expr, len(vs.Names))
+	for i, name := range vs.Names {
+		lhs[i] = name
+		if name.Name == "_" {
+			continue
+		}
+		_, defs, err := fl.defineLocal(name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, defs...)
+	}
+	fake := &ast.AssignStmt{Tok: token.ASSIGN, Lhs: lhs, Rhs: vs.Values}
+	return fl.multiAssignAppend(fake, out)
+}
+
+// multiAssignAppend is multiAssign without DEFINE handling (locals already defined).
+func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.Stmt, error) {
+	if ta, ok := s.Rhs[0].(*ast.TypeAssertExpr); ok {
+		return fl.multiAssignTypeAssert(s, ta, out)
+	}
+	if u, ok := s.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.multiAssignRecv(s, u, out)
+	}
+	if ix, ok := s.Rhs[0].(*ast.IndexExpr); ok && isMap(fl.typeOf(ix.X)) {
+		return fl.mapIndexCommaOk(s, ix, out)
+	}
+	call, ok := s.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
+	}
+	// Materialize with callee result types (nil), not LHS types — blank `_`
+	// reports i32 via lhsType and would corrupt non-int discarded results.
+	temps, stmts, err := fl.callMaterialize(call, nil)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, stmts...)
+	srcGos := fl.callResultGoTypes(call)
+	for i, t := range temps {
+		if i >= len(s.Lhs) {
+			break
+		}
+		var ex ir.Expr = fl.useTemp(t)
+		dstGo := fl.typeOf(s.Lhs[i])
+		if dstGo == nil {
+			if id, ok := s.Lhs[i].(*ast.Ident); ok {
+				if obj := fl.info.Defs[id]; obj != nil {
+					dstGo = obj.Type()
+				} else if obj := fl.info.Uses[id]; obj != nil {
+					dstGo = obj.Type()
+				}
+			}
+		}
+		var srcGo types.Type
+		if i < len(srcGos) {
+			srcGo = srcGos[i]
+		}
+		if dstGo != nil && isIface(dstGo) && srcGo != nil && !isIface(srcGo) {
+			ex = fl.boxIRToIface(ex, srcGo, dstGo)
+		}
+		as, err := fl.assignTo(s.Lhs[i], ex)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, as...)
 	}
 	return out, nil
 }
@@ -467,40 +549,7 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			out = append(out, defs...)
 		}
 	}
-	if ta, ok := s.Rhs[0].(*ast.TypeAssertExpr); ok {
-		return fl.multiAssignTypeAssert(s, ta, out)
-	}
-	if u, ok := s.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
-		return fl.multiAssignRecv(s, u, out)
-	}
-	if ix, ok := s.Rhs[0].(*ast.IndexExpr); ok && isMap(fl.typeOf(ix.X)) {
-		return fl.mapIndexCommaOk(s, ix, out)
-	}
-	call, ok := s.Rhs[0].(*ast.CallExpr)
-	if !ok {
-		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
-	}
-	resultTypes := make([]ir.Type, len(s.Lhs))
-	for i, lhs := range s.Lhs {
-		ty, err := fl.lhsType(lhs)
-		if err != nil {
-			return nil, err
-		}
-		resultTypes[i] = ty
-	}
-	temps, stmts, err := fl.callMaterialize(call, resultTypes)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, stmts...)
-	for i, t := range temps {
-		as, err := fl.assignTo(s.Lhs[i], fl.useTemp(t))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, as...)
-	}
-	return out, nil
+	return fl.multiAssignAppend(s, out)
 }
 
 func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssertExpr, out []ir.Stmt) ([]ir.Stmt, error) {
