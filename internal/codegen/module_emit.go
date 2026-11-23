@@ -211,6 +211,27 @@ func (g *gen) constExpr(e ir.Expr, typ ir.Type) ([]byte, error) {
 				return enc.Bytes(), nil
 			}
 		case *ir.Ref:
+			// Non-nullable string globals cannot be ref.null (Wasm rejects the
+			// constant expression). Emit the Go zero: empty $go.string header
+			// over a zero-length $go.bytes array (docs/design/03).
+			if !t.Null && t.Named == "$go.string" {
+				bytesIdx, err := g.typeIndexOf(&ir.Ref{Named: "$go.bytes"})
+				if err != nil {
+					return nil, err
+				}
+				strIdx, err := g.typeIndexOf(t)
+				if err != nil {
+					return nil, err
+				}
+				enc := wasm.NewEncoder()
+				enc.I32Const(0)
+				enc.ArrayNewDefault(bytesIdx)
+				enc.I32Const(0)
+				enc.I32Const(0)
+				enc.StructNew(strIdx)
+				enc.End()
+				return enc.Bytes(), nil
+			}
 			ht, err := g.heapType(t)
 			if err != nil {
 				return nil, err

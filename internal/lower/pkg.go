@@ -139,8 +139,39 @@ func (l *pkgLower) lower() error {
 		name := l.initName()
 		var preamble []ir.Stmt
 		if l.initLower != nil {
-			for _, v := range l.initLower.extraLocals {
+			fl := l.initLower
+			for _, v := range fl.extraLocals {
 				preamble = append(preamble, &ir.VarDef{Var: v})
+			}
+			// Same zero-init as lowerFunc: non-defaultable locals (e.g. $go.string
+			// temps from string([]byte{…}) in package vars) must be assigned at
+			// entry or V8 rejects the synthetic init ("uninitialized
+			// non-defaultable local"). Branch-only assigns in bytesToString are
+			// not enough for Wasm GC validation.
+			for _, v := range fl.extraLocals {
+				if r, ok := v.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.cell.") {
+					continue
+				}
+				if goTy := fl.goTypeOfLocal(v); goTy != nil {
+					if z, ok := fl.goZeroValue(goTy, v.Typ); ok {
+						preamble = append(preamble, fl.assignVar(v, z))
+					} else if needsZeroInit(v.Typ) {
+						z, err := fl.zeroValue(v.Typ)
+						if err != nil {
+							return err
+						}
+						preamble = append(preamble, fl.assignVar(v, z))
+					}
+					continue
+				}
+				if !needsZeroInit(v.Typ) && !isNamedStructRef(v.Typ) {
+					continue
+				}
+				z, err := fl.zeroValue(v.Typ)
+				if err != nil {
+					return err
+				}
+				preamble = append(preamble, fl.assignVar(v, z))
 			}
 		}
 		body := &ir.Seq{Stmts: append(preamble, append(initStmts, &ir.Return{})...)}

@@ -225,46 +225,66 @@ func (fl *funcLower) builtinCopy(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	dstV := fl.newVar("cdst", dstIR)
 	srcV := fl.newVar("csrc", srcIR)
 	nV := fl.newVar("cn", ir.TypeI32)
+	dstLenV := fl.newVar("cdlen", ir.TypeI32)
+	srcLenV := fl.newVar("cslen", ir.TypeI32)
 	stmts = append(stmts,
 		fl.assignVar(dstV, dst),
 		fl.assignVar(srcV, src),
+		fl.assignVar(dstLenV, fl.i32const(0)),
+		fl.assignVar(srcLenV, fl.i32const(0)),
+		fl.assignVar(nV, fl.i32const(0)),
 	)
 
-	// n = min(len(dst), len(src))
-	dstLen := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "len", Args: []ir.Expr{fl.useVar(dstV)}}
-	var srcLen ir.Expr
+	// len(nil slice) is 0; struct.get on a null slice header traps.
+	srcIsString := false
 	if r, ok := srcIR.(*ir.Ref); ok && r.Named == "$go.string" {
-		srcLen = &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}
-	} else {
-		srcLen = &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}
+		srcIsString = true
 	}
-	stmts = append(stmts, fl.assignVar(nV, dstLen))
+	if srcIsString {
+		stmts = append(stmts, fl.assignVar(srcLenV, &ir.Instr{
+			Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)},
+		}))
+	} else {
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(srcLenV, &ir.Instr{
+				Op: ir.OpStructGet, Type: srcIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)},
+			})}},
+		})
+	}
 	stmts = append(stmts, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{srcLen, fl.useVar(nV)}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(nV, srcLen)}},
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(dstV)}},
+		Then: &ir.Seq{},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(dstLenV, &ir.Instr{
+			Op: ir.OpStructGet, Type: dstIR, Field: "len", Args: []ir.Expr{fl.useVar(dstV)},
+		})}},
+	})
+
+	// n = min(len(dst), len(src))
+	stmts = append(stmts, fl.assignVar(nV, fl.useVar(dstLenV)))
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(srcLenV), fl.useVar(nV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(nV, fl.useVar(srcLenV))}},
 		Else: &ir.Seq{},
 	})
 
-	dstData := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}}
-	dstOff := &ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}}
-	srcData := &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}}
-	srcOff := &ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}}
-
+	copyBody := &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+		Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
+		// slice/string .data is already (ref $go.bytes); ref.as_non_null
+		// requires (ref null T) and is invalid on a non-null field get.
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
+			fl.useVar(nV),
+		},
+	}}}}
 	stmts = append(stmts, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(nV)}},
 		Then: &ir.Seq{},
-		Else: &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
-			Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
-			// slice/string .data is already (ref $go.bytes); ref.as_non_null
-			// requires (ref null T) and is invalid on a non-null field get.
-			Args: []ir.Expr{
-				dstData,
-				dstOff,
-				srcData,
-				srcOff,
-				fl.useVar(nV),
-			},
-		}}}},
+		Else: copyBody,
 	})
 	_ = want
 	_ = dstName

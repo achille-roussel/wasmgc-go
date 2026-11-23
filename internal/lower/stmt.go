@@ -1181,38 +1181,44 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 	})
 
 	// Decode one UTF-8 rune at s[i]; size in sz, rune in runeV when needed.
+	// Must match unicode/utf8.DecodeRuneInString (invalid starters are size 1).
 	sz := fl.newVar("rsz", ir.TypeI32)
 	b0 := fl.newVar("rb0", ir.TypeI32)
-	// b0 = s[i]
 	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(b0, &ir.Instr{
 		Op: ir.OpStringGet, Args: []ir.Expr{fl.useVar(sv), fl.useVar(i)},
 	}))
-	// Default: ASCII / invalid single byte
+	// Default: single byte (ASCII or invalid).
 	bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(sz, fl.i32const(1)))
 	if runeV != nil {
 		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(runeV, fl.useVar(b0)))
 	}
-	// if b0 < 0x80: already set
-	// else if b0 < 0xE0: 2-byte
-	// else if b0 < 0xF0: 3-byte
-	// else: 4-byte
-	// Keep it simple: use runtime.utf8decoderune if available; else ASCII-only
-	// path with multi-byte size skip (rune=utf8.RuneError=0xFFFD for non-ASCII
-	// when value unused is fine for `for range s` count).
+	// Continuation bytes 0x80–0xBF and 0xF8+ are invalid starters → RuneError size 1.
+	// 0xC0–0xDF → 2-byte; 0xE0–0xEF → 3-byte; 0xF0–0xF7 → 4-byte (validated in utf8Advance).
+	runeErr := fl.i32const(0xFFFD)
+	invalid := &ir.Seq{}
+	if runeV != nil {
+		invalid.Stmts = append(invalid.Stmts, fl.assignVar(runeV, runeErr))
+	}
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(b0), fl.i32const(0x80)}},
-		Then: &ir.Seq{},
-		Else: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.If{
+		Then: &ir.Seq{}, // ASCII already set
+		Else: &ir.Seq{Stmts: []ir.Stmt{&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(b0), fl.i32const(0xC0)}},
+			Then: invalid, // continuation byte as starter
+			Else: &ir.Seq{Stmts: []ir.Stmt{&ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(b0), fl.i32const(0xE0)}},
-				Then: &ir.Seq{Stmts: fl.utf8Advance(sv, i, sz, runeV, 2)},
+				Then: &ir.Seq{Stmts: fl.utf8Advance(sv, i, lenV, sz, runeV, 2)},
 				Else: &ir.Seq{Stmts: []ir.Stmt{&ir.If{
 					Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(b0), fl.i32const(0xF0)}},
-					Then: &ir.Seq{Stmts: fl.utf8Advance(sv, i, sz, runeV, 3)},
-					Else: &ir.Seq{Stmts: fl.utf8Advance(sv, i, sz, runeV, 4)},
+					Then: &ir.Seq{Stmts: fl.utf8Advance(sv, i, lenV, sz, runeV, 3)},
+					Else: &ir.Seq{Stmts: []ir.Stmt{&ir.If{
+						Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(b0), fl.i32const(0xF8)}},
+						Then: &ir.Seq{Stmts: fl.utf8Advance(sv, i, lenV, sz, runeV, 4)},
+						Else: invalid, // 0xF8–0xFF
+					}}},
 				}}},
-			},
-		}},
+			}}},
+		}}},
 	})
 
 	inner, err := fl.stmtBlock(s.Body)
@@ -1229,33 +1235,129 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 	return out, nil
 }
 
-// utf8Advance sets sz to n and optionally decodes a multi-byte rune starting at i.
-func (fl *funcLower) utf8Advance(sv, i, sz, runeV *ir.Var, n int) []ir.Stmt {
-	out := []ir.Stmt{fl.assignVar(sz, fl.i32const(int64(n)))}
-	if runeV == nil {
-		return out
+// utf8Advance validates and decodes an n-byte UTF-8 sequence at s[i].
+// On short buffer, bad continuation, overlong, surrogate, or out-of-range:
+// size 1 + RuneError (matches unicode/utf8.DecodeRuneInString).
+func (fl *funcLower) utf8Advance(sv, i, lenV, sz, runeV *ir.Var, n int) []ir.Stmt {
+	runeErr := fl.i32const(0xFFFD)
+	failStmts := []ir.Stmt{fl.assignVar(sz, fl.i32const(1))}
+	if runeV != nil {
+		failStmts = append(failStmts, fl.assignVar(runeV, runeErr))
 	}
-	// RuneError for non-ASCII when full decode is deferred; good enough for
-	// counting (`for range s`) and placeholder for fmt until a decoder lands.
-	out = append(out, fl.assignVar(runeV, fl.i32const(0xFFFD)))
-	if n >= 2 {
-		// Minimal decode: ((b0&mask)<<6 | (b1&0x3f)) for 2-byte; extend similarly.
-		b0 := &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{fl.useVar(sv), fl.useVar(i)}}
-		b1 := &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{fl.useVar(sv), &ir.Instr{
-			Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(1)},
-		}}}
-		if n == 2 {
-			hi := &ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+	failSeq := &ir.Seq{Stmts: failStmts}
+
+	byteAt := func(off int64) ir.Expr {
+		idx := ir.Expr(fl.useVar(i))
+		if off != 0 {
+			idx = &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(off)}}
+		}
+		return &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{fl.useVar(sv), idx}}
+	}
+	contOK := func(off int64) ir.Expr {
+		b := byteAt(off)
+		return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{b, fl.i32const(0x80)}},
+			&ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{b, fl.i32const(0xBF)}},
+		}}
+	}
+
+	var decode ir.Expr
+	b0 := byteAt(0)
+	switch n {
+	case 2:
+		b1 := byteAt(1)
+		decode = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
 				&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b0, fl.i32const(0x1F)}},
 				fl.i32const(6),
-			}}
-			lo := &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b1, fl.i32const(0x3F)}}
-			out = append(out, fl.assignVar(runeV, &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{hi, lo}}))
-		}
-		// 3/4-byte: leave RuneError; fmt path rarely needs those for hello.
+			}},
+			&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b1, fl.i32const(0x3F)}},
+		}}
+	case 3:
+		b1, b2 := byteAt(1), byteAt(2)
+		decode = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b0, fl.i32const(0x0F)}},
+					fl.i32const(12),
+				}},
+				&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b1, fl.i32const(0x3F)}},
+					fl.i32const(6),
+				}},
+			}},
+			&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b2, fl.i32const(0x3F)}},
+		}}
+	case 4:
+		b1, b2, b3 := byteAt(1), byteAt(2), byteAt(3)
+		decode = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b0, fl.i32const(0x07)}},
+						fl.i32const(18),
+					}},
+					&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b1, fl.i32const(0x3F)}},
+						fl.i32const(12),
+					}},
+				}},
+				&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b2, fl.i32const(0x3F)}},
+					fl.i32const(6),
+				}},
+			}},
+			&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{b3, fl.i32const(0x3F)}},
+		}}
+	default:
+		return failStmts
 	}
-	_ = n
-	return out
+
+	minRune := int64(0x80)
+	if n == 3 {
+		minRune = 0x800
+	} else if n == 4 {
+		minRune = 0x10000
+	}
+	rTmp := fl.newVar("rdec", ir.TypeI32)
+	okStmts := []ir.Stmt{
+		fl.assignVar(sz, fl.i32const(int64(n))),
+		fl.assignVar(rTmp, decode),
+	}
+	if runeV != nil {
+		okStmts = append(okStmts, fl.assignVar(runeV, fl.useVar(rTmp)))
+	}
+	okSeq := &ir.Seq{Stmts: okStmts}
+
+	notSur := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(rTmp), fl.i32const(0xD800)}},
+		&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{fl.useVar(rTmp), fl.i32const(0xDFFF)}},
+	}}
+	rangeOK := &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(rTmp), fl.i32const(minRune)}},
+			&ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{fl.useVar(rTmp), fl.i32const(0x10FFFF)}},
+		}},
+		notSur,
+	}}
+	// Evaluate decode into rTmp before rangeOK reads it.
+	pre := []ir.Stmt{fl.assignVar(rTmp, decode)}
+	validated := &ir.If{Cond: rangeOK, Then: okSeq, Else: failSeq}
+
+	var cont ir.Expr = fl.i32const(1)
+	for off := int64(1); off < int64(n); off++ {
+		cont = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{cont, contOK(off)}}
+	}
+	afterCont := &ir.If{
+		Cond: cont,
+		Then: &ir.Seq{Stmts: append(pre, validated)},
+		Else: failSeq,
+	}
+	short := &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(i), fl.i32const(int64(n))}},
+		fl.useVar(lenV),
+	}}
+	return []ir.Stmt{&ir.If{Cond: short, Then: failSeq, Else: &ir.Seq{Stmts: []ir.Stmt{afterCont}}}}
 }
 
 // rangeIntStmt lowers Go 1.22+ `for i := range n` (n integer) to 0..n-1.
@@ -1764,6 +1866,7 @@ func canDenseSwitch(arms []caseArm) bool {
 func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string) (ir.Stmt, bool, error) {
 	sw := &ir.Switch{Tag: tag, Dense: true}
 	allTerm := len(arms) > 0
+	hasDefault := false
 	for _, a := range arms {
 		body, err := fl.stmtBlock(a.body)
 		if err != nil {
@@ -1778,6 +1881,7 @@ func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string)
 			allTerm = false
 		}
 		if a.def {
+			hasDefault = true
 			sw.Default = body
 			continue
 		}
@@ -1785,6 +1889,11 @@ func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string)
 			c := v.(*ir.Const)
 			sw.Cases = append(sw.Cases, ir.Case{Value: c.I64, Body: body})
 		}
+	}
+	// Without a default, unmatched tags exit the switch normally — do not
+	// emit unreachable after the break block (strings.Repeat count switch).
+	if !hasDefault {
+		allTerm = false
 	}
 	return sw, allTerm, nil
 }
