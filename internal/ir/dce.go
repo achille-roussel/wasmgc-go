@@ -55,7 +55,7 @@ func PruneUnreachable(m *Module) {
 	}
 
 	// Keep the whole print cluster if any print helper is live so println's
-	// size golden (970) stays stable across EnsurePrint linking whole print.go.
+	// size golden stays stable across EnsurePrint linking whole print.go.
 	printCluster := []string{
 		"runtime.printstring", "runtime.printint", "runtime.printnl", "runtime.printuint",
 	}

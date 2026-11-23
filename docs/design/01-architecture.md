@@ -152,7 +152,7 @@ High IR (before `RuntimeOps`) remains available to unit tests via `lower.Compile
 
 ## Host output
 
-`build -target node` writes `prog.wasm` and `prog.wasm.js`. The JS file is based on `lib/wasmgc.js`, which installs only the imports `WebAssembly.Module.imports` reports and wraps `WebAssembly.Suspending` only for suspending ones, so a program that does not park does not mention `Suspending`. The study's glue always constructed `Suspending`, and Node 22 could not load it (`docs/wasm3-study/00-overview.md`). A module with no suspending import runs on any engine with Wasm GC, including Node 22.
+`build -target node` writes `prog.wasm` and `prog.wasm.js`. The JS file is based on `lib/wasmgc.js`, which installs the imports `WebAssembly.Module.imports` reports, always wraps suspending imports in `WebAssembly.Suspending`, and always calls exports under `WebAssembly.promising` (JSPI required, decision 13). Compiled modules always import `runtime.park` / `ready` / `spawn`.
 
 After `lower.PackageHigh`, the pipeline runs `internal/rtlink.EnsurePrint` (stream F) to link `std/src/runtime` print symbols, then `lower.RuntimeOps`. `Options.SynthPrintRuntime` defaults off; codegen still fills a body-less `runtime.printstring` and can synthesize missing print funcs when tests set the flag.
 

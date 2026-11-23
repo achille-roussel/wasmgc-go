@@ -114,6 +114,14 @@ Achille answered the product questions below. The design documents are written t
 
 **Rationale.** The prototype proved GC type fusion via `wasm-merge` (`prototypes/wasm-asm/`). Allowing it unblocks early hash kernels without coupling map correctness to finishing the merger. Feature-flag footguns (`--enable-gc`, `--enable-reference-types`, multivalue) stay documented in `12`.
 
+## 13. JSPI required, no opt-out
+
+**Decision.** JSPI is always required. The glue always wraps exports with `WebAssembly.promising` and always wraps suspending imports with `WebAssembly.Suspending`. Compiled modules always import `runtime.park`, `runtime.ready`, and `runtime.spawn`. There is no “Suspending only when parking is reachable” path and no Node 22 no-JSPI CI lane. Minimum tested host is Node.js 26.13.1 (Node 25+ with unflagged JSPI is accepted by the version check).
+
+**Date.** 2026-11-23.
+
+**Rationale.** Dual paths (optional JSPI vs park-free modules) added glue, codegen, and CI complexity without a lasting product win: V8 and Node ship JSPI by default on the versions this project targets. Supersedes the earlier optional-JSPI rule in `07-host-and-js.md` that kept Node 22 able to run non-parking programs.
+
 ## Follow-ons (not open product choices)
 
 - `weak.Pointer` is unimplemented. `crypto/tls` uses it, together with `AddCleanup`, and stays out of v1 for both reasons. Implementing `weak` would be a new design, not a flip of decision 3.
@@ -121,4 +129,4 @@ Achille answered the product questions below. The design documents are written t
 
 ## Open
 
-Nothing from the SIMD study or the Wasm-assembly study remains open after decisions 7–12. Other studies may append questions here.
+Nothing from the SIMD study or the Wasm-assembly study remains open after decisions 7–13. Other studies may append questions here.

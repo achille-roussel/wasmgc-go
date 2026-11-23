@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -239,6 +240,13 @@ func needsZeroInit(ty ir.Type) bool {
 	}
 	// Non-nullable refs have no Wasm default; initialize to the Go zero value.
 	return !r.Null && r.Heap == 0 && r.Named != ""
+}
+
+// isNamedStructRef reports a user named-struct IR type ($go.struct.*).
+// These are lowered as refnull but still need a heap zero object for `var S`.
+func isNamedStructRef(ty ir.Type) bool {
+	r, ok := ty.(*ir.Ref)
+	return ok && strings.HasPrefix(r.Named, "$go.struct.")
 }
 
 func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {

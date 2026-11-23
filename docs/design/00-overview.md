@@ -137,7 +137,7 @@ wasmgc-go version
 
 `build` writes a Wasm module. `-target node` (the default) also writes the JS runner next to it. `-target browser` writes glue that installs the same imports on `globalThis`. `-names` emits the Wasm name section; `build` leaves it off, `run` and `test` leave it on. `-opt` runs `wasm-opt` if it is on `PATH` and accepts the module; a `wasm-opt` that rejects Wasm GC is skipped with a message, not treated as success. `-size` prints section sizes. `-vet-fail` turns the 32-bit `int` conversion warning into an error.
 
-`run` and `test` require Node.js 25 or newer, where `WebAssembly.Suspending` exists without a flag. Node 24 with `--experimental-wasm-jspi` is accepted if the constructor is present. Node 22 is rejected: on v22.23.4 the flag exposes `WebAssembly.Suspender` and does not expose `Suspending` (`07-host-and-js.md`).
+`run` and `test` require Node.js 25 or newer, where `WebAssembly.Suspending` exists without a flag. CI pins **Node.js 26.13.1**. Node 24 with `--experimental-wasm-jspi` is accepted if the constructor is present. Node 22 is rejected: on v22.23.4 the flag exposes `WebAssembly.Suspender` and does not expose `Suspending` (`07-host-and-js.md`). JSPI is always required (decision 13 in `10-open-questions.md`); there is no opt-out for non-parking programs.
 
 `dump-ir` prints the text format from `02-ir.md`. That format is the golden-test contract between the lowerer and the code generator.
 

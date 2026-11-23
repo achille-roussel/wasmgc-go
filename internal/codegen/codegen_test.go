@@ -183,9 +183,9 @@ func runNode(t *testing.T, wasmBytes []byte, wantStdout string, wantCode int) {
 func nodeBinaries(t *testing.T) []string {
 	t.Helper()
 	var out []string
-	// Prefer pinned nvm installs when present (CI / cloud agent).
+	// JSPI required (decision 13): only Node 25+ / 26.13.1.
 	home, _ := os.UserHomeDir()
-	for _, ver := range []string{"v22.23.4", "v26.13.1"} {
+	for _, ver := range []string{"v26.13.1", "v26.13.0", "v25.9.0"} {
 		p := filepath.Join(home, ".nvm", "versions", "node", ver, "bin", "node")
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			out = append(out, p)
@@ -199,5 +199,17 @@ func nodeBinaries(t *testing.T) []string {
 	if len(out) == 0 {
 		t.Skip("no node binary found")
 	}
-	return out
+	// Drop hosts without WebAssembly.Suspending.
+	var jspi []string
+	for _, node := range out {
+		cmd := exec.Command(node, "-e",
+			`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`)
+		if err := cmd.Run(); err == nil {
+			jspi = append(jspi, node)
+		}
+	}
+	if len(jspi) == 0 {
+		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
+	}
+	return jspi
 }

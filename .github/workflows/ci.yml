@@ -6,9 +6,9 @@ on:
   pull_request:
     branches: [main]
 
-# Node versions: 22.23.4 (Wasm GC + EH, no JSPI Suspending) and 26.13.1
-# (JSPI on by default). See docs/design/07-host-and-js.md. Node 25+ also
-# has unflagged JSPI; we pin 26 as the newest line tested with the prototypes.
+# Node 26.13.1: Wasm GC + EH + JSPI (Suspending/promising) on by default.
+# JSPI is required with no opt-out (docs/design/07, decision in 10). Node 22
+# is not in the matrix: it has no WebAssembly.Suspending.
 
 jobs:
   go:
@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22.23.4", "26.13.1"]
+        node: ["26.13.1"]
     steps:
       - uses: actions/checkout@v4
 
@@ -78,18 +78,14 @@ jobs:
           out="$(node lib/wasmgc.js testdata/m0/empty.wasm 2>&1)"
           test -z "$out"
 
-      - name: Prototypes (EH + fat-pointer)
+      - name: Prototypes (EH + fat-pointer + JSPI)
         run: |
           node prototypes/eh-panic/run.mjs
           node prototypes/fat-pointer/run.mjs
+          node prototypes/jspi-sched/run.mjs
 
-      - name: Stream F runtime WAT drivers (M5 defer/panic, M6 map scaffold)
+      - name: Stream F runtime WAT drivers (M5–M7)
         run: |
           node std/src/runtime/testdata/run_m5.mjs
           node std/src/runtime/testdata/run_m6.mjs
-          # M7 skips on Node 22 (no Suspending); runs channels/select on 26.
           node std/src/runtime/testdata/run_m7.mjs
-
-      - name: Prototype JSPI (Node 26 only)
-        if: matrix.node == '26.13.1'
-        run: node prototypes/jspi-sched/run.mjs

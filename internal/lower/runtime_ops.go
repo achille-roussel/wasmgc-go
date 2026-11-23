@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -604,15 +605,21 @@ func (rt *runtimeLower) expandSliceLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 	}
 	length := len(elems)
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
+	arrTy := &ir.Ref{Named: arrName}
 	if length == 0 {
 		pre = append(pre, &ir.Assign{
 			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-			Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+			Rhs: &ir.Instr{Op: ir.OpArrayNewDefault, Type: arrTy, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+		})
+	} else if rhs, ok := rt.constArrayNew(arrTy, elems, n); ok {
+		pre = append(pre, &ir.Assign{
+			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
+			Rhs: rhs,
 		})
 	} else {
 		pre = append(pre, &ir.Assign{
 			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
-			Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: &ir.Ref{Named: arrName}, Args: elems},
+			Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: arrTy, Args: elems},
 		})
 	}
 	pre = append(pre, &ir.Assign{
@@ -660,11 +667,113 @@ func (rt *runtimeLower) expandArrayLit(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 		pre = append(pre, p...)
 		args = append(args, ex)
 	}
-	pre = append(pre, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{Op: ir.OpArrayNewFixed, Type: in.Type, Args: args},
-	})
+	rhs := ir.Expr(&ir.Instr{Op: ir.OpArrayNewFixed, Type: in.Type, Args: args})
+	if packed, ok := rt.constArrayNew(in.Type, args, n); ok {
+		rhs = packed
+	}
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: rhs})
 	return pre, nil
+}
+
+// constArrayNew packs a constant numeric array/slice backing into a passive
+// data segment and returns array.new_data (03). Non-numeric or non-const
+// elements fall back to array.new_fixed.
+func (rt *runtimeLower) constArrayNew(arrTy ir.Type, elems []ir.Expr, n *int) (ir.Expr, bool) {
+	if len(elems) == 0 {
+		return nil, false
+	}
+	r, ok := arrTy.(*ir.Ref)
+	if !ok {
+		return nil, false
+	}
+	elemSize, pack := numericArrayPacker(r.Named)
+	if pack == nil {
+		return nil, false
+	}
+	buf := make([]byte, 0, len(elems)*elemSize)
+	for _, e := range elems {
+		c, ok := e.(*ir.Const)
+		if !ok {
+			return nil, false
+		}
+		b, ok := pack(c)
+		if !ok {
+			return nil, false
+		}
+		buf = append(buf, b...)
+	}
+	litName := fmt.Sprintf("$lit%d", len(rt.mod.Data))
+	if n != nil {
+		*n = len(rt.mod.Data) + 1
+	}
+	rt.mod.Data = append(rt.mod.Data, &ir.Data{Name: litName, Bytes: buf})
+	return &ir.Instr{
+		Op:   ir.OpArrayNewData,
+		Type: arrTy,
+		Data: litName,
+	}, true
+}
+
+// numericArrayPacker returns the element byte width and a const→bytes packer
+// for packed numeric Wasm array types ($go.bytes, $go.i16s, $go.array.i32, …).
+func numericArrayPacker(typeName string) (elemSize int, pack func(*ir.Const) ([]byte, bool)) {
+	putU16 := func(v uint16) []byte { return []byte{byte(v), byte(v >> 8)} }
+	putU32 := func(v uint32) []byte {
+		return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+	}
+	putU64 := func(v uint64) []byte {
+		b := make([]byte, 8)
+		for i := 0; i < 8; i++ {
+			b[i] = byte(v >> (8 * i))
+		}
+		return b
+	}
+	switch typeName {
+	case "$go.bytes":
+		return 1, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return []byte{byte(c.I64)}, true
+		}
+	case "$go.i16s":
+		return 2, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU16(uint16(c.I64)), true
+		}
+	case "$go.array.i32", "$go.array.u32", "$go.array.int", "$go.array.uint":
+		return 4, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU32(uint32(c.I64)), true
+		}
+	case "$go.array.i64", "$go.array.u64":
+		return 8, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpI32Const && c.Op != ir.OpI64Const {
+				return nil, false
+			}
+			return putU64(uint64(c.I64)), true
+		}
+	case "$go.array.f32":
+		return 4, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpF32Const && c.Op != ir.OpF64Const {
+				return nil, false
+			}
+			return putU32(math.Float32bits(float32(c.F64))), true
+		}
+	case "$go.array.f64":
+		return 8, func(c *ir.Const) ([]byte, bool) {
+			if c.Op != ir.OpF64Const && c.Op != ir.OpF32Const {
+				return nil, false
+			}
+			return putU64(math.Float64bits(c.F64)), true
+		}
+	default:
+		return 0, nil
+	}
 }
 
 // structZeroExpr builds a non-null zero $go.struct.* with nested struct

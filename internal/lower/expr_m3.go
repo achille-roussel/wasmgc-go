@@ -151,10 +151,14 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	}
 	// Materialize pointer into a typed local so RuntimeOps expandDeref sees
 	// $go.ptr.* (struct.get Type is the container, not the field type).
+	// Skip when the pointer is already a typed Name (Ident load) — avoids a
+	// dead `pd = p` after escape rewrites *p to struct.get.
 	if r, ok := ptrTy.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
-		v := fl.newVar("pd", ptrTy)
-		stmts = append(stmts, fl.assignVar(v, ptr))
-		ptr = fl.useVar(v)
+		if _, isName := ptr.(*ir.Name); !isName {
+			v := fl.newVar("pd", ptrTy)
+			stmts = append(stmts, fl.assignVar(v, ptr))
+			ptr = fl.useVar(v)
+		}
 	}
 	return &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{ptr}, Type: ty}, stmts, nil
 }

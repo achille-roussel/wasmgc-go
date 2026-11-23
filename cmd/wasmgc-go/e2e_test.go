@@ -497,7 +497,7 @@ func materializeGOROOT(t *testing.T, exe string) string {
 func runM7(t *testing.T, name, wantStdout, wantStderrSubstr string, wantExit int) {
 	t.Helper()
 	if !jspiAvailable(t) {
-		t.Skip("JSPI (WebAssembly.Suspending) required for M7 parking tests")
+		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
 	}
 	dir := t.TempDir()
 	srcDir := filepath.Join("testdata", name)
@@ -707,11 +707,11 @@ func TestM8FmtMapE2E(t *testing.T) {
 
 // runM8 builds/runs a fmt program against a materialized GOROOT.
 // maxSize > 0 enforces a names-off Wasm size budget (bytes).
-// fmt pulls sync.Mutex → Semacquire → park, so JSPI (Node 25+) is required.
+// JSPI is always required (no opt-out).
 func runM8(t *testing.T, name, wantStdout string, maxSize int) {
 	t.Helper()
 	if !jspiAvailable(t) {
-		t.Skip("JSPI (WebAssembly.Suspending) required for M8 fmt (sync.Pool/Mutex park)")
+		t.Fatal("JSPI (WebAssembly.Suspending) required; need Node.js 25+")
 	}
 	dir := t.TempDir()
 	srcDir := filepath.Join("testdata", name)
@@ -777,8 +777,8 @@ func TestM7SizeBudgets(t *testing.T) {
 		name string
 		want int
 	}{
-		{"empty_main", 140},
-		{"println", 970},
+		{"empty_main", 208},
+		{"println", 1031},
 	} {
 		dir := t.TempDir()
 		srcDir := filepath.Join("testdata", tc.name)

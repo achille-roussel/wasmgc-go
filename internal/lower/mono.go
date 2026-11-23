@@ -132,10 +132,10 @@ func (l *pkgLower) finishLowerFunc(fl *funcLower, fd *ast.FuncDecl) (*ir.Func, e
 		preamble = append(preamble, &ir.VarDef{Var: v})
 	}
 	for _, v := range append(fl.namedResults, fl.extraLocals...) {
-		if !needsZeroInit(v.Typ) {
+		if r, ok := v.Typ.(*ir.Ref); ok && len(r.Named) >= 9 && r.Named[:9] == "$go.cell." {
 			continue
 		}
-		if r, ok := v.Typ.(*ir.Ref); ok && len(r.Named) >= 9 && r.Named[:9] == "$go.cell." {
+		if !needsZeroInit(v.Typ) && !isNamedStructRef(v.Typ) {
 			continue
 		}
 		z, err := fl.zeroValue(v.Typ)

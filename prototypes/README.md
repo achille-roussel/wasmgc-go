@@ -13,7 +13,7 @@ node prototypes/wasm-asm/run.mjs     # also needs Binaryen wasm-merge ≥113
 
 ## Results recorded 2026-11-23
 
-Host: Node.js v26.13.1 (JSPI on by default; `WebAssembly.Suspending` and `WebAssembly.promising` are functions, `WebAssembly.Suspender` is absent). The same EH and fat-pointer modules also instantiate on Node.js v22.23.4. Node v22.23.4 does not have `WebAssembly.Suspending` even with `--experimental-wasm-jspi` (it has the older `WebAssembly.Suspender`).
+Host: Node.js v26.13.1 (CI minimum; JSPI on by default; `WebAssembly.Suspending` and `WebAssembly.promising` are functions, `WebAssembly.Suspender` is absent). wasmgc-go requires JSPI with no opt-out; Node 22 is not supported.
 
 | Module | What it established |
 |---|---|

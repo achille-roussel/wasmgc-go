@@ -3,10 +3,44 @@ package codegen
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/wasm"
 )
+
+// arrayElemByteSize is the passive-data stride for array.new_data on packed
+// numeric arrays. $go.bytes (i8) is 1; unknown/ref arrays return 1 so a
+// byte-length size stays a safe default for string literals.
+func arrayElemByteSize(t ir.Type) int {
+	r, ok := t.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return 1
+	}
+	switch r.Named {
+	case "$go.bytes":
+		return 1
+	case "$go.i16s":
+		return 2
+	case "$go.array.i32", "$go.array.u32", "$go.array.int", "$go.array.uint", "$go.array.f32":
+		return 4
+	case "$go.array.i64", "$go.array.u64", "$go.array.f64":
+		return 8
+	}
+	if strings.HasSuffix(r.Named, ".i16") || strings.HasSuffix(r.Named, ".u16") {
+		return 2
+	}
+	if strings.HasSuffix(r.Named, ".i32") || strings.HasSuffix(r.Named, ".u32") ||
+		strings.HasSuffix(r.Named, ".f32") || strings.HasSuffix(r.Named, ".int") ||
+		strings.HasSuffix(r.Named, ".uint") {
+		return 4
+	}
+	if strings.HasSuffix(r.Named, ".i64") || strings.HasSuffix(r.Named, ".u64") ||
+		strings.HasSuffix(r.Named, ".f64") {
+		return 8
+	}
+	return 1
+}
 
 type funcEmitter struct {
 	g   *gen
@@ -936,16 +970,19 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 		if !ok {
 			return fmt.Errorf("array.new_data unknown data %s", in.Data)
 		}
-		// Spec: stack operands are (offset, size) into the passive segment.
-		// When IR omits them, use the whole segment.
+		// Spec: stack operands are (offset, size) — size is element count.
+		// When IR omits them, use the whole segment (bytes ÷ element width).
 		if len(in.Args) == 0 {
 			seg := fe.g.m.LookupData(in.Data)
 			fe.enc.I32Const(0)
+			n := 0
 			if seg != nil {
-				fe.enc.I32Const(int32(len(seg.Bytes)))
-			} else {
-				fe.enc.I32Const(0)
+				n = len(seg.Bytes)
+				if es := arrayElemByteSize(in.Type); es > 1 {
+					n /= es
+				}
 			}
+			fe.enc.I32Const(int32(n))
 		}
 		fe.enc.ArrayNewData(idx, di)
 	case ir.OpArrayGet:
