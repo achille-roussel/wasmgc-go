@@ -1,0 +1,11 @@
+func main.fib(n i32) i32 {
+  var r i32
+  if i32.lt_s n, 2 {
+    r = n
+  } else {
+    %0 = call main.fib(i32.sub n, 1)
+    %1 = call main.fib(i32.sub n, 2)
+    r = i32.add %0, %1
+  }
+  return r
+}

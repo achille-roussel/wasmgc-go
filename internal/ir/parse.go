@@ -1109,9 +1109,17 @@ func (p *parser) parseOpExpr(pos Pos, op Op, lit string) (Expr, error) {
 	// Value operands: comma-separated exprs.
 	// Fixed-arity ops stop after enough args; variable-arity (-1) reads
 	// one comma-separated list and stops at the first non-expr.
+	// Arity 0 (e.g. array.new_data) must not consume the next statement's
+	// leading temp as an operand.
 	arity := OpArity(op)
+	if arity == 0 {
+		return inst, nil
+	}
 	n := 0
 	for {
+		if arity >= 0 && n >= arity {
+			break
+		}
 		if n > 0 {
 			if p.tok.kind != tokComma {
 				break
@@ -1130,9 +1138,6 @@ func (p *parser) parseOpExpr(pos Pos, op Op, lit string) (Expr, error) {
 		}
 		inst.Args = append(inst.Args, e)
 		n++
-		if arity >= 0 && n >= arity {
-			break
-		}
 	}
 	return inst, nil
 }

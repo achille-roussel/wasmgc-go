@@ -130,12 +130,25 @@ The module path is `github.com/achille-roussel/wasmgc-go`.
 | `internal/mono` | instantiation | Wasm types |
 | `internal/lower` | AST to IR | Wasm opcodes |
 | `internal/escape` | the escape pass | codegen |
+| `internal/pipeline` | compile orchestration; wires load → check → lower → codegen | package bodies |
 | `internal/codegen` | IR to a Wasm module value | LEB128 details beyond what `internal/wasm` exports |
 | `internal/wasm` | binary encoding, validation-by-construction of sections; later, merge of hand-written WAT ([`12`](12-wasm-assembly.md)) | Go types |
 | `std/src/runtime` and the other rewrites | the Go runtime the generated code calls | the compiler |
 | `lib/wasmgc.js` | imports the module expects | anything about IR |
 
 `internal/ir` imports nothing from `internal/lower` or `internal/codegen`. `internal/wasm` imports nothing from `internal/ir`. That split is what lets the encoder and the runtime be built before the lowerer exists (`09-bootstrap-plan.md`).
+
+### Lowerer API (stream D)
+
+The driver calls one entry point after `load` + `check`, with packages already type-checked under `StdSizes{WordSize: 4, MaxAlign: 4}` and listed in dependency order:
+
+```go
+mod, err := lower.Package(prog.Packages, prog.Main)
+```
+
+`Package` appends each package's functions to one `*ir.Module`, synthesizes `func export "run" main.run` that runs inits then `main.main`, expands high-level string literals to `data` + `array.new_data` + `struct.new`, and sets `Module.Low` so codegen can consume the result. `internal/pipeline` adapts this to its `Lowerer` interface in `wire.go`.
+
+High IR (before `RuntimeOps`) remains available to unit tests via `lower.Compile` / `CompileHigh` for goldens that match `internal/ir/testdata` (`string "…"` form). The high→low rewrite for M1/M2 is `lower.RuntimeOps`; later milestones grow that pass. `internal/mono` and `internal/escape` are stubs until generics and pointers land.
 
 ## Host output
 
