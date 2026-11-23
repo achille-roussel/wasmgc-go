@@ -3,6 +3,7 @@ package desc
 import (
 	"fmt"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
@@ -153,7 +154,14 @@ func (g *gen) emitStructExtra(tr *typeRec) ir.Expr {
 		}
 	}
 	getFn := g.emitGetFieldFunc(tr, st, wasmName)
-	setFn := g.emitSetFieldFunc(tr, st, wasmName)
+	// Per-type setField is only needed when reflect mutation is reachable
+	// (json Unmarshal). fmt.Println only needs getField — shared stub keeps
+	// m8_fmt_hello smaller. fieldTag stays per-type: Type.Field is often an
+	// iface call_ref that reachability from OpCall alone misses.
+	setFn := g.sharedSetFieldStub()
+	if g.needsPerTypeSetField() {
+		setFn = g.emitSetFieldFunc(tr, st, wasmName)
+	}
 	ftFn := g.emitFieldTypeFunc(tr, fields)
 	fnFn := g.emitFieldNameFunc(tr, fields)
 	tagFn := g.emitFieldTagFunc(tr, st, fields)
@@ -169,6 +177,103 @@ func (g *gen) emitStructExtra(tr *typeRec) ir.Expr {
 			&ir.Instr{Op: ir.OpRefFunc, Func: tagFn},
 		},
 	}
+}
+
+func (g *gen) needsPerTypeSetField() bool {
+	return g.callsFunc("runtime.ReflectCallSetField")
+}
+
+// callsFunc reports whether a function reachable from main.run / init calls name.
+// EnsureReflect links all Reflect* decls; an uncalled Value.Set body still
+// mentions ReflectCallSetField, so presence/any-body is not enough for size.
+func (g *gen) callsFunc(name string) bool {
+	live := g.reachableFuncs()
+	for fn := range live {
+		if fn == name {
+			continue
+		}
+		f := g.mod.LookupFunc(fn)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		found := false
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if ok && in.Op == ir.OpCall && in.Func == name {
+				found = true
+			}
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *gen) reachableFuncs() map[string]bool {
+	live := map[string]bool{}
+	var q []string
+	for _, seed := range []string{"main.run", "main.main", "runtime.init", "main.init"} {
+		if g.mod.LookupFunc(seed) != nil {
+			live[seed] = true
+			q = append(q, seed)
+		}
+	}
+	// Also seed package init.* functions.
+	for _, f := range g.mod.Funcs {
+		if strings.Contains(f.Name, ".init") || strings.HasSuffix(f.Name, ".init.0") {
+			if !live[f.Name] {
+				live[f.Name] = true
+				q = append(q, f.Name)
+			}
+		}
+	}
+	for len(q) > 0 {
+		fn := q[0]
+		q = q[1:]
+		f := g.mod.LookupFunc(fn)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			var callees []string
+			if in.Op == ir.OpCall && in.Func != "" {
+				callees = append(callees, in.Func)
+			}
+			if in.Op == ir.OpRefFunc && in.Func != "" {
+				callees = append(callees, in.Func)
+			}
+			for _, c := range callees {
+				if !live[c] {
+					live[c] = true
+					q = append(q, c)
+				}
+			}
+		})
+	}
+	return live
+}
+
+func (g *gen) sharedSetFieldStub() string {
+	const name = "$go.setField.stub"
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name: name,
+		Params: []*ir.Var{
+			{Name: "data", Typ: anyT},
+			{Name: "i", Typ: ir.TypeI32},
+			{Name: "v", Typ: anyT},
+		},
+		Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+	})
+	return name
 }
 
 func (g *gen) structShape(tr *typeRec) (*types.Struct, string) {

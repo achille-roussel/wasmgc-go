@@ -679,8 +679,8 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// Target: under 80 KiB names off (stretch 64 KiB; hard ceiling still 128 KiB).
-	// M9 fieldTag extras may push above 80 — measure after rebase and tighten.
+	// Hard ceiling 128 KiB (09 M8). #20 shrunk toward 80 KiB; M9 fieldTag may
+	// grow again — measure and tighten toward 80 when possible.
 	runM8(t, "m8_fmt_hello", "hello\n", 128*1024)
 }
 

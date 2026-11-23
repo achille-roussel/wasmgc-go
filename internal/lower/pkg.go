@@ -297,13 +297,14 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		seq = &ir.Seq{Stmts: []ir.Stmt{body}}
 	}
 	// Ensure void functions end with return when falling off the end.
-	if len(fl.results) == 0 && !endsWithReturn(seq) {
+	// Switch/type-switch may already append unreachable; do not add a second.
+	if len(fl.results) == 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
 		seq.Stmts = append(seq.Stmts, &ir.Return{})
 	}
 	// Non-void: falling off the end after an infinite loop (for { return })
 	// needs unreachable so Wasm validation sees a result on every path.
 	// Named results: implicit return of the result locals.
-	if len(fl.results) > 0 && !endsWithReturn(seq) {
+	if len(fl.results) > 0 && !endsWithReturn(seq) && !endsWithUnreachable(seq) {
 		if len(fl.namedResults) > 0 {
 			args := make([]ir.Expr, len(fl.namedResults))
 			for i, v := range fl.namedResults {
