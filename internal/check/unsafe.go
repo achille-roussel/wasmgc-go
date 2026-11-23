@@ -43,7 +43,7 @@ func (d Diagnostic) String() string {
 		fmt.Fprintf(&b, "%s: ", d.Pos)
 	}
 	b.WriteString(d.Message)
-	if d.Kind == KindIntConvert {
+	if d.Kind == KindIntConvert || d.Kind == KindReflect {
 		return b.String()
 	}
 	// Default / unsafe format from docs/design/05-unsafe-and-reflect.md.

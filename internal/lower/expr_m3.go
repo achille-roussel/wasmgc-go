@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -75,6 +76,14 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 	case *ast.StarExpr:
 		// &*p → p
 		return fl.expr(x.X, want)
+	case *ast.CompositeLit:
+		// &T{...} — composite is already a heap object; *Struct is the same ref.
+		return fl.compositeLit(x, want)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return fl.addrOf(x.X, want)
+		}
+		return nil, nil, fl.errorf(x, "cannot take address of %T", x)
 	default:
 		return nil, nil, fl.errorf(x, "cannot take address of %T", x)
 	}

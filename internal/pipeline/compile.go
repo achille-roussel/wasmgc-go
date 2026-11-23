@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/achille-roussel/wasmgc-go/internal/check"
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
 	"github.com/achille-roussel/wasmgc-go/internal/lower"
@@ -173,6 +174,10 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 		return nil, err
 	}
 	if err := rtlink.EnsureSlice(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	// Stream G: descriptors and itables before RuntimeOps expands iface ops.
+	if err := desc.Populate(mod, prog); err != nil {
 		return nil, err
 	}
 	if err := lower.RuntimeOps(mod); err != nil {

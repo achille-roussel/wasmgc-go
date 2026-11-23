@@ -304,6 +304,19 @@ func (rt *runtimeLower) expandHighAssign(s *ir.Assign, in *ir.Instr, n *int) ([]
 		return rt.expandDeref(s, in, n)
 	case ir.OpStringGet:
 		return rt.expandStringGet(s, in, n)
+	case ir.OpStringSlice:
+		return rt.expandStringSlice(s, in, n)
+	case ir.OpIfaceMake:
+		return rt.expandIfaceMake(s, in, n)
+	case ir.OpIfaceCall:
+		return rt.expandIfaceCall(s, in, n)
+	case ir.OpIfaceAssert:
+		return rt.expandIfaceAssert(s, in, n)
+	case ir.OpConv:
+		if in.Str == "iface.eq" {
+			return rt.expandIfaceEq(s, in, n)
+		}
+		return nil, fmt.Errorf("lower.RuntimeOps: conv %q not lowered", in.Str)
 	default:
 		return nil, fmt.Errorf("lower.RuntimeOps: high-level op %s not lowered", in.Op)
 	}
@@ -634,11 +647,25 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		pre = append(pre, &ir.VarDef{Var: v})
 	}
 	pre = append(pre, assignV(sl, sliceEx))
-	pre = append(pre,
+	// nil slice: treat as empty (len=0,cap=0,off=0, fresh zero-length array).
+	nilSeq := &ir.Seq{Stmts: []ir.Stmt{
+		assignV(lenV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+		assignV(capV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+		assignV(offV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+		assignV(dataV, &ir.Instr{Op: ir.OpArrayNewDefault, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}),
+	}}
+	nonNil := &ir.Seq{Stmts: []ir.Stmt{
 		assignV(lenV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{useV(sl)}}),
 		assignV(capV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{useV(sl)}}),
 		assignV(offV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{useV(sl)}}),
 		assignV(dataV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{useV(sl)}}),
+	}}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(sl)}},
+		Then: nilSeq,
+		Else: nonNil,
+	})
+	pre = append(pre,
 		assignV(nlenV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: int64(add)}}}),
 	)
 
