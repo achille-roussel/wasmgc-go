@@ -83,10 +83,6 @@ func walltime() (sec int64, nsec int32) { return 0, 0 }
 
 func write(fd uintptr, p unsafe.Pointer, n int32) int32 { return n }
 
-func throw(s string) { panic(s) }
-
-func fatal(s string) { panic(s) }
-
 func randn(n uint32) uint32 { return fastrandn(n) }
 
 func rand() uint64 { return uint64(fastrand()) | uint64(fastrand())<<32 }

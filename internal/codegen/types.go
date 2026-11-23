@@ -66,90 +66,340 @@ func (g *gen) emitPrelude() {
 }
 
 func (g *gen) emitProgramTypes() error {
-	// Emit IR TypeDefs with dependency-first ordering so field/super lookups
-	// succeed (e.g. $go.clos.method.* fields may reference $go.struct.*).
-	// inProgress breaks cycles for self-ref types ($go.defer) handled via RecGroup.
-	inProgress := map[string]bool{}
-	var emitOne func(td *ir.TypeDef) error
-	emitNamed := func(name string) error {
-		if name == "" {
-			return nil
+	// Emit IR TypeDefs dependency-first. Mutual recursion (waiter ↔ select,
+	// chan ↔ waitq, …) is emitted as one Wasm rec group per SCC so field
+	// heap types resolve to forward indices.
+	deps := g.typeDepGraph()
+	sccs := g.orderedTypeSCCs(deps)
+	for _, members := range sccs {
+		var pending []string
+		for _, m := range members {
+			if _, ok := g.types.ByName[m]; ok {
+				continue
+			}
+			if g.m.LookupType(m) == nil {
+				continue
+			}
+			pending = append(pending, m)
 		}
-		if _, ok := g.types.ByName[name]; ok {
-			return nil
+		if len(pending) == 0 {
+			continue
 		}
-		if inProgress[name] {
-			return nil // cycle; self-ref resolved inside addTypeDef RecGroup
-		}
-		td := g.m.LookupType(name)
-		if td == nil {
-			return nil // prelude / abstract
-		}
-		return emitOne(td)
-	}
-	emitOne = func(td *ir.TypeDef) error {
-		if _, ok := g.types.ByName[td.Name]; ok {
-			return nil
-		}
-		if inProgress[td.Name] {
-			return nil
-		}
-		inProgress[td.Name] = true
-		if td.Super != "" {
-			if err := emitNamed(td.Super); err != nil {
+		if len(pending) == 1 && !typeSelfRef(g.m.LookupType(pending[0])) {
+			td := g.m.LookupType(pending[0])
+			idx, err := g.addTypeDef(td)
+			if err != nil {
 				return err
 			}
+			g.types.ByName[td.Name] = idx
+			continue
 		}
-		for _, f := range td.Fields {
-			if r, ok := f.Type.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
-				if err := emitNamed(r.Named); err != nil {
-					return err
-				}
-			}
+		if err := g.emitTypeRecGroup(pending); err != nil {
+			return err
 		}
-		for _, p := range td.Params {
-			if r, ok := p.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
-				if err := emitNamed(r.Named); err != nil {
-					return err
-				}
-			}
-		}
-		for _, r := range td.Results {
-			if ref, ok := r.(*ir.Ref); ok && ref.Named != "" && ref.Named != td.Name {
-				if err := emitNamed(ref.Named); err != nil {
-					return err
-				}
-			}
-		}
-		if td.Elem != nil {
-			if r, ok := td.Elem.(*ir.Ref); ok && r.Named != "" && r.Named != td.Name {
-				if err := emitNamed(r.Named); err != nil {
-					return err
-				}
-			}
+	}
+	for _, td := range g.m.Types {
+		if _, ok := g.types.ByName[td.Name]; ok {
+			continue
 		}
 		idx, err := g.addTypeDef(td)
 		if err != nil {
 			return err
 		}
 		g.types.ByName[td.Name] = idx
-		delete(inProgress, td.Name)
+	}
+	return nil
+}
+
+func typeRefNames(t ir.Type) []string {
+	r, ok := t.(*ir.Ref)
+	if !ok || r.Named == "" {
 		return nil
 	}
-	// Prefer $go.clos / cells early (open base before subtypes).
+	return []string{r.Named}
+}
+
+func typeSelfRef(td *ir.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	check := func(t ir.Type) bool {
+		r, ok := t.(*ir.Ref)
+		return ok && r.Named == td.Name
+	}
+	for _, f := range td.Fields {
+		if check(f.Type) {
+			return true
+		}
+	}
+	if check(td.Elem) {
+		return true
+	}
+	for _, p := range td.Params {
+		if check(p) {
+			return true
+		}
+	}
+	for _, r := range td.Results {
+		if check(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *gen) typeDepGraph() map[string][]string {
+	deps := map[string][]string{}
+	add := func(from, to string) {
+		if from == "" || to == "" || from == to {
+			return
+		}
+		if g.m.LookupType(to) == nil {
+			return // prelude / abstract
+		}
+		deps[from] = append(deps[from], to)
+	}
 	for _, td := range g.m.Types {
-		if td.Name == "$go.clos" || strings.HasPrefix(td.Name, "$go.cell.") {
-			if err := emitOne(td); err != nil {
-				return err
+		if td.Super != "" {
+			add(td.Name, td.Super)
+		}
+		for _, f := range td.Fields {
+			for _, n := range typeRefNames(f.Type) {
+				add(td.Name, n)
+			}
+		}
+		for _, p := range td.Params {
+			for _, n := range typeRefNames(p) {
+				add(td.Name, n)
+			}
+		}
+		for _, r := range td.Results {
+			for _, n := range typeRefNames(r) {
+				add(td.Name, n)
+			}
+		}
+		for _, n := range typeRefNames(td.Elem) {
+			add(td.Name, n)
+		}
+		if _, ok := deps[td.Name]; !ok {
+			deps[td.Name] = nil
+		}
+	}
+	return deps
+}
+
+// orderedTypeSCCs returns SCCs in dependency-first order. Clos/cell types
+// are preferred early so open-base subtypes see them.
+func (g *gen) orderedTypeSCCs(deps map[string][]string) [][]string {
+	var names []string
+	seen := map[string]bool{}
+	prefer := func(n string) bool {
+		return n == "$go.clos" || strings.HasPrefix(n, "$go.cell.")
+	}
+	for _, td := range g.m.Types {
+		if prefer(td.Name) && !seen[td.Name] {
+			names = append(names, td.Name)
+			seen[td.Name] = true
+		}
+	}
+	for _, td := range g.m.Types {
+		if !seen[td.Name] {
+			names = append(names, td.Name)
+			seen[td.Name] = true
+		}
+	}
+	sccs := tarjanSCC(names, deps)
+	indexOf := map[string]int{}
+	for i, scc := range sccs {
+		for _, n := range scc {
+			indexOf[n] = i
+		}
+	}
+	indeg := make([]int, len(sccs))
+	edges := make([][]int, len(sccs))
+	edgeSet := map[[2]int]bool{}
+	for from, tos := range deps {
+		fi, fok := indexOf[from]
+		if !fok {
+			continue
+		}
+		for _, to := range tos {
+			ti, tok := indexOf[to]
+			if !tok || fi == ti {
+				continue
+			}
+			key := [2]int{fi, ti}
+			if edgeSet[key] {
+				continue
+			}
+			edgeSet[key] = true
+			// Dependency "from → to" means to must be emitted before from.
+			edges[ti] = append(edges[ti], fi)
+			indeg[fi]++
+		}
+	}
+	var q []int
+	for i, d := range indeg {
+		if d == 0 {
+			q = append(q, i)
+		}
+	}
+	var ordered [][]string
+	seenSCC := make([]bool, len(sccs))
+	for len(q) > 0 {
+		i := q[0]
+		q = q[1:]
+		if seenSCC[i] {
+			continue
+		}
+		seenSCC[i] = true
+		ordered = append(ordered, sccs[i])
+		for _, j := range edges[i] {
+			indeg[j]--
+			if indeg[j] == 0 {
+				q = append(q, j)
 			}
 		}
 	}
-	for _, td := range g.m.Types {
-		if err := emitOne(td); err != nil {
-			return err
+	for i, scc := range sccs {
+		if !seenSCC[i] {
+			ordered = append(ordered, scc)
 		}
 	}
+	return ordered
+}
+
+func tarjanSCC(names []string, deps map[string][]string) [][]string {
+	inNames := map[string]bool{}
+	for _, n := range names {
+		inNames[n] = true
+	}
+	index := map[string]int{}
+	lowlink := map[string]int{}
+	onstack := map[string]bool{}
+	var stack []string
+	var sccs [][]string
+	idx := 0
+	var strongconnect func(v string)
+	strongconnect = func(v string) {
+		index[v] = idx
+		lowlink[v] = idx
+		idx++
+		stack = append(stack, v)
+		onstack[v] = true
+		for _, w := range deps[v] {
+			if !inNames[w] {
+				continue
+			}
+			if _, ok := index[w]; !ok {
+				strongconnect(w)
+				if lowlink[w] < lowlink[v] {
+					lowlink[v] = lowlink[w]
+				}
+			} else if onstack[w] {
+				if index[w] < lowlink[v] {
+					lowlink[v] = index[w]
+				}
+			}
+		}
+		if lowlink[v] == index[v] {
+			var scc []string
+			for {
+				n := len(stack) - 1
+				w := stack[n]
+				stack = stack[:n]
+				onstack[w] = false
+				scc = append(scc, w)
+				if w == v {
+					break
+				}
+			}
+			sccs = append(sccs, scc)
+		}
+	}
+	for _, n := range names {
+		if _, ok := index[n]; !ok {
+			strongconnect(n)
+		}
+	}
+	return sccs
+}
+
+func (g *gen) emitTypeRecGroup(members []string) error {
+	base := g.wm.NumTypes()
+	for i, name := range members {
+		g.types.ByName[name] = base + uint32(i)
+	}
+	subs := make([]wasm.SubType, 0, len(members))
+	for _, name := range members {
+		td := g.m.LookupType(name)
+		if td == nil {
+			return fmt.Errorf("codegen: rec group member %s missing", name)
+		}
+		sub, err := g.subTypeOf(td)
+		if err != nil {
+			return err
+		}
+		subs = append(subs, sub)
+		if td.Kind == ir.TypeFunc {
+			params, _ := g.valTypes(td.Params)
+			results, _ := g.valTypes(td.Results)
+			g.types.FuncSig[sigKey(params, results)] = base + uint32(len(subs)-1)
+		}
+	}
+	got := g.wm.AddRecGroup(wasm.Rec(subs...))
+	if got != base {
+		return fmt.Errorf("codegen: rec group base mismatch for %v", members)
+	}
 	return nil
+}
+
+func (g *gen) subTypeOf(td *ir.TypeDef) (wasm.SubType, error) {
+	var supers []uint32
+	if td.Super != "" {
+		sup, ok := g.types.ByName[td.Super]
+		if !ok {
+			return wasm.SubType{}, fmt.Errorf("codegen: type %s: unknown super %s", td.Name, td.Super)
+		}
+		supers = append(supers, sup)
+	}
+	switch td.Kind {
+	case ir.TypeStruct:
+		fields := make([]wasm.FieldType, 0, len(td.Fields))
+		for _, f := range td.Fields {
+			st, err := g.storageType(f.Type)
+			if err != nil {
+				return wasm.SubType{}, fmt.Errorf("codegen: type %s field %s: %w", td.Name, f.Name, err)
+			}
+			fields = append(fields, wasm.Field(st, f.Mut))
+		}
+		comp := wasm.StructType(fields...)
+		if td.Name == "$go.clos" {
+			return wasm.SubOpen(supers, comp), nil
+		}
+		if len(supers) > 0 {
+			return wasm.SubFinal(supers, comp), nil
+		}
+		return wasm.FinalType(comp), nil
+	case ir.TypeArray:
+		st, err := g.storageType(td.Elem)
+		if err != nil {
+			return wasm.SubType{}, err
+		}
+		return wasm.FinalType(wasm.ArrayType(wasm.Field(st, td.ElemMut))), nil
+	case ir.TypeFunc:
+		params, err := g.valTypes(td.Params)
+		if err != nil {
+			return wasm.SubType{}, err
+		}
+		results, err := g.valTypes(td.Results)
+		if err != nil {
+			return wasm.SubType{}, err
+		}
+		return wasm.FinalType(wasm.FuncType(params, results)), nil
+	default:
+		return wasm.SubType{}, fmt.Errorf("codegen: unknown type kind for %s", td.Name)
+	}
 }
 
 func (g *gen) addTypeDef(td *ir.TypeDef) (uint32, error) {

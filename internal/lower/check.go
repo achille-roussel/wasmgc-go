@@ -13,10 +13,32 @@ var Sizes = &types.StdSizes{WordSize: 4, MaxAlign: 4}
 
 // TypeCheck parses and type-checks src as a single-file package.
 func TypeCheck(filename, src string) (*token.FileSet, []*ast.File, *types.Package, *types.Info, error) {
+	return TypeCheckFiles([]string{filename}, []string{src})
+}
+
+// TypeCheckFiles parses and type-checks a multi-file package (same package
+// name across files). Used by rtlink when linking several runtime sources.
+func TypeCheckFiles(filenames []string, srcs []string) (*token.FileSet, []*ast.File, *types.Package, *types.Info, error) {
+	if len(filenames) != len(srcs) {
+		return nil, nil, nil, nil, fmt.Errorf("typecheck: %d filenames vs %d srcs", len(filenames), len(srcs))
+	}
+	if len(filenames) == 0 {
+		return nil, nil, nil, nil, fmt.Errorf("typecheck: no files")
+	}
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	var files []*ast.File
+	pkgName := ""
+	for i, src := range srcs {
+		f, err := parser.ParseFile(fset, filenames[i], src, parser.ParseComments)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if pkgName == "" {
+			pkgName = f.Name.Name
+		} else if f.Name.Name != pkgName {
+			return nil, nil, nil, nil, fmt.Errorf("typecheck: package name mismatch %q vs %q", pkgName, f.Name.Name)
+		}
+		files = append(files, f)
 	}
 	info := &types.Info{
 		Types:      make(map[ast.Expr]types.TypeAndValue),
@@ -27,9 +49,9 @@ func TypeCheck(filename, src string) (*token.FileSet, []*ast.File, *types.Packag
 		Scopes:     make(map[ast.Node]*types.Scope),
 	}
 	conf := types.Config{Sizes: Sizes}
-	pkg, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, info)
+	pkg, err := conf.Check(pkgName, fset, files, info)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("typecheck: %w", err)
 	}
-	return fset, []*ast.File{f}, pkg, info, nil
+	return fset, files, pkg, info, nil
 }

@@ -59,11 +59,13 @@ func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
 	case *ast.EmptyStmt:
 		return nil, nil
 	case *ast.GoStmt:
-		return nil, fl.errorf(s, "go not supported in M1/M2")
+		return fl.goStmt(s)
 	case *ast.DeferStmt:
 		return fl.deferStmt(s)
 	case *ast.SelectStmt:
-		return nil, fl.errorf(s, "select not supported in M1/M2")
+		return fl.selectStmt(s)
+	case *ast.SendStmt:
+		return fl.sendStmt(s)
 	default:
 		return nil, fl.errorf(s, "unsupported statement %T", s)
 	}
@@ -166,19 +168,31 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
 		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {
 			// x = f(...) → single assign from call (no extra temp).
-			name, results, err := fl.resolveCallee(call)
-			if err != nil {
-				return nil, err
+			if sig := fl.funcValueSig(call.Fun); sig != nil {
+				ex, astmts, err := fl.callFuncValue(call.Fun, call.Args, sig)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, astmts...)
+				if sig.Results().Len() != 1 {
+					return nil, fl.errorf(call, "call returns %d values, want 1", sig.Results().Len())
+				}
+				rhs = ex
+			} else {
+				name, results, err := fl.resolveCallee(call)
+				if err != nil {
+					return nil, err
+				}
+				args, astmts, err := fl.lowerArgs(call)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, astmts...)
+				if len(results) != 1 {
+					return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
+				}
+				rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
 			}
-			args, astmts, err := fl.lowerArgs(call)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, astmts...)
-			if len(results) != 1 {
-				return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
-			}
-			rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
 		} else {
 			var stmts []ir.Stmt
 			var err error
@@ -225,9 +239,12 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 	if ta, ok := s.Rhs[0].(*ast.TypeAssertExpr); ok {
 		return fl.multiAssignTypeAssert(s, ta, out)
 	}
+	if u, ok := s.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.multiAssignRecv(s, u, out)
+	}
 	call, ok := s.Rhs[0].(*ast.CallExpr)
 	if !ok {
-		return nil, fl.errorf(s, "multi-value assignment requires a call or type assert")
+		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
 	}
 	resultTypes := make([]ir.Type, len(s.Lhs))
 	for i, lhs := range s.Lhs {
@@ -338,8 +355,32 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		addr := &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Field: lhs.Sel.Name}
-		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{addr, rhs}}})
+		// Prefer struct.set for mutable fields when base is a struct ref.
+		baseTy := fl.typeOf(lhs.X)
+		if baseTy != nil && (isStruct(baseTy) || isObjectPointer(baseTy)) {
+			stName := ""
+			if irt, err := fl.mapType(baseTy); err == nil {
+				stName = refTypeName(irt)
+			}
+			if stName != "" {
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op:    ir.OpStructSet,
+					Type:  &ir.Ref{Named: stName},
+					Field: lhs.Sel.Name,
+					Args:  []ir.Expr{base, rhs},
+				}})
+				return stmts, nil
+			}
+		}
+		fieldTy := sel.Type()
+		kind, _ := fatPtrKind(fieldTy)
+		addr := &ir.Instr{
+			Op:    ir.OpAddr,
+			Type:  &ir.Ref{Null: true, Named: "$go.ptr." + kind},
+			Args:  []ir.Expr{base},
+			Field: lhs.Sel.Name,
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Type: addr.Type, Args: []ir.Expr{addr, rhs}}})
 		return stmts, nil
 	case *ast.IndexExpr:
 		base, stmts, err := fl.expr(lhs.X, nil)
@@ -387,9 +428,12 @@ func (fl *funcLower) lhsType(lhs ast.Expr) (ir.Type, error) {
 }
 
 func (fl *funcLower) exprStmt(s *ast.ExprStmt) ([]ir.Stmt, error) {
+	if u, ok := s.X.(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+		return fl.chanRecvStmt(u)
+	}
 	call, ok := s.X.(*ast.CallExpr)
 	if !ok {
-		return nil, fl.errorf(s, "expression statement must be a call in M1/M2")
+		return nil, fl.errorf(s, "expression statement must be a call or channel receive")
 	}
 	_, stmts, err := fl.callExpr(call, false)
 	return stmts, err

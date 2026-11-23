@@ -128,10 +128,14 @@ type gen struct {
 	ehFill           map[string]bool
 	hasExit          bool
 	exitIdx          uint32
+
+	// Host imports (park/ready/spawn/…): IR name → already imported.
+	hostImported map[string]bool
 }
 
 func (g *gen) build() error {
 	g.ehFill = map[string]bool{}
+	g.hostImported = map[string]bool{}
 	g.scanNeeds()
 	g.scanEHNeeds() // before imports so exit can be imported
 	g.emitPrelude()

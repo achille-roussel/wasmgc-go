@@ -11,36 +11,73 @@ import (
 
 // EnsurePanic links body-less runtime panic/defer symbols from
 // std/src/runtime/panic.go when the module needs them. Codegen fills EH bodies.
+//
+// When package sync (or anything else) imports runtime, PackageHigh already
+// lowers panic.go with opaque *byte params; we still must rewrite those to
+// $go.defer / $go.panicObj even if no files are linked here.
 func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
 	}
-	if !scanPanicNeeds(mod) {
-		return nil
+	need := scanPanicNeeds(mod)
+	missing := panicSymsMissing(mod)
+	// Also fix signatures when runtime was loaded as a package dependency
+	// (opaque *byte params) even if scanPanicNeeds is currently false.
+	hasPanicSyms := mod.LookupFunc("runtime.unrecoveredPanic") != nil ||
+		mod.LookupFunc("runtime.deferRun") != nil
+	if need && missing {
+		if rewriteDir == "" {
+			return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime panic")
+		}
+		path := filepath.Join(rewriteDir, "runtime", "panic.go")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("rtlink: read %s: %w", path, err)
+		}
+		fset, files, pkg, info, err := lower.TypeCheck(path, string(src))
+		if err != nil {
+			return fmt.Errorf("rtlink: typecheck panic.go: %w", err)
+		}
+		stripPanicFuncs(mod)
+		if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
+			return fmt.Errorf("rtlink: lower panic.go: %w", err)
+		}
+		hasPanicSyms = true
 	}
-	if mod.LookupFunc("runtime.throwPanic") != nil &&
-		mod.LookupFunc("runtime.deferRun") != nil &&
-		mod.LookupFunc("runtime.panicIndex") != nil {
-		return nil
+	if hasPanicSyms {
+		fixPanicSignatures(mod)
 	}
-	if rewriteDir == "" {
-		return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime panic")
-	}
-	path := filepath.Join(rewriteDir, "runtime", "panic.go")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("rtlink: read %s: %w", path, err)
-	}
-	fset, files, pkg, info, err := lower.TypeCheck(path, string(src))
-	if err != nil {
-		return fmt.Errorf("rtlink: typecheck panic.go: %w", err)
-	}
-	stripPanicFuncs(mod)
-	if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
-		return fmt.Errorf("rtlink: lower panic.go: %w", err)
-	}
-	fixPanicSignatures(mod)
 	return nil
+}
+
+func panicSymsMissing(mod *ir.Module) bool {
+	refs := map[string]bool{}
+	for _, f := range mod.Funcs {
+		walkCalls(f.Body, func(name string) {
+			for _, s := range panicSyms {
+				if name == s {
+					refs[s] = true
+				}
+			}
+		})
+	}
+	for s := range refs {
+		if mod.LookupFunc(s) == nil {
+			return true
+		}
+	}
+	// High ops / try also need the core panic suite even without direct calls.
+	for _, s := range []string{
+		"runtime.throwPanic", "runtime.deferRun", "runtime.panicIndex",
+		"runtime.panicTypeAssert", "runtime.panicNil",
+	} {
+		if mod.LookupFunc(s) == nil {
+			// Only require if scanPanicNeeds already said we need panics;
+			// missing any core symbol means we should (re)link.
+			return true
+		}
+	}
+	return false
 }
 
 func fixPanicSignatures(mod *ir.Module) {

@@ -37,7 +37,7 @@ func (fl *funcLower) builtinName(e *ast.CallExpr) string {
 
 func (fl *funcLower) isBuiltinCall(e *ast.CallExpr) bool {
 	switch fl.builtinName(e) {
-	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover":
+	case "make", "new", "append", "len", "cap", "print", "println", "panic", "recover", "close":
 		return true
 	}
 	return false
@@ -135,6 +135,9 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 		return fl.builtinAppend(e, want)
 	case "recover":
 		return fl.builtinRecover(e)
+	case "close":
+		st, err := fl.builtinClose(e)
+		return nil, st, err
 	case "panic":
 		return nil, nil, fl.errorf(e, "panic used as value")
 	case "print", "println":
@@ -142,6 +145,22 @@ func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 	default:
 		return nil, nil, fl.errorf(e, "unknown builtin")
 	}
+}
+
+func (fl *funcLower) builtinClose(e *ast.CallExpr) ([]ir.Stmt, error) {
+	if len(e.Args) != 1 {
+		return nil, fl.errorf(e, "close wants 1 arg")
+	}
+	fl.pkg.ensureChanBaseTypes()
+	if fl.pkg.meta != nil {
+		fl.pkg.meta.needsSched = true
+	}
+	ch, stmts, err := fl.expr(e.Args[0], nil)
+	if err != nil {
+		return nil, err
+	}
+	stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpChanClose, Args: []ir.Expr{ch}}})
+	return stmts, nil
 }
 
 func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -157,9 +176,6 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 }
 
 func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	if len(e.Args) < 2 {
-		return nil, nil, fl.errorf(e, "make needs type and length")
-	}
 	resTy := fl.typeOf(e)
 	irt, err := fl.mapType(resTy)
 	if err != nil {
@@ -168,8 +184,28 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if want != nil {
 		irt = want
 	}
+	if isChan(resTy) {
+		fl.pkg.ensureChanBaseTypes()
+		if fl.pkg.meta != nil {
+			fl.pkg.meta.needsSched = true
+		}
+		var capEx ir.Expr = fl.i32const(0)
+		var stmts []ir.Stmt
+		if len(e.Args) >= 2 {
+			var cstmts []ir.Stmt
+			capEx, cstmts, err = fl.expr(e.Args[1], ir.TypeI32)
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, cstmts...)
+		}
+		return &ir.Instr{Op: ir.OpChanMake, Type: irt, Args: []ir.Expr{capEx}}, stmts, nil
+	}
+	if len(e.Args) < 2 {
+		return nil, nil, fl.errorf(e, "make needs type and length")
+	}
 	if !isSlice(resTy) {
-		return nil, nil, fl.errorf(e, "make of non-slice not supported in M3")
+		return nil, nil, fl.errorf(e, "make of non-slice/chan not supported")
 	}
 	lenEx, stmts, err := fl.expr(e.Args[1], ir.TypeI32)
 	if err != nil {

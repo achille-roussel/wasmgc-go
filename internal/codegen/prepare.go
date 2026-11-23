@@ -148,8 +148,10 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 	if len(s.Lhs) != 1 {
 		return nil, fmt.Errorf("string literal assign wants 1 lhs")
 	}
-	litName := fmt.Sprintf("$lit%d", *n)
-	*n++
+	litName := fmt.Sprintf("$lit%d", len(m.Data))
+	if n != nil {
+		*n = len(m.Data) + 1
+	}
 	m.Data = append(m.Data, &ir.Data{Name: litName, Bytes: []byte(str)})
 
 	dataTemp := fmt.Sprintf("%%strdata%d", *n)

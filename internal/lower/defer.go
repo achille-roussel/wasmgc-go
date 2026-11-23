@@ -44,19 +44,7 @@ func (l *pkgLower) ensureDeferTypes() {
 			},
 		})
 	}
-	if l.mod.LookupType("$go.g") == nil {
-		l.mod.InternType(&ir.TypeDef{
-			Name:  "$go.g",
-			Kind:  ir.TypeStruct,
-			Super: "$go.object",
-			Fields: []ir.Field{
-				{Name: "id", Type: ir.TypeI32, Mut: true},
-				{Name: "park", Type: ir.TypeI32, Mut: true},
-				{Name: "panic", Type: &ir.Ref{Null: true, Named: panicObjName}, Mut: true},
-				{Name: "recoverOk", Type: ir.TypeI32, Mut: true},
-			},
-		})
-	}
+	l.ensureGType()
 	if l.mod.LookupGlobal("$g") == nil {
 		l.mod.Globals = append(l.mod.Globals, &ir.Global{
 			Name: "$g",

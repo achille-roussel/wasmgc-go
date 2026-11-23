@@ -50,9 +50,171 @@ func (l *pkgLower) mapType(t types.Type) (ir.Type, error) {
 	case *types.Map:
 		return nil, fmt.Errorf("map type not supported until M6: %s", t)
 	case *types.Chan:
-		return nil, fmt.Errorf("chan type not supported until M7: %s", t)
+		return l.mapChan(t)
 	default:
 		return nil, fmt.Errorf("unsupported type in M4: %s", t)
+	}
+}
+
+// mapChan lowers chan T to (ref null $go.chan). Nil channel is a null ref.
+func (l *pkgLower) mapChan(t *types.Chan) (ir.Type, error) {
+	l.ensureChanBaseTypes()
+	return &ir.Ref{Null: true, Named: "$go.chan"}, nil
+}
+
+// ensureChanBaseTypes interns the shared channel / scheduler layouts from
+// docs/design/03 and proc.go so user chans and AppendFiles(runtime) agree.
+func (l *pkgLower) ensureChanBaseTypes() {
+	l.ensureClosBase()
+	// $go.g must exist before waiter/select refs; match proc.go field set.
+	l.ensureGType()
+
+	if l.mod.LookupType("$go.waitq") == nil {
+		// Forward-declare waiter for the recursive waitq ↔ waiter edge.
+		l.mod.InternType(&ir.TypeDef{
+			Name:   "$go.waiter",
+			Kind:   ir.TypeStruct,
+			Super:  "$go.object",
+			Fields: nil,
+		})
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.waitq",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "head", Type: &ir.Ref{Null: true, Named: "$go.waiter"}, Mut: true},
+				{Name: "tail", Type: &ir.Ref{Null: true, Named: "$go.waiter"}, Mut: true},
+			},
+		})
+	}
+	if l.mod.LookupType("$go.select") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:   "$go.select",
+			Kind:   ir.TypeStruct,
+			Super:  "$go.object",
+			Fields: nil, // filled below / by mapNamedStruct of select_
+		})
+	}
+	if td := l.mod.LookupType("$go.waiter"); td != nil && len(td.Fields) == 0 {
+		td.Fields = []ir.Field{
+			{Name: "park", Type: ir.TypeI32, Mut: true},
+			{Name: "sel", Type: &ir.Ref{Null: true, Named: "$go.select"}, Mut: true},
+			{Name: "casi", Type: ir.TypeI32, Mut: true},
+			{Name: "next", Type: &ir.Ref{Null: true, Named: "$go.waiter"}, Mut: true},
+			{Name: "elem", Type: typeIface, Mut: true},
+			{Name: "isSend", Type: ir.TypeI32, Mut: true},
+		}
+	}
+	if l.mod.LookupType("$go.chan") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.chan",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "qcount", Type: ir.TypeI32, Mut: true},
+				{Name: "dataqsiz", Type: ir.TypeI32, Mut: true},
+				{Name: "sendx", Type: ir.TypeI32, Mut: true},
+				{Name: "recvx", Type: ir.TypeI32, Mut: true},
+				{Name: "closed", Type: ir.TypeI32, Mut: true},
+				{Name: "sendq", Type: &ir.Ref{Null: true, Named: "$go.waitq"}, Mut: true},
+				{Name: "recvq", Type: &ir.Ref{Null: true, Named: "$go.waitq"}, Mut: true},
+				// any-payload scaffold: iface holding []any (or null).
+				{Name: "buf", Type: typeIface, Mut: true},
+			},
+		})
+	}
+	if l.mod.LookupType("$go.chanOps") == nil {
+		// Opaque until mapNamedStruct fills from runtime; reserve the name.
+		l.mod.InternType(&ir.TypeDef{
+			Name:   "$go.chanOps",
+			Kind:   ir.TypeStruct,
+			Super:  "$go.object",
+			Fields: nil,
+		})
+	}
+	if l.mod.LookupType("$go.scase") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.scase",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "kind", Type: ir.TypeI32, Mut: true},
+				{Name: "c", Type: &ir.Ref{Null: true, Named: "$go.chan"}, Mut: true},
+				{Name: "ops", Type: &ir.Ref{Null: true, Named: "$go.chanOps"}, Mut: true},
+				{Name: "elem", Type: typeIface, Mut: true},
+				{Name: "ok", Type: ir.TypeI32, Mut: true},
+			},
+		})
+	}
+	if l.mod.LookupType("$go.runqnode") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.runqnode",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "fn", Type: &ir.Ref{Null: true, Named: closBaseName}, Mut: true},
+				{Name: "next", Type: &ir.Ref{Null: true, Named: "$go.runqnode"}, Mut: true},
+			},
+		})
+	}
+	if l.mod.LookupType("$go.semaRoot") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.semaRoot",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "wait", Type: &ir.Ref{Null: true, Named: "$go.waitq"}, Mut: true},
+			},
+		})
+	}
+}
+
+// ensureGType interns $go.g with the proc.go field set (6 fields).
+func (l *pkgLower) ensureGType() {
+	if l.mod.LookupType(panicObjName) == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  panicObjName,
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: []ir.Field{
+				{Name: "value", Type: typeIface},
+				{Name: "recovered", Type: ir.TypeI32, Mut: true},
+				{Name: "next", Type: &ir.Ref{Null: true, Named: panicObjName}},
+			},
+		})
+	}
+	// Stub $go.select so $go.g.sel type-checks even without the scheduler.
+	if l.mod.LookupType("$go.select") == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:   "$go.select",
+			Kind:   ir.TypeStruct,
+			Super:  "$go.object",
+			Fields: nil,
+		})
+	}
+	td := l.mod.LookupType("$go.g")
+	if td == nil {
+		l.mod.InternType(&ir.TypeDef{
+			Name:  "$go.g",
+			Kind:  ir.TypeStruct,
+			Super: "$go.object",
+			Fields: gFields(),
+		})
+		return
+	}
+	if len(td.Fields) < 6 {
+		td.Fields = gFields()
+	}
+}
+
+func gFields() []ir.Field {
+	return []ir.Field{
+		{Name: "id", Type: ir.TypeI32, Mut: true},
+		{Name: "park", Type: ir.TypeI32, Mut: true},
+		{Name: "panic", Type: &ir.Ref{Null: true, Named: panicObjName}, Mut: true},
+		{Name: "recoverOk", Type: ir.TypeI32, Mut: true},
+		{Name: "sel", Type: &ir.Ref{Null: true, Named: "$go.select"}, Mut: true},
+		{Name: "waiting", Type: ir.TypeI32, Mut: true},
 	}
 }
 
@@ -165,8 +327,29 @@ func (l *pkgLower) mapArray(t *types.Array) (ir.Type, error) {
 }
 
 func (l *pkgLower) mapNamedStruct(t *types.Named) (ir.Type, error) {
+	if runtimeStructAlias(t) != "" {
+		l.ensureChanBaseTypes()
+	}
 	name := structTypeName(t)
-	if existing := l.mod.LookupType(name); existing != nil {
+	existing := l.mod.LookupType(name)
+	if existing != nil {
+		// Recursion guard: already reserved (possibly still filling). If the
+		// type was only a name stub from ensureChanBaseTypes (no fields), fill
+		// once using a sentinel so nested *T lookups return early.
+		if len(existing.Fields) == 0 {
+			existing.Fields = []ir.Field{{Name: "_", Type: ir.TypeI32}} // filling
+			st, ok := t.Underlying().(*types.Struct)
+			if !ok {
+				existing.Fields = nil
+				return nil, fmt.Errorf("named type %s is not a struct", t)
+			}
+			fields, err := l.structFields(st)
+			if err != nil {
+				existing.Fields = nil
+				return nil, err
+			}
+			existing.Fields = fields
+		}
 		return &ir.Ref{Null: true, Named: name}, nil
 	}
 	// Reserve before walking fields (recursive types).
@@ -255,11 +438,46 @@ func isZeroSize(t types.Type) bool {
 }
 
 func structTypeName(t *types.Named) string {
+	if name := runtimeStructAlias(t); name != "" {
+		return name
+	}
 	pkg := "main"
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name()
 	}
 	return "$go.struct." + pkg + "." + t.Obj().Name()
+}
+
+// runtimeStructAlias maps runtime named structs onto the shared $go.* layouts
+// so AppendFiles of the rewrite runtime agrees with user chan / g types.
+func runtimeStructAlias(t *types.Named) string {
+	obj := t.Obj()
+	if obj == nil || obj.Pkg() == nil || obj.Pkg().Path() != "runtime" && obj.Pkg().Name() != "runtime" {
+		return ""
+	}
+	switch obj.Name() {
+	case "hchan":
+		return "$go.chan"
+	case "waiter":
+		return "$go.waiter"
+	case "waitq":
+		return "$go.waitq"
+	case "g":
+		return "$go.g"
+	case "chanOps":
+		return "$go.chanOps"
+	case "scase":
+		return "$go.scase"
+	case "select_":
+		return "$go.select"
+	case "runqnode":
+		return "$go.runqnode"
+	case "semaRoot":
+		return "$go.semaRoot"
+	case "panicObj":
+		return "$go.panicObj"
+	}
+	return ""
 }
 
 // ensureArrayType interns $go.array.* (or reuses $go.bytes / $go.i16s) and

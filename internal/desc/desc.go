@@ -421,7 +421,7 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 	var body ir.Region
 	if !tr.comparable {
 		body = &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex"}},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicUncomparable"}},
 			&ir.Unreachable{},
 		}}
 	} else {

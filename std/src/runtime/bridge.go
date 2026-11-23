@@ -21,8 +21,5 @@ package runtime
 //   - map hashing of byte keys (M6+)
 
 // exit terminates the process with the given status.
-// Body filled when wasmimport / unrecovered-panic wiring lands (M5).
-func exit(code int32) {
-	_ = code
-	throw("runtime.exit")
-}
+// Body-less: codegen imports go.runtime.exit when the module calls it.
+func exit(code int32)

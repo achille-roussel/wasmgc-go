@@ -155,7 +155,8 @@ type meta struct {
 	finished  bool
 	closSeq   int
 	cellVars  map[types.Object]bool
-	needsEH   bool // set when any function uses defer/panic/recover
+	needsEH    bool // set when any function uses defer/panic/recover
+	needsSched bool // set when go / chan / select / park may be needed
 }
 
 var moduleMeta = map[*ir.Module]*meta{}

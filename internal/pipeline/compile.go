@@ -179,8 +179,27 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsurePanic(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	if err := rtlink.EnsureSched(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	// Sched may introduce printstring / printnl via fatal; link if still missing.
+	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
+		return nil, err
+	}
 	// Stream G: descriptors and itables before RuntimeOps expands iface ops.
 	if err := desc.Populate(mod, prog); err != nil {
+		return nil, err
+	}
+	if err := lower.RuntimeOps(mod); err != nil {
+		return nil, err
+	}
+	// RuntimeOps may introduce panicTypeAssert / panicNil via iface asserts
+	// in linked chan ops closures; link any newly referenced panic/print
+	// symbols and expand again.
+	if err := rtlink.EnsurePanic(mod, rewriteDir); err != nil {
+		return nil, err
+	}
+	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
 		return nil, err
 	}
 	if err := lower.RuntimeOps(mod); err != nil {

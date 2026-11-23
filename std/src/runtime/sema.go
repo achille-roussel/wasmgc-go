@@ -4,22 +4,36 @@ package runtime
 //
 // One activation runs at a time, so the counter load/store does not race with
 // another goroutine. Host callbacks do not preempt (07). No spin.
+//
+// Keys are a linked list (maps are M6).
 
 type semaRoot struct {
 	wait waitq
 }
 
-// Sparse map from semaphore address identity to waiter queue.
-// Host Go uses uintptr keys; wasmgc will key by ref identity. The scaffold
-// keys by the *uint32 pointer value as an any map.
-var semaTable = map[any]*semaRoot{}
+type semaEntry struct {
+	addr *uint32
+	root *semaRoot
+	next *semaEntry
+}
+
+var semaHead *semaEntry
+
+// semaPtrSame reports whether a and b address the same uint32 cell.
+// Fat *T pointers are distinct objects per &expr; codegen fills this with
+// base+index equality on $go.ptr.i32 (not object identity of the ptr itself).
+func semaPtrSame(a, b *uint32) bool
 
 func semRoot(s *uint32) *semaRoot {
-	r := semaTable[s]
-	if r == nil {
-		r = &semaRoot{}
-		semaTable[s] = r
+	for e := semaHead; e != nil; e = e.next {
+		if semaPtrSame(e.addr, s) {
+			return e.root
+		}
 	}
+	// wait is a ref field ($go.waitq); allocate an empty queue so enqueue
+	// never sees a null waitq object (same as makechan's sendq/recvq).
+	r := &semaRoot{wait: waitq{}}
+	semaHead = &semaEntry{addr: s, root: r, next: semaHead}
 	return r
 }
 
@@ -80,8 +94,12 @@ func semrelease1(addr *uint32, handoff bool) {
 	}
 }
 
+// Public wrappers for sync rewrite (no linkname yet).
+func Semacquire(addr *uint32) { semacquire(addr) }
+func Semrelease(addr *uint32) { semrelease(addr) }
+
 // Linkname aliases matching sync/runtime.go names.
-func runtime_Semacquire(s *uint32)                 { semacquire(s) }
+func runtime_Semacquire(s *uint32) { semacquire(s) }
 func runtime_Semrelease(s *uint32, handoff bool, _ int) {
 	semrelease1(s, handoff)
 }
@@ -97,3 +115,8 @@ func runtime_SemacquireRWMutexR(s *uint32, lifo bool, _ int) {
 func runtime_SemacquireWaitGroup(s *uint32, _ bool) {
 	semacquire(s)
 }
+
+// Spin stubs used by sync; wasmgc never spins (single activation).
+func runtime_canSpin(i int) bool { return false }
+func runtime_doSpin()            {}
+func runtime_nanotime() int64    { return 0 }

@@ -48,10 +48,20 @@ func (g *gen) ensureEHTypes() {
 	}
 	if _, ok := g.types.ByName["$go.g"]; !ok {
 		panicIdx := g.types.ByName["$go.panicObj"]
+		// Match proc.go: id, park, panic, recoverOk, sel, waiting.
+		selIdx, hasSel := g.types.ByName["$go.select"]
+		var selField wasm.FieldType
+		if hasSel {
+			selField = wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(selIdx))), true)
+		} else {
+			selField = wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.HeapTypeAny())), true)
+		}
 		g.types.ByName["$go.g"] = g.wm.AddType(wasm.SubFinal([]uint32{obj}, wasm.StructType(
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(panicIdx))), true),
+			wasm.Field(wasm.StorageVal(wasm.I32()), true),
+			selField,
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 		)))
 	}
@@ -147,30 +157,81 @@ func (g *gen) ensureGGlobal() error {
 	if _, ok := g.globals["$g"]; ok {
 		return nil
 	}
-	// Prefer IR-declared $go.g; otherwise synthesize.
+	// Prefer IR-declared $go.g; otherwise synthesize (6 fields, proc.go).
 	gIdx, ok := g.types.ByName["$go.g"]
 	if !ok {
 		obj := g.types.ByName["$go.object"]
 		panicIdx := g.types.ByName["$go.panicObj"]
+		selIdx, hasSel := g.types.ByName["$go.select"]
+		var selField wasm.FieldType
+		if hasSel {
+			selField = wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(selIdx))), true)
+		} else {
+			selField = wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.HeapTypeAny())), true)
+		}
 		gIdx = g.wm.AddType(wasm.SubFinal([]uint32{obj}, wasm.StructType(
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(panicIdx))), true),
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
+			selField,
+			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 		)))
 		g.types.ByName["$go.g"] = gIdx
 	}
+	// If IR declares $g with a null/empty init, replace with a real main g so
+	// defer/recover can read recoverOk. Sched init may overwrite later.
+	if gl := g.m.LookupGlobal("$g"); gl != nil {
+		if isNullRefInit(gl.Init) {
+			gl.Init = g.synthGInitExpr()
+		}
+		return nil // emitGlobals will emit it
+	}
 	enc := wasm.NewEncoder()
-	enc.I32Const(1)
-	enc.I32Const(0)
-	enc.RefNull(wasm.TypeIndexHeap(g.types.ByName["$go.panicObj"]))
-	enc.I32Const(0)
-	enc.StructNew(gIdx)
+	if err := g.writeGInit(enc, gIdx); err != nil {
+		return err
+	}
 	idx := g.wm.AddGlobal(wasm.GlobalType{
-		Type:     wasm.Ref(wasm.TypeIndexHeap(gIdx)),
-		Mutable:  true,
+		Type:    wasm.Ref(wasm.TypeIndexHeap(gIdx)),
+		Mutable: true,
 	}, enc.Bytes())
 	g.globals["$g"] = idx
+	return nil
+}
+
+func isNullRefInit(e ir.Expr) bool {
+	if e == nil {
+		return true
+	}
+	in, ok := e.(*ir.Instr)
+	return ok && in.Op == ir.OpRefNull
+}
+
+func (g *gen) synthGInitExpr() ir.Expr {
+	gTy := &ir.Ref{Named: "$go.g"}
+	args := []ir.Expr{
+		&ir.Const{Op: ir.OpI32Const, I64: 1},
+		&ir.Const{Op: ir.OpI32Const, I64: 0},
+		&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.panicObj"}},
+		&ir.Const{Op: ir.OpI32Const, I64: 0},
+		&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.select"}},
+		&ir.Const{Op: ir.OpI32Const, I64: 0},
+	}
+	return &ir.Instr{Op: ir.OpStructNew, Type: gTy, Args: args}
+}
+
+func (g *gen) writeGInit(enc *wasm.Encoder, gIdx uint32) error {
+	enc.I32Const(1) // id
+	enc.I32Const(0) // park
+	enc.RefNull(wasm.TypeIndexHeap(g.types.ByName["$go.panicObj"]))
+	enc.I32Const(0) // recoverOk
+	if selIdx, ok := g.types.ByName["$go.select"]; ok {
+		enc.RefNull(wasm.TypeIndexHeap(selIdx))
+	} else {
+		enc.RefNull(wasm.HeapTypeAny())
+	}
+	enc.I32Const(0) // waiting
+	enc.StructNew(gIdx)
 	return nil
 }
 
@@ -189,6 +250,12 @@ func (g *gen) markEHFills() {
 			g.ehFill[name] = true
 			g.hasEHStubs = true
 		}
+	}
+	// semaPtrSame is only linked with the scheduler runtime; fill when present,
+	// never synthesize into modules that do not need semaphores.
+	if f := g.m.LookupFunc("runtime.semaPtrSame"); f != nil && emptyPrintBody(f) {
+		g.ehFill["runtime.semaPtrSame"] = true
+		g.hasEHStubs = true
 	}
 }
 
@@ -209,6 +276,9 @@ func (g *gen) synthEHFunc(name string) {
 		f = &ir.Func{Name: name, Params: []*ir.Var{{Name: "p", Typ: panicRef}}, Body: &ir.Seq{}}
 	case "runtime.concatstrings":
 		f = &ir.Func{Name: name, Params: []*ir.Var{{Name: "a", Typ: str}, {Name: "b", Typ: str}}, Results: []ir.Type{str}, Body: &ir.Seq{}}
+	case "runtime.semaPtrSame":
+		ptr := &ir.Ref{Null: true, Named: "$go.ptr.i32"}
+		f = &ir.Func{Name: name, Params: []*ir.Var{{Name: "a", Typ: ptr}, {Name: "b", Typ: ptr}}, Results: []ir.Type{ir.TypeI32}, Body: &ir.Seq{}}
 	default:
 		return
 	}
@@ -664,4 +734,41 @@ func (g *gen) bodyConcatStrings() wasm.Code {
 		{Count: 1, Type: wasm.I32()},
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(bytesTy))},
 	}, enc)
+}
+
+// bodySemaPtrSame: compare $go.ptr.i32 base (ref.eq) and index (i32.eq).
+// Nulls: both null → 1; either null → 0.
+func (g *gen) bodySemaPtrSame() wasm.Code {
+	ptrTy := g.types.ByName["$go.ptr.i32"]
+	enc := wasm.NewEncoder()
+	// if a == null
+	enc.LocalGet(0)
+	enc.RefIsNull()
+	enc.If(wasm.BlockVal(wasm.I32()))
+	enc.LocalGet(1)
+	enc.RefIsNull() // both null → 1
+	enc.Else()
+	// a non-null; if b null → 0
+	enc.LocalGet(1)
+	enc.RefIsNull()
+	enc.If(wasm.BlockVal(wasm.I32()))
+	enc.I32Const(0)
+	enc.Else()
+	// both non-null: base eq && index eq (cast anyref → eqref for ref.eq)
+	enc.LocalGet(0)
+	enc.StructGet(ptrTy, 1) // base
+	enc.RefCastNull(wasm.HeapTypeEq())
+	enc.LocalGet(1)
+	enc.StructGet(ptrTy, 1)
+	enc.RefCastNull(wasm.HeapTypeEq())
+	enc.RefEq()
+	enc.LocalGet(0)
+	enc.StructGet(ptrTy, 2) // index
+	enc.LocalGet(1)
+	enc.StructGet(ptrTy, 2)
+	enc.I32Eq()
+	enc.I32And()
+	enc.End()
+	enc.End()
+	return wasm.CodeFrom(nil, enc)
 }

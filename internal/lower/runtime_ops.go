@@ -16,9 +16,8 @@ func RuntimeOps(mod *ir.Module) error {
 	if mod == nil {
 		return fmt.Errorf("lower.RuntimeOps: nil module")
 	}
-	if mod.Low {
-		return nil
-	}
+	// Idempotent: may run again after a later Ensure* AppendFiles introduces
+	// new high ops (e.g. panicTypeAssert link after iface asserts expand).
 	rt := &runtimeLower{mod: mod, classes: map[string]string{}, accessors: map[string]bool{}}
 	n := 0
 	for _, f := range mod.Funcs {
@@ -330,6 +329,16 @@ func (rt *runtimeLower) expandHighAssign(s *ir.Assign, in *ir.Instr, n *int) ([]
 			return rt.expandIfaceEq(s, in, n)
 		}
 		return nil, fmt.Errorf("lower.RuntimeOps: conv %q not lowered", in.Str)
+	case ir.OpChanMake:
+		return rt.expandChanMake(s, in, n)
+	case ir.OpChanRecv:
+		return rt.expandChanRecv(s, in, n)
+	case ir.OpGo:
+		return rt.expandGo(in, n)
+	case ir.OpChanSend:
+		return rt.expandChanSend(in, n)
+	case ir.OpChanClose:
+		return rt.expandChanClose(in, n)
 	default:
 		return nil, fmt.Errorf("lower.RuntimeOps: high-level op %s not lowered", in.Op)
 	}
@@ -341,6 +350,15 @@ func (rt *runtimeLower) expandHighExpr(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		return rt.expandStore(in, n)
 	case ir.OpSliceSet:
 		return rt.expandSliceSet(in, n)
+	case ir.OpGo:
+		return rt.expandGo(in, n)
+	case ir.OpChanSend:
+		return rt.expandChanSend(in, n)
+	case ir.OpChanClose:
+		return rt.expandChanClose(in, n)
+	case ir.OpChanRecv:
+		// Discard receive (ExprStmt / Drop): no unbox, no type globals.
+		return rt.expandChanRecv(nil, in, n)
 	default:
 		// Expand as assign to dummy then drop — should not happen often.
 		t := &ir.Temp{Name: rt.fresh("x"), Typ: ir.TypeI32}
@@ -367,6 +385,45 @@ func sliceParts(t ir.Type) (sliceName, arrName string) {
 		}
 	}
 	return sliceName, arrName
+}
+
+// sliceTypeFrom recovers ($go.slice.*, $go.array.*) from the slice operand
+// and, failing that, from the element type on OpSliceGet.
+func (rt *runtimeLower) sliceTypeFrom(orig, rewritten ir.Expr, elem ir.Type) (sliceName, arrName string) {
+	try := func(e ir.Expr) (string, string) {
+		switch x := e.(type) {
+		case *ir.Name:
+			if x.Temp != nil {
+				return sliceParts(x.Temp.Typ)
+			}
+			if x.Var != nil {
+				return sliceParts(x.Var.Typ)
+			}
+		case *ir.Instr:
+			if x.Type != nil {
+				if sn, an := sliceParts(x.Type); sn != "" {
+					return sn, an
+				}
+			}
+		}
+		return "", ""
+	}
+	if sn, an := try(orig); sn != "" {
+		return sn, an
+	}
+	if sn, an := try(rewritten); sn != "" {
+		return sn, an
+	}
+	if elem == nil {
+		return "", ""
+	}
+	// Build slice/array names from the element IR type (e.g. $go.iface →
+	// $go.slice.go.iface / $go.array.go.iface).
+	arrName = arrayTypeName(elem)
+	if arrName == "" {
+		return "", ""
+	}
+	return sliceTypeName(arrName), arrName
 }
 
 func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
@@ -457,6 +514,10 @@ func (rt *runtimeLower) expandLiteral(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 		return rt.expandSliceLit(s, in, n)
 	}
 	if strings.HasPrefix(tname, "$go.struct.") {
+		return rt.expandStructLit(s, in, n)
+	}
+	// Shared runtime layouts ($go.g, $go.chan, $go.waiter, …) are also structs.
+	if td := rt.mod.LookupType(tname); td != nil && td.Kind == ir.TypeStruct {
 		return rt.expandStructLit(s, in, n)
 	}
 	if strings.HasPrefix(tname, "$go.array.") || tname == "$go.bytes" || tname == "$go.i16s" {
@@ -801,18 +862,7 @@ func (rt *runtimeLower) expandSliceGet(s *ir.Assign, in *ir.Instr, n *int) ([]ir
 		return nil, err
 	}
 	pre = append(pre, p...)
-	sliceName, arrName := "", ""
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Temp != nil {
-			sliceName, arrName = sliceParts(nm.Temp.Typ)
-		}
-		if nm.Var != nil {
-			sliceName, arrName = sliceParts(nm.Var.Typ)
-		}
-	}
-	if in.Type != nil {
-		// element type in Type; need slice from arg
-	}
+	sliceName, arrName := rt.sliceTypeFrom(in.Args[0], sl, in.Type)
 	if sliceName == "" {
 		sliceName = "$go.slice.i32"
 		arrName = "$go.array.i32"
@@ -860,14 +910,9 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		return nil, err
 	}
 	pre = append(pre, p...)
-	sliceName, arrName := "$go.slice.i32", "$go.array.i32"
-	if nm, ok := in.Args[0].(*ir.Name); ok {
-		if nm.Var != nil {
-			sliceName, arrName = sliceParts(nm.Var.Typ)
-		}
-		if nm.Temp != nil {
-			sliceName, arrName = sliceParts(nm.Temp.Typ)
-		}
+	sliceName, arrName := rt.sliceTypeFrom(in.Args[0], sl, nil)
+	if sliceName == "" {
+		sliceName, arrName = "$go.slice.i32", "$go.array.i32"
 	}
 	rt.ensureSliceTypes(sliceName, arrName)
 	st := &ir.Ref{Named: sliceName}
@@ -918,6 +963,27 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 			Lhs: s.Lhs,
 			Rhs: &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.string"}, Field: "len", Args: []ir.Expr{arg}},
 		})
+		return pre, nil
+	}
+	// Channel: len → qcount, cap → dataqsiz; nil chan → 0.
+	if r, ok := ty.(*ir.Ref); ok && r.Named == "$go.chan" {
+		chanField := "qcount"
+		if in.Op == ir.OpCap {
+			chanField = "dataqsiz"
+		}
+		chV := rt.newVar("lch", ty)
+		pre = append(pre, &ir.VarDef{Var: chV}, assignV(chV, arg))
+		resV := rt.newVar("ln", ir.TypeI32)
+		pre = append(pre, &ir.VarDef{Var: resV}, assignV(resV, &ir.Const{Op: ir.OpI32Const, I64: 0}))
+		pre = append(pre, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(chV)}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{assignV(resV, &ir.Instr{
+				Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.chan"}, Field: chanField,
+				Args: []ir.Expr{useV(chV)},
+			})}},
+		})
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(resV)})
 		return pre, nil
 	}
 	pre = append(pre, &ir.Assign{
@@ -998,7 +1064,17 @@ func (rt *runtimeLower) expandAddr(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stm
 }
 
 func (rt *runtimeLower) addrClassKey(in *ir.Instr, base ir.Expr) (container, field string) {
-	if in.Field != "" && in.Field != "elem" {
+	// IndexExpr addrOf sets Str:"elem"; a struct field may also be named "elem"
+	// (e.g. waiter.elem), so only treat Str as the array-element marker.
+	if in.Str == "elem" {
+		field = "elem"
+		container = "$go.array.i32"
+		if t := structTypeOf(base); t != "" {
+			container = t
+		}
+		return container, field
+	}
+	if in.Field != "" {
 		field = in.Field
 		container = "$go.object"
 		if t := structTypeOf(base); t != "" {
@@ -1242,7 +1318,12 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	cast := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: container}, Args: []ir.Expr{&ir.Name{Raw: "b", Var: base}}}
 
 	var body ir.Region
-	if field == "elem" {
+	// "elem" is the synthetic field name for array/slice index addresses.
+	// A real struct field may also be named elem (waiter.elem); only use the
+	// array path when the container is an array type.
+	isArrayElem := field == "elem" && (strings.HasPrefix(container, "$go.array.") ||
+		container == "$go.bytes" || container == "$go.i16s")
+	if isArrayElem {
 		if isGet {
 			getOp := ir.OpArrayGet
 			if container == "$go.bytes" {
@@ -1304,8 +1385,13 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 	if len(s.Lhs) != 1 {
 		return nil, fmt.Errorf("string literal assign wants 1 lhs")
 	}
-	litName := fmt.Sprintf("$lit%d", *n)
-	*n++
+	// Use module-wide unique names: a second RuntimeOps pass (after Ensure*)
+	// must not reuse $lit0… and clobber earlier string data (e.g. "main" →
+	// "runtime error: …" printing as "runt").
+	litName := fmt.Sprintf("$lit%d", len(m.Data))
+	if n != nil {
+		*n = len(m.Data) + 1
+	}
 	m.Data = append(m.Data, &ir.Data{Name: litName, Bytes: []byte(str)})
 
 	dataTemp := fmt.Sprintf("%%strdata%d", *n)

@@ -50,11 +50,17 @@ type chanOps struct {
 	zero       func() any                      // closed-recv zero
 }
 
-func makechan(size int32, buf any) *hchan {
+func makechan(size int32) *hchan {
 	if size < 0 {
 		throw("makechan: negative cap")
 	}
-	return &hchan{dataqsiz: size, buf: buf}
+	var buf any
+	if size > 0 {
+		buf = make([]any, size)
+	}
+	// sendq/recvq are ref fields ($go.waitq); allocate empty queues so
+	// enqueue/dequeue never see a null waitq object.
+	return &hchan{dataqsiz: size, buf: buf, sendq: waitq{}, recvq: waitq{}}
 }
 
 func (q *waitq) enqueue(w *waiter) {

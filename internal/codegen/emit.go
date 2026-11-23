@@ -661,6 +661,28 @@ func (fe *funcEmitter) emitInstr(in *ir.Instr) error {
 	case ir.OpI32WrapI64:
 		fe.enc.I32WrapI64()
 
+	case ir.OpI64Eqz:
+		fe.enc.I64Eqz()
+	case ir.OpI64Eq:
+		fe.enc.I64Eq()
+	case ir.OpI64Ne:
+		fe.enc.I64Ne()
+	case ir.OpI64LtS:
+		fe.enc.I64LtS()
+	case ir.OpI64LtU:
+		fe.enc.I64LtU()
+	case ir.OpI64GtS:
+		fe.enc.I64GtS()
+	case ir.OpI64GtU:
+		fe.enc.I64GtU()
+	case ir.OpI64LeS:
+		fe.enc.I64LeS()
+	case ir.OpI64LeU:
+		fe.enc.I64LeU()
+	case ir.OpI64GeS:
+		fe.enc.I64GeS()
+	case ir.OpI64GeU:
+		fe.enc.I64GeU()
 	case ir.OpI64Add:
 		fe.enc.I64Add()
 	case ir.OpI64Sub:

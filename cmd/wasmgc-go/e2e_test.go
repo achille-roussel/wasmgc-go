@@ -273,6 +273,201 @@ func TestM5MethodValE2E(t *testing.T) {
 	runM2(t, "method_val", "7\n", 8192)
 }
 
+// --- M7: goroutines, channels, select (docs/design/04, 07, 08) ---
+
+func jspiAvailable(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.Command("node", "-e",
+		`try{new WebAssembly.Suspending(()=>{});process.exit(0)}catch(e){process.exit(1)}`).CombinedOutput()
+	if err != nil {
+		t.Logf("JSPI unavailable: %v %s", err, out)
+		return false
+	}
+	return true
+}
+
+func materializeGOROOT(t *testing.T, exe string) string {
+	t.Helper()
+	cmd := exec.Command(exe, "std", "materialize")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("std materialize: %v\n%s", err, out)
+	}
+	// "materialized GOROOT <path> (pin ...)"
+	line := strings.TrimSpace(string(out))
+	const prefix = "materialized GOROOT "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("unexpected materialize output: %q", line)
+	}
+	rest := strings.TrimPrefix(line, prefix)
+	if i := strings.Index(rest, " "); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
+}
+
+func runM7(t *testing.T, name, wantStdout, wantStderrSubstr string, wantExit int) {
+	t.Helper()
+	if !jspiAvailable(t) {
+		t.Skip("JSPI (WebAssembly.Suspending) required for M7 parking tests")
+	}
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := buildDriver(t)
+	goroot := materializeGOROOT(t, exe)
+
+	wasmPath := filepath.Join(dir, name+".wasm")
+	cmd := exec.Command(exe, "build", "-goroot", goroot, "-o", wasmPath, ".")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	wasm, err := os.ReadFile(wasmPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s.wasm size = %d", name, len(wasm))
+
+	cmd = exec.Command(exe, "run", "-goroot", goroot, ".")
+	cmd.Dir = dir
+	// Prefer a Node with JSPI when available (e.g. /usr/local/bin/node 26+).
+	env := os.Environ()
+	if p := os.Getenv("PATH"); p != "" && !strings.Contains(p, "/usr/local/bin") {
+		env = append(env, "PATH=/usr/local/bin:"+p)
+	}
+	cmd.Env = env
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	ec := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			ec = ee.ExitCode()
+		} else {
+			t.Fatalf("run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
+	}
+	if ec != wantExit {
+		t.Fatalf("exit %d, want %d\nstdout=%q stderr=%q", ec, wantExit, stdout.String(), stderr.String())
+	}
+	if stdout.String() != wantStdout {
+		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
+	}
+	if wantStderrSubstr != "" && !strings.Contains(stderr.String(), wantStderrSubstr) {
+		t.Fatalf("stderr %q, want substring %q", stderr.String(), wantStderrSubstr)
+	}
+}
+
+func TestM7ChanBufE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_chan_buf", "42\n", "", 0)
+}
+
+func TestM7ChanUnbufE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_chan_unbuf", "7\n", "", 0)
+}
+
+func TestM7SelectDefaultE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_select_default", "default\n", "", 0)
+}
+
+func TestM7SelectTimeoutE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_select_timeout", "timeout\n", "", 0)
+}
+
+func TestM7WaitGroupE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_waitgroup", "3\n", "", 0)
+}
+
+func TestM7DeadlockE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_deadlock", "fatal error: all goroutines are asleep - deadlock!\n", "", 2)
+}
+
+func TestM7MainReturnE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	// Queued goroutine must NOT run (macrotask after main microtask exit).
+	runM7(t, "m7_main_return", "main\n", "", 0)
+}
+
+func TestM7MainParkE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM7(t, "m7_main_park", "9\n", "", 0)
+}
+
+func TestM7SizeBudgets(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	exe := buildDriver(t)
+	for _, tc := range []struct {
+		name string
+		want int
+	}{
+		{"empty_main", 140},
+		{"println", 970},
+	} {
+		dir := t.TempDir()
+		srcDir := filepath.Join("testdata", tc.name)
+		for _, n := range []string{"main.go", "go.mod"} {
+			data, err := os.ReadFile(filepath.Join(srcDir, n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wasmPath := filepath.Join(dir, tc.name+".wasm")
+		cmd := exec.Command(exe, "build", "-skip-stdlib", "-o", wasmPath, ".")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s build: %v\n%s", tc.name, err, out)
+		}
+		wasm, err := os.ReadFile(wasmPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s.wasm size = %d (want %d)", tc.name, len(wasm), tc.want)
+		if len(wasm) != tc.want {
+			t.Fatalf("%s.wasm size %d, want %d", tc.name, len(wasm), tc.want)
+		}
+	}
+}
+
 func runM5Exit(t *testing.T, name string, wantExit int, wantStdout, wantStderr string, maxSize int) {
 	t.Helper()
 	dir := t.TempDir()
