@@ -174,6 +174,9 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 
 func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	xt := fl.typeOf(e.X)
+	if isMap(xt) {
+		return fl.mapIndexExpr(e, want)
+	}
 	base, stmts, err := fl.expr(e.X, nil)
 	if err != nil {
 		return nil, nil, err
@@ -295,6 +298,8 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 			args = append(args, ex)
 		}
 		return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+	case *types.Map:
+		return fl.mapLiteral(e, irt)
 	default:
 		return nil, nil, fl.errorf(e, "composite literal of type %s not supported", ty)
 	}

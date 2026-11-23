@@ -242,6 +242,9 @@ func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
 	if u, ok := s.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
 		return fl.multiAssignRecv(s, u, out)
 	}
+	if ix, ok := s.Rhs[0].(*ast.IndexExpr); ok && isMap(fl.typeOf(ix.X)) {
+		return fl.mapIndexCommaOk(s, ix, out)
+	}
 	call, ok := s.Rhs[0].(*ast.CallExpr)
 	if !ok {
 		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
@@ -383,6 +386,10 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Type: addr.Type, Args: []ir.Expr{addr, rhs}}})
 		return stmts, nil
 	case *ast.IndexExpr:
+		xt := fl.typeOf(lhs.X)
+		if isMap(xt) {
+			return fl.mapIndexAssign(lhs, rhs, fl.typeOf(lhs))
+		}
 		base, stmts, err := fl.expr(lhs.X, nil)
 		if err != nil {
 			return nil, err
@@ -392,7 +399,6 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			return nil, err
 		}
 		stmts = append(stmts, istmts...)
-		xt := fl.typeOf(lhs.X)
 		if isSlice(xt) {
 			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{base, idx, rhs}}})
 			return stmts, nil
@@ -623,8 +629,8 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 	}
 }
 
-// rangeStmt lowers for-range over slices/arrays (index loop) and channels
-// (recv until !ok). Maps/strings wait for later milestones.
+// rangeStmt lowers for-range over slices/arrays (index loop), maps, and
+// channels (recv until !ok). Strings wait for a later milestone.
 func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
 	prevDeferLoop := fl.deferInLoop
 	fl.deferInLoop = true
@@ -637,6 +643,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	switch u.(type) {
 	case *types.Slice, *types.Array:
 		// ok
+	case *types.Map:
+		return fl.rangeMapStmt(s, goLabel)
 	case *types.Chan:
 		return fl.rangeChanStmt(s, goLabel)
 	default:

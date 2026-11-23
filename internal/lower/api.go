@@ -157,6 +157,7 @@ type meta struct {
 	cellVars  map[types.Object]bool
 	needsEH    bool // set when any function uses defer/panic/recover
 	needsSched bool // set when go / chan / select / park may be needed
+	needsMaps  bool // set when map ops may be needed (M6)
 }
 
 var moduleMeta = map[*ir.Module]*meta{}

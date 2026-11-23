@@ -273,6 +273,144 @@ func TestM5MethodValE2E(t *testing.T) {
 	runM2(t, "method_val", "7\n", 8192)
 }
 
+// --- M6: maps (docs/design/03, 04, 08, 09) ---
+// Concurrent map write detection (go vet) is out of scope for M6.
+
+func TestM6MapIntE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_int", "2\n20\n30\n")
+}
+
+func TestM6MapStringE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_string", "1\n2\n2\n")
+}
+
+func TestM6MapLiteralE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_literal", "2\n10\n20\n")
+}
+
+func TestM6MapCommaOkE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_commaok", "7\n1\n0\n0\n")
+}
+
+func TestM6MapClearE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_clear", "0\n0\n")
+}
+
+func TestM6MapNilE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6Exit(t, "m6_map_nil", 2, "0\n0\n", "assignment to entry in nil map")
+}
+
+func TestM6MapNaNE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_nan", "notfound\n2\n")
+}
+
+func TestM6MapRangeSeedE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_range", "ok\n")
+}
+
+func TestM6MapDeleteRangeE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	// 5 entries visited, sum 0+10+20+30+40, map empty after deleting each current key.
+	runM6(t, "m6_map_delete_range", "5\n100\n0\n")
+}
+
+func TestM6MapOpAssignE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_opassign", "16\n3\n")
+}
+
+func TestM6MapKeysE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer")
+	}
+	runM6(t, "m6_map_keys", "1\n2\n1\n8\n1\n9\n3\n4\n1\n11\n12\n")
+}
+
+func runM6(t *testing.T, name, wantStdout string) {
+	t.Helper()
+	runM6Exit(t, name, 0, wantStdout, "")
+}
+
+func runM6Exit(t *testing.T, name string, wantExit int, wantStdout, wantStderrSubstr string) {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir := filepath.Join("testdata", name)
+	for _, n := range []string{"main.go", "go.mod"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := buildDriver(t)
+	wasmPath := filepath.Join(dir, name+".wasm")
+	cmd := exec.Command(exe, "build", "-skip-stdlib", "-o", wasmPath, ".")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	wasm, err := os.ReadFile(wasmPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s.wasm size = %d (names off)", name, len(wasm))
+
+	cmd = exec.Command(exe, "run", "-skip-stdlib", ".")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	ec := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			ec = ee.ExitCode()
+		} else {
+			t.Fatalf("run: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
+	}
+	if ec != wantExit {
+		t.Fatalf("exit %d, want %d\nstdout=%q stderr=%q", ec, wantExit, stdout.String(), stderr.String())
+	}
+	if stdout.String() != wantStdout {
+		t.Fatalf("stdout %q, want %q", stdout.String(), wantStdout)
+	}
+	if wantStderrSubstr != "" && !strings.Contains(stderr.String(), wantStderrSubstr) {
+		t.Fatalf("stderr %q, want substring %q", stderr.String(), wantStderrSubstr)
+	}
+}
+
 // --- M7: goroutines, channels, select (docs/design/04, 07, 08) ---
 
 func jspiAvailable(t *testing.T) bool {

@@ -8,9 +8,9 @@ The WAT escape hatch ([`12-wasm-assembly.md`](../../../docs/design/12-wasm-assem
 | `printint` (optional) | Compact digit buffer in linear memory (smaller than Go digit strings) | Go `printuint` via `printstring` (linked) |
 | `write` (bridge half) | Same loop; host import is already `go.runtime.write` | Folded into printstring intrinsic |
 | `memequal` / `memmove` | Tight `(array i8)` loops | Not yet linked |
-| map hash of `string` / `[]byte` | Hot M6 path | Go scaffold when M6 lands |
+| map hash of `string` / `[]byte` | Hot M6 path | Go `strhash` / `mapKeyHash` (generic); optional WAT later |
 | `deferRun` catch / `throw` edges | EH-heavy; clearer in WAT | Go scaffold + `testdata/m5_defer_panic.wat` |
-| `mapAssign` / `mapAccess` hash kernels | Hot byte/string hashing | Go scaffold + `testdata/m6_map.wat` |
+| `mapAssign` / `mapAccess` hash kernels | Hot byte/string hashing | Go open-addressed table + `testdata/m6_map.wat` driver |
 | `gopark` `$g` save/restore | Must wrap suspending `park` (04) | Go `gopark` + `prototypes/jspi-sched` / `testdata/m7_*.wat` |
 | `chanSend` / `chanRecv` typed buffer ops | Per-T `array.get`/`array.set` | Shared Go + `chanOps`; `testdata/m7_chan.wat` |
 

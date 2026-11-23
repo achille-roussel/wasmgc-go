@@ -407,9 +407,66 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 	tyB := rt.newVar("tyb", &ir.Ref{Named: "$go.type"})
 	dA := rt.newVar("da", &ir.Ref{Null: true, Heap: ir.HeapAny})
 	dB := rt.newVar("db", &ir.Ref{Null: true, Heap: ir.HeapAny})
+	kindV := rt.newVar("kind", ir.TypeI32)
+	idV := rt.newVar("tid", ir.TypeI32)
 	cmpBody := &ir.Seq{}
-	for _, v := range []*ir.Var{itA, itB, tyA, tyB, dA, dB} {
+	for _, v := range []*ir.Var{itA, itB, tyA, tyB, dA, dB, kindV, idV} {
 		cmpBody.Stmts = append(cmpBody.Stmts, &ir.VarDef{Var: v})
+	}
+	sameTy := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{useV(tyA), useV(tyB)}}
+	eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+	refEq := assignV(res, &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dA)}},
+		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dB)}},
+	}})
+	boxCmp := func(box string, cmp ir.Op) ir.Stmt {
+		ca := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: box}, Args: []ir.Expr{useV(dA)}}
+		cb := &ir.Instr{Op: ir.OpRefCast, Type: &ir.Ref{Named: box}, Args: []ir.Expr{useV(dB)}}
+		va := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: box}, Field: "v", Args: []ir.Expr{ca}}
+		vb := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: box}, Field: "v", Args: []ir.Expr{cb}}
+		return assignV(res, &ir.Instr{Op: cmp, Args: []ir.Expr{va, vb}})
+	}
+	kindEq := func(k int64) ir.Expr {
+		return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: k}}}
+	}
+	// Scalars/string via kind; structs/arrays via $go.dispatchEq (field-wise).
+	// $go.type stays 4 fields so empty_main size budget holds.
+	dataThen := &ir.If{
+		Cond: kindEq(14), // Float64
+		Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.f64", ir.OpF64Eq)}},
+		Else: &ir.If{
+			Cond: kindEq(13), // Float32
+			Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.f32", ir.OpF32Eq)}},
+			Else: &ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(6), kindEq(11)}}, // Int64|Uint64
+				Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.i64", ir.OpI64Eq)}},
+				Else: &ir.If{
+					Cond: kindEq(24), // String
+					Then: rt.stringDataEq(res, dA, dB),
+					Else: &ir.If{
+						Cond: &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: 12}}},
+						Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.i32", ir.OpI32Eq)}},
+						Else: func() *ir.If {
+							structThen := &ir.Seq{Stmts: []ir.Stmt{refEq}}
+							if rt.mod.LookupFunc("$go.dispatchEq") != nil {
+								structThen = &ir.Seq{Stmts: []ir.Stmt{
+									assignV(idV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id", Args: []ir.Expr{useV(tyA)}}),
+									assignV(res, &ir.Instr{
+										Op: ir.OpCall, Func: "$go.dispatchEq",
+										Args: []ir.Expr{useV(idV), useV(dA), useV(dB)},
+									}),
+								}}
+							}
+							return &ir.If{
+								Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(25), kindEq(17)}}, // Struct|Array
+								Then: structThen,
+								Else: &ir.Seq{Stmts: []ir.Stmt{refEq}},
+							}
+						}(),
+					},
+				},
+			},
+		},
 	}
 	cmpBody.Stmts = append(cmpBody.Stmts,
 		assignV(itA, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(av)}}),
@@ -418,22 +475,13 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 		assignV(tyB, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itB)}}),
 		assignV(dA, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(av)}}),
 		assignV(dB, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(bv)}}),
+		assignV(kindV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "kind", Args: []ir.Expr{useV(tyA)}}),
+		&ir.If{
+			Cond: sameTy,
+			Then: &ir.Seq{Stmts: []ir.Stmt{dataThen}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{assignV(res, &ir.Const{Op: ir.OpI32Const, I64: 0})}},
+		},
 	)
-	sameTy := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{useV(tyA), useV(tyB)}}
-	// ref.eq requires eqref; iface data is anyref.
-	eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
-	dataEq := &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
-		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dA)}},
-		&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{useV(dB)}},
-	}}
-	// Identity compare on data covers *T and same-box values. Distinct boxes
-	// with equal contents need $go.eq.* (scalar unbox) — deferred when equal
-	// is looked up from the type descriptor.
-	cmpBody.Stmts = append(cmpBody.Stmts, &ir.If{
-		Cond: sameTy,
-		Then: &ir.Seq{Stmts: []ir.Stmt{assignV(res, dataEq)}},
-		Else: &ir.Seq{Stmts: []ir.Stmt{assignV(res, &ir.Const{Op: ir.OpI32Const, I64: 0})}},
-	})
 
 	pre = append(pre, &ir.If{
 		Cond: aNull,
@@ -447,6 +495,32 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 func isNumType(t ir.Type) bool {
 	_, ok := t.(*ir.NumType)
 	return ok
+}
+
+// stringDataEq compares two iface data words holding $go.string headers.
+func (rt *runtimeLower) stringDataEq(res, dA, dB *ir.Var) *ir.Seq {
+	st := &ir.Ref{Named: "$go.string"}
+	sa := rt.newVar("sa", st)
+	sb := rt.newVar("sb", st)
+	la := rt.newVar("sla", ir.TypeI32)
+	lb := rt.newVar("slb", ir.TypeI32)
+	seq := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: sa}, &ir.VarDef{Var: sb}, &ir.VarDef{Var: la}, &ir.VarDef{Var: lb},
+		assignV(sa, &ir.Instr{Op: ir.OpRefCast, Type: st, Args: []ir.Expr{useV(dA)}}),
+		assignV(sb, &ir.Instr{Op: ir.OpRefCast, Type: st, Args: []ir.Expr{useV(dB)}}),
+		assignV(la, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{useV(sa)}}),
+		assignV(lb, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{useV(sb)}}),
+	}}
+	// if len != → false; else call runtime.memequal_string or byte loop via helper.
+	seq.Stmts = append(seq.Stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Ne, Args: []ir.Expr{useV(la), useV(lb)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{assignV(res, &ir.Const{Op: ir.OpI32Const, I64: 0})}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{assignV(res, &ir.Instr{
+			Op: ir.OpCall, Func: "runtime.stringeq",
+			Args: []ir.Expr{useV(sa), useV(sb)},
+		})}},
+	})
+	return seq
 }
 
 func (rt *runtimeLower) expandStringSlice(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {

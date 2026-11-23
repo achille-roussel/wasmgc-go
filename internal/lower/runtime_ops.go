@@ -339,6 +339,16 @@ func (rt *runtimeLower) expandHighAssign(s *ir.Assign, in *ir.Instr, n *int) ([]
 		return rt.expandChanSend(in, n)
 	case ir.OpChanClose:
 		return rt.expandChanClose(in, n)
+	case ir.OpMapMake:
+		return rt.expandMapMake(s, in, n)
+	case ir.OpMapGet:
+		return rt.expandMapGet(s, in, n)
+	case ir.OpMapLen:
+		return rt.expandMapLen(s, in, n)
+	case ir.OpMapIter:
+		return rt.expandMapIter(s, in, n)
+	case ir.OpMapNext:
+		return rt.expandMapNext(s, in, n)
 	default:
 		return nil, fmt.Errorf("lower.RuntimeOps: high-level op %s not lowered", in.Op)
 	}
@@ -359,6 +369,10 @@ func (rt *runtimeLower) expandHighExpr(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 	case ir.OpChanRecv:
 		// Discard receive (ExprStmt / Drop): no unbox, no type globals.
 		return rt.expandChanRecv(nil, in, n)
+	case ir.OpMapSet:
+		return rt.expandMapSet(in, n)
+	case ir.OpMapDelete:
+		return rt.expandMapDelete(in, n)
 	default:
 		// Expand as assign to dummy then drop — should not happen often.
 		t := &ir.Temp{Name: rt.fresh("x"), Typ: ir.TypeI32}
@@ -372,17 +386,18 @@ func sliceParts(t ir.Type) (sliceName, arrName string) {
 	if !ok {
 		return "", ""
 	}
+	if !strings.HasPrefix(r.Named, "$go.slice.") {
+		return "", ""
+	}
 	sliceName = r.Named
-	if strings.HasPrefix(sliceName, "$go.slice.") {
-		suf := strings.TrimPrefix(sliceName, "$go.slice.")
-		switch suf {
-		case "i8":
-			arrName = "$go.bytes"
-		case "i16":
-			arrName = "$go.i16s"
-		default:
-			arrName = "$go.array." + suf
-		}
+	suf := strings.TrimPrefix(sliceName, "$go.slice.")
+	switch suf {
+	case "i8":
+		arrName = "$go.bytes"
+	case "i16":
+		arrName = "$go.i16s"
+	default:
+		arrName = "$go.array." + suf
 	}
 	return sliceName, arrName
 }
@@ -400,6 +415,18 @@ func (rt *runtimeLower) sliceTypeFrom(orig, rewritten ir.Expr, elem ir.Type) (sl
 				return sliceParts(x.Var.Typ)
 			}
 		case *ir.Instr:
+			// struct.get's Type is the struct; recover the field's slice type.
+			if x.Op == ir.OpStructGet && x.Field != "" && x.Type != nil {
+				if r, ok := x.Type.(*ir.Ref); ok && r.Named != "" {
+					if td := rt.mod.LookupType(r.Named); td != nil {
+						for _, f := range td.Fields {
+							if f.Name == x.Field {
+								return sliceParts(f.Type)
+							}
+						}
+					}
+				}
+			}
 			if x.Type != nil {
 				if sn, an := sliceParts(x.Type); sn != "" {
 					return sn, an
@@ -986,6 +1013,15 @@ func (rt *runtimeLower) expandLenCap(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(resV)})
 		return pre, nil
 	}
+	// Map: len → used (or runtime.mapLen); cap of map is illegal in Go.
+	if r, ok := ty.(*ir.Ref); ok && r.Named == "$go.hmap" {
+		if in.Op == ir.OpCap {
+			return nil, fmt.Errorf("cap of map")
+		}
+		call := &ir.Instr{Op: ir.OpCall, Func: "runtime.mapLen", Args: []ir.Expr{arg}}
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: call})
+		return pre, nil
+	}
 	pre = append(pre, &ir.Assign{
 		Lhs: s.Lhs,
 		Rhs: &ir.Instr{Op: ir.OpStructGet, Type: ty, Field: field, Args: []ir.Expr{arg}},
@@ -1396,13 +1432,6 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 
 	dataTemp := fmt.Sprintf("%%strdata%d", *n)
 	dataT := &ir.Temp{Name: dataTemp, Typ: &ir.Ref{Named: "$go.bytes"}}
-	strT := s.Lhs[0].Temp
-	if strT == nil {
-		strT = &ir.Temp{Name: s.Lhs[0].Name, Typ: &ir.Ref{Named: "$go.string"}}
-		s.Lhs[0].Temp = strT
-	} else {
-		strT.Typ = &ir.Ref{Named: "$go.string"}
-	}
 
 	mkData := &ir.Assign{
 		Lhs: []ir.Dest{{Temp: dataT, Name: dataTemp}},
@@ -1412,17 +1441,32 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 			Data: litName,
 		},
 	}
+	strNew := &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: "$go.string"},
+		Args: []ir.Expr{
+			&ir.Name{Temp: dataT, Raw: dataTemp},
+			&ir.Const{Op: ir.OpI32Const, I64: 0},
+			&ir.Const{Op: ir.OpI32Const, I64: int64(len(str))},
+		},
+	}
+	// Preserve var destinations; only synthesize a temp when the lhs is already a temp
+	// or a bare name that is not a module var (call-arg materialization).
+	lhs := s.Lhs[0]
+	if lhs.Var != nil {
+		return []ir.Stmt{mkData, &ir.Assign{Lhs: []ir.Dest{lhs}, Rhs: strNew}}, nil
+	}
+	strT := lhs.Temp
+	if strT == nil {
+		strName := fmt.Sprintf("%%str%d", *n)
+		*n++
+		strT = &ir.Temp{Name: strName, Typ: &ir.Ref{Named: "$go.string"}}
+	} else {
+		strT.Typ = &ir.Ref{Named: "$go.string"}
+	}
 	mkStr := &ir.Assign{
 		Lhs: []ir.Dest{{Temp: strT, Name: strT.Name}},
-		Rhs: &ir.Instr{
-			Op:   ir.OpStructNew,
-			Type: &ir.Ref{Named: "$go.string"},
-			Args: []ir.Expr{
-				&ir.Name{Temp: dataT, Raw: dataTemp},
-				&ir.Const{Op: ir.OpI32Const, I64: 0},
-				&ir.Const{Op: ir.OpI32Const, I64: int64(len(str))},
-			},
-		},
+		Rhs: strNew,
 	}
 	return []ir.Stmt{mkData, mkStr}, nil
 }

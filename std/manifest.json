@@ -3,7 +3,7 @@
   "packages": {
     "runtime": {
       "tier": "rewrite",
-      "notes": "Wasm GC scheduler, channels, select, print; M7 park/chan in proc/chan/select"
+      "notes": "Wasm GC scheduler, channels, select, maps, print; M6 open-addressed maps; M7 park/chan"
     },
     "internal/abi": {
       "tier": "rewrite",

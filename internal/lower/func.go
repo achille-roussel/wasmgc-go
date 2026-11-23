@@ -179,8 +179,17 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	v := &ir.Var{Name: name, Typ: ty}
 	fl.vars[obj] = v
 	fl.extraLocals = append(fl.extraLocals, v)
-	// VarDef is emitted once in lowerFunc preamble.
-	return v, nil, nil
+	// Non-defaultable refs (e.g. $go.string) must be initialized; Wasm GC
+	// rejects an uninitialized (ref T) local even if every use is dominated
+	// by an assignment (comma-ok type assert is the usual trigger).
+	var init []ir.Stmt
+	if needsZeroInit(ty) {
+		z, err := fl.zeroValue(ty)
+		if err == nil {
+			init = []ir.Stmt{fl.assignVar(v, z)}
+		}
+	}
+	return v, init, nil
 }
 
 func (fl *funcLower) lookupVar(id *ast.Ident) (*ir.Var, error) {
