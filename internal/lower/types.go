@@ -544,8 +544,17 @@ func (l *pkgLower) structFields(st *types.Struct) ([]ir.Field, error) {
 			return nil, fmt.Errorf("field %s: %w", f.Name(), err)
 		}
 		fld := ir.Field{Name: f.Name(), Type: ft, Mut: true}
-		if a, ok := types.Unalias(f.Type()).Underlying().(*types.Array); ok {
+		ftGo := types.Unalias(f.Type())
+		if a, ok := ftGo.Underlying().(*types.Array); ok {
 			fld.Len = a.Len()
+		}
+		// *NamedStruct / *[N]T share IR with the value; mark so structZero
+		// leaves null (e.g. structFields.errUnsupportedFormat *SemanticError).
+		if _, ok := ftGo.Underlying().(*types.Pointer); ok {
+			if r, ok := ft.(*ir.Ref); ok && (strings.HasPrefix(r.Named, "$go.struct.") ||
+				r.Named == "$go.bytes" || r.Named == "$go.i16s" || strings.HasPrefix(r.Named, "$go.array.")) {
+				fld.Ptr = true
+			}
 		}
 		fields = append(fields, fld)
 	}
@@ -822,6 +831,48 @@ func isSlice(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Slice)
 	return ok
+}
+
+// isByteSliceOrArray reports []byte / [N]byte / *[N]byte.
+func isByteSliceOrArray(t types.Type) bool {
+	t = types.Unalias(t)
+	if isPtrToArray(t) {
+		p := t.Underlying().(*types.Pointer)
+		t = types.Unalias(p.Elem())
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Slice:
+		return isByteElem(u.Elem())
+	case *types.Array:
+		return isByteElem(u.Elem())
+	}
+	return false
+}
+
+// isRuneSlice reports []rune (or []int32 named as rune).
+func isRuneSlice(t types.Type) bool {
+	s, ok := types.Unalias(t).Underlying().(*types.Slice)
+	if !ok {
+		return false
+	}
+	e := types.Unalias(s.Elem())
+	if b, ok := e.Underlying().(*types.Basic); ok {
+		return b.Kind() == types.Int32 || b.Kind() == types.UntypedRune
+	}
+	// Named rune alias.
+	if n, ok := e.(*types.Named); ok && n.Obj() != nil && n.Obj().Name() == "rune" {
+		return true
+	}
+	return false
+}
+
+func isByteElem(t types.Type) bool {
+	b, ok := types.Unalias(t).Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	k := b.Kind()
+	return k == types.Uint8 || k == types.Int8 // Byte aliases Uint8
 }
 
 func isArray(t types.Type) bool {

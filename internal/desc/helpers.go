@@ -180,10 +180,11 @@ func (g *gen) fillReflectString() {
 	if g.mod.LookupFunc(name) == nil || !emptyBody(g.mod.LookupFunc(name)) {
 		return
 	}
+	// New(string).Elem() stores $go.box.string; unwrap before casting to $go.string.
+	g.ensureBoxString()
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	strTy := &ir.Ref{Named: "$go.string"}
 	d := &ir.Var{Name: "data", Typ: anyT}
-	// Prefer direct $go.string; if data is $go.box.string (New().Elem()), unwrap.
 	boxTy := &ir.Ref{Named: "$go.box.string"}
 	hasBox := g.mod.LookupType("$go.box.string") != nil
 	var elseBody ir.Region

@@ -832,9 +832,9 @@ func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[strin
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
-		// Same-type $go.struct field → *T (null); other types → nested value.
+		// Pointer fields (Ptr) and same-type $go.struct → *T (null).
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
-			if r.Named == td.Name {
+			if f.Ptr || r.Named == td.Name {
 				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
 				continue
 			}
@@ -845,6 +845,12 @@ func (rt *runtimeLower) structZeroExpr(td *ir.TypeDef, t ir.Type, seen map[strin
 					return nil, err
 				}
 				args[i] = z
+				continue
+			}
+		}
+		if f.Ptr {
+			if r, ok := f.Type.(*ir.Ref); ok {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
 				continue
 			}
 		}

@@ -218,20 +218,15 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	}
 
 	// Concrete assert: compare descriptor refs.
+	// Nil interface → (zero, false) for comma-ok, panic otherwise — must not
+	// struct.get itab on a null $go.iface (jsontext encoder reset passes nil Writer).
 	itabV := rt.newVar("it", &ir.Ref{Named: "$go.itab"})
 	typV := rt.newVar("ty", &ir.Ref{Named: "$go.type"})
 	okV := rt.newVar("ok", ir.TypeI32)
 	for _, v := range []*ir.Var{itabV, typV, okV} {
 		pre = append(pre, &ir.VarDef{Var: v})
 	}
-	pre = append(pre,
-		assignV(itabV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(ifaceV)}}),
-		assignV(typV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itabV)}}),
-		assignV(okV, &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
-			useV(typV),
-			&ir.Instr{Op: ir.OpGlobalGet, Global: typeGlobal},
-		}}),
-	)
+	pre = append(pre, assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 0}))
 
 	dstTy := in.Type
 	if dstTy == nil {
@@ -249,26 +244,46 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	dataV := rt.newVar("d", &ir.Ref{Null: true, Heap: ir.HeapAny})
 	valV := rt.newVar("v", valTy)
 	pre = append(pre, &ir.VarDef{Var: dataV}, &ir.VarDef{Var: valV})
-	pre = append(pre, assignV(dataV, &ir.Instr{
-		Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(ifaceV)},
-	}))
+	z, _ := zeroIR(valTy)
+	pre = append(pre, assignV(valV, z))
 
+	match := &ir.Seq{}
+	match.Stmts = append(match.Stmts,
+		assignV(itabV, &ir.Instr{Op: ir.OpStructGet, Type: ifaceTy, Field: "itab", Args: []ir.Expr{useV(ifaceV)}}),
+		assignV(typV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.itab"}, Field: "type", Args: []ir.Expr{useV(itabV)}}),
+		assignV(okV, &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+			useV(typV),
+			&ir.Instr{Op: ir.OpGlobalGet, Global: typeGlobal},
+		}}),
+		assignV(dataV, &ir.Instr{
+			Op: ir.OpStructGet, Type: ifaceTy, Field: "data", Args: []ir.Expr{useV(ifaceV)},
+		}),
+	)
 	thenSeq := &ir.Seq{}
 	ubStmts, ubExpr := rt.unboxTo(dstTy, useV(dataV))
 	thenSeq.Stmts = append(thenSeq.Stmts, ubStmts...)
 	thenSeq.Stmts = append(thenSeq.Stmts, assignV(valV, ubExpr))
-
 	elseSeq := &ir.Seq{}
-	if commaOK {
-		z, _ := zeroIR(valTy)
-		elseSeq.Stmts = append(elseSeq.Stmts, assignV(valV, z))
-	} else {
+	if !commaOK {
 		elseSeq.Stmts = append(elseSeq.Stmts,
 			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
 			&ir.Unreachable{},
 		)
 	}
-	pre = append(pre, &ir.If{Cond: useV(okV), Then: thenSeq, Else: elseSeq})
+	match.Stmts = append(match.Stmts, &ir.If{Cond: useV(okV), Then: thenSeq, Else: elseSeq})
+
+	nilFail := &ir.Seq{}
+	if !commaOK {
+		nilFail.Stmts = append(nilFail.Stmts,
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
+			&ir.Unreachable{},
+		)
+	}
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+		Then: nilFail,
+		Else: match,
+	})
 
 	readVal := ir.Expr(useV(valV))
 	if r, ok := dstTy.(*ir.Ref); ok && !r.Null {

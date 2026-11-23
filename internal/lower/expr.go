@@ -1271,24 +1271,41 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 			return &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}}, stmts, nil
 		}
 	}
-	// *T ↔ *U / named struct refs with convertible underlying types (e.g.
-	// (*marshalersOption)(*Marshalers) in encoding/json/v2).
-	if isRefIR(srcIR) && isRefIR(dstIR) {
-		return &ir.Instr{Op: ir.OpRefCast, Type: dstIR, Args: []ir.Expr{x}}, stmts, nil
-	}
 	// string(rune) / string(byte) / string(int…)
 	if isString(dst) && isInteger(src) {
 		ex, st, err := fl.intToString(x, src)
 		return ex, append(stmts, st...), err
 	}
 	// string ↔ []byte / [N]byte (docs/design/03: allocate+copy; share for now).
-	if isString(dst) && (isSlice(src) || isArray(src) || isPtrToArray(src)) {
+	// Must run before the generic ref.cast below — both are Ref IR types but
+	// $go.string and $go.slice.i8 are not Wasm subtypes of each other.
+	// Only byte-backed slices share headers; []rune needs a real decode/encode.
+	if isString(dst) && isByteSliceOrArray(src) {
 		ex, st, err := fl.bytesToString(x, src, srcIR)
 		return ex, append(stmts, st...), err
 	}
-	if (isSlice(dst) || isArray(dst)) && isString(src) {
+	if isByteSliceOrArray(dst) && isString(src) {
 		ex, st, err := fl.stringToBytes(x, dst, dstIR)
 		return ex, append(stmts, st...), err
+	}
+	if isString(dst) && isRuneSlice(src) {
+		call := &ir.Instr{
+			Op: ir.OpCall, Func: "runtime.RunesToString",
+			Type: typeString, Args: []ir.Expr{x},
+		}
+		return call, stmts, nil
+	}
+	if isRuneSlice(dst) && isString(src) {
+		call := &ir.Instr{
+			Op: ir.OpCall, Func: "runtime.StringToRunes",
+			Type: dstIR, Args: []ir.Expr{x},
+		}
+		return call, stmts, nil
+	}
+	// *T ↔ *U / named struct refs with convertible underlying types (e.g.
+	// (*marshalersOption)(*Marshalers) in encoding/json/v2).
+	if isRefIR(srcIR) && isRefIR(dstIR) {
+		return &ir.Instr{Op: ir.OpRefCast, Type: dstIR, Args: []ir.Expr{x}}, stmts, nil
 	}
 	// complex64 ↔ complex128: promote/demote real and imag parts.
 	if isComplex(src) && isComplex(dst) {
@@ -1322,15 +1339,27 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 		if _, ok := st.(*ir.Ref); !ok {
 			st = &ir.Ref{Null: true, Named: "$go.slice.i8"}
 		}
+		// string(nil []byte) is ""; must not struct.get on a null slice header.
+		empty := &ir.Instr{Op: ir.OpStringLit, Str: ""}
+		tmp := fl.newVar("b2s", typeString) // VarDef via extraLocals preamble
+		thenSeq := &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(tmp, empty)}}
+		elseSeq := &ir.Seq{}
 		data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
 		off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
 		len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
 		// .data is already (ref $go.bytes); do not ref.as_non_null.
-		return &ir.Instr{
+		built := &ir.Instr{
 			Op:   ir.OpStructNew,
 			Type: typeString,
 			Args: []ir.Expr{data, off, len_},
-		}, stmts, nil
+		}
+		elseSeq.Stmts = append(elseSeq.Stmts, fl.assignVar(tmp, built))
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{x}},
+			Then: thenSeq,
+			Else: elseSeq,
+		})
+		return fl.useVar(tmp), stmts, nil
 	}
 	// [N]byte / *[N]byte: whole array is the data, off=0, len=N.
 	n := int64(0)

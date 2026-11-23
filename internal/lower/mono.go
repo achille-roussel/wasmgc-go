@@ -178,6 +178,18 @@ func (l *pkgLower) finishLowerFunc(fl *funcLower, fd *ast.FuncDecl) (*ir.Func, e
 		if r, ok := v.Typ.(*ir.Ref); ok && len(r.Named) >= 9 && r.Named[:9] == "$go.cell." {
 			continue
 		}
+		if goTy := fl.goTypeOfLocal(v); goTy != nil {
+			if z, ok := fl.goZeroValue(goTy, v.Typ); ok {
+				preamble = append(preamble, fl.assignVar(v, z))
+			} else if needsZeroInit(v.Typ) {
+				z, err := fl.zeroValue(v.Typ)
+				if err != nil {
+					return nil, err
+				}
+				preamble = append(preamble, fl.assignVar(v, z))
+			}
+			continue
+		}
 		if !needsZeroInit(v.Typ) && !isNamedStructRef(v.Typ) {
 			continue
 		}

@@ -250,6 +250,10 @@ type Field struct {
 	// $go.array.*). Zero means "not a fixed array" (or length 0). Used by
 	// structZero so new(T) allocates [N]elem instead of leaving a null array.
 	Len int64
+	// Ptr is true when the Go field type is a pointer (*T) that shares the
+	// same IR ref as a named struct / array value. structZero must leave
+	// these null rather than allocating a nested zero object.
+	Ptr bool
 }
 
 // TypeDef is an interned module type: struct, array, or function signature.

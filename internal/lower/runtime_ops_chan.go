@@ -218,6 +218,10 @@ func (rt *runtimeLower) structZeroSeen(td *ir.TypeDef, t ir.Type, seen map[strin
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			if f.Ptr || r.Named == td.Name {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
+				continue
+			}
 			ntd := rt.mod.LookupType(r.Named)
 			if ntd != nil && ntd.Kind == ir.TypeStruct {
 				z, err := rt.structZeroSeen(ntd, r, seen)
@@ -225,6 +229,12 @@ func (rt *runtimeLower) structZeroSeen(td *ir.TypeDef, t ir.Type, seen map[strin
 					return nil, err
 				}
 				args[i] = z
+				continue
+			}
+		}
+		if f.Ptr {
+			if r, ok := f.Type.(*ir.Ref); ok {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
 				continue
 			}
 		}

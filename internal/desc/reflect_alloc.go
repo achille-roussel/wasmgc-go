@@ -321,8 +321,8 @@ func (g *gen) structZeroIR(td *ir.TypeDef, t ir.Type, seen map[string]bool) ir.E
 				args[i] = g.stringConstExpr("")
 				continue
 			}
-			// Same-type field is *T (null), not a nested value.
-			if rname := ft.Named; rname != "" && rname == td.Name {
+			// Pointer fields and same-type fields are *T (null).
+			if f.Ptr || (ft.Named != "" && ft.Named == td.Name) {
 				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: ft}
 				continue
 			}

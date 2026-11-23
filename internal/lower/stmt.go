@@ -226,6 +226,10 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, stmts...)
 				out = append(out, fl.assignVar(v, ex))
+			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
+				// Arrays / named structs: Wasm refnull default is null, but
+				// Go zero is an allocated empty value (e.g. var arr [32]byte).
+				out = append(out, fl.assignVar(v, z))
 			}
 			// else: defineLocal already zero-inits non-defaultable refs.
 		}

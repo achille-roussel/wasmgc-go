@@ -494,6 +494,32 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			preamble = append(preamble, &ir.VarDef{Var: v})
 		}
 	}
+	// Zero-init non-defaultable refs and Go value zeros; *T stays null.
+	for _, v := range append(child.namedResults, child.extraLocals...) {
+		if r, ok := v.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.cell.") {
+			continue
+		}
+		if goTy := child.goTypeOfLocal(v); goTy != nil {
+			if z, ok := child.goZeroValue(goTy, v.Typ); ok {
+				preamble = append(preamble, child.assignVar(v, z))
+			} else if needsZeroInit(v.Typ) {
+				z, err := child.zeroValue(v.Typ)
+				if err != nil {
+					return err
+				}
+				preamble = append(preamble, child.assignVar(v, z))
+			}
+			continue
+		}
+		if !needsZeroInit(v.Typ) && !isNamedStructRef(v.Typ) {
+			continue
+		}
+		z, err := child.zeroValue(v.Typ)
+		if err != nil {
+			return err
+		}
+		preamble = append(preamble, child.assignVar(v, z))
+	}
 	// Address-taken locals spill into cells (see addrOf); allocate them here.
 	for _, ci := range child.cellInits {
 		preamble = append(preamble, child.assignVar(ci.cell, &ir.Instr{

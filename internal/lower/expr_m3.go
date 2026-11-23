@@ -712,6 +712,74 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 	}
 }
 
+// goZeroValue builds the Go zero for a local/global when Wasm's null default
+// is wrong. ok is false when null/0 is already correct (pointers, slices, …).
+func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) {
+	if goTy == nil || irTy == nil {
+		return nil, false
+	}
+	goTy = types.Unalias(goTy)
+	switch u := goTy.Underlying().(type) {
+	case *types.Array:
+		r, ok := irTy.(*ir.Ref)
+		if !ok || r.Named == "" {
+			return nil, false
+		}
+		n := u.Len()
+		if n < 0 {
+			n = 0
+		}
+		// (ref $go.string) elems are non-defaultable.
+		if r.Named == "$go.array.go.string" {
+			return &ir.Instr{
+				Op:   ir.OpArrayNew,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpStringLit, Str: ""},
+					&ir.Const{Op: ir.OpI32Const, I64: n},
+				},
+			}, true
+		}
+		return &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: &ir.Ref{Named: r.Named},
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: n}},
+		}, true
+	case *types.Struct:
+		z, err := fl.zeroValue(irTy)
+		if err != nil {
+			return nil, false
+		}
+		// Only emit when zeroValue allocates (named struct), not bare null.
+		if in, ok := z.(*ir.Instr); ok && in.Op == ir.OpRefNull {
+			return nil, false
+		}
+		return z, true
+	case *types.Basic:
+		if u.Kind() == types.String {
+			return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
+		}
+		if u.Kind() == types.Complex64 || u.Kind() == types.Complex128 {
+			z, err := fl.zeroValue(irTy)
+			return z, err == nil
+		}
+	}
+	// Named struct defined type.
+	if _, ok := goTy.(*types.Named); ok {
+		if _, ok := goTy.Underlying().(*types.Struct); ok {
+			z, err := fl.zeroValue(irTy)
+			if err != nil {
+				return nil, false
+			}
+			if in, ok := z.(*ir.Instr); ok && in.Op == ir.OpRefNull {
+				return nil, false
+			}
+			return z, true
+		}
+	}
+	return nil, false
+}
+
 func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool) (ir.Expr, error) {
 	if seen[td.Name] {
 		// Avoid struct.new_default (non-defaultable string fields).
@@ -720,10 +788,10 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 	seen[td.Name] = true
 	args := make([]ir.Expr, len(td.Fields))
 	for i, f := range td.Fields {
-		// Nested $go.struct refs: same-type is treated as *T (null); other
-		// types as nested values (recursive zero). T and *T share IR shape.
+		// Nested $go.struct refs: pointer fields (Ptr) and same-type fields
+		// are *T (null); other named structs are nested values.
 		if r, ok := f.Type.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
-			if r.Named == td.Name {
+			if f.Ptr || r.Named == td.Name {
 				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
 				continue
 			}
@@ -734,6 +802,12 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 					return nil, err
 				}
 				args[i] = z
+				continue
+			}
+		}
+		if f.Ptr {
+			if r, ok := f.Type.(*ir.Ref); ok {
+				args[i] = &ir.Instr{Op: ir.OpRefNull, Type: r}
 				continue
 			}
 		}

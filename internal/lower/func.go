@@ -64,6 +64,23 @@ func (fl *funcLower) newTemp(typ ir.Type) *ir.Temp {
 	return &ir.Temp{Name: name, Typ: typ}
 }
 
+// goTypeOfLocal returns the Go type for an IR local registered via defineLocal.
+func (fl *funcLower) goTypeOfLocal(v *ir.Var) types.Type {
+	if fl == nil || v == nil {
+		return nil
+	}
+	for obj, lv := range fl.vars {
+		if lv == v && obj != nil {
+			ty := obj.Type()
+			if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+				ty = fl.pkg.subst.Apply(ty)
+			}
+			return ty
+		}
+	}
+	return nil
+}
+
 func (fl *funcLower) newVar(name string, typ ir.Type) *ir.Var {
 	if name == "" || name == "_" {
 		name = "v" + strconv.Itoa(fl.varSeq)
