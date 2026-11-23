@@ -1,11 +1,1 @@
 # container/list — wasmgc-go test skips
-TestExtending — wasm: array.new_fixed type mismatch in composite literals
-TestInsertAfterUnknownMark — wasm: array.new_fixed type mismatch in composite literals
-TestInsertBeforeUnknownMark — wasm: array.new_fixed type mismatch in composite literals
-TestIssue4103 — wasm: array.new_fixed type mismatch in composite literals
-TestIssue6349 — wasm: array.new_fixed type mismatch in composite literals
-TestList — wasm: array.new_fixed type mismatch in composite literals
-TestMove — wasm: array.new_fixed type mismatch in composite literals
-TestMoveUnknownMark — wasm: array.new_fixed type mismatch in composite literals
-TestRemove — wasm: array.new_fixed type mismatch in composite literals
-TestZeroList — wasm: array.new_fixed type mismatch in composite literals

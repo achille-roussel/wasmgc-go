@@ -31,7 +31,15 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.SelectorExpr:
 		return fl.selector(e, want)
 	case *ast.IndexExpr:
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
 		return fl.indexExpr(e, want)
+	case *ast.IndexListExpr:
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
+		return nil, nil, fl.errorf(e, "unsupported IndexListExpr")
 	case *ast.SliceExpr:
 		return fl.sliceExpr(e, want)
 	case *ast.CompositeLit:
@@ -85,11 +93,31 @@ func (fl *funcLower) ident(e *ast.Ident, want ir.Type) (ir.Expr, []ir.Stmt, erro
 		if fn, ok := obj.(*types.Func); ok {
 			return fl.topLevelFuncValue(fn)
 		}
+		// Locals/params before package globals. Mono bodies (e.g. maps.Equal)
+		// reuse param names like m1/m2 that tests also declare as package vars;
+		// lookupGlobal's name fallback must not win over the IR local.
 		if _, ok := obj.(*types.Var); ok {
 			if fl.cells != nil {
 				if _, boxed := fl.cells[obj]; boxed {
 					ex, err := fl.readVar(obj)
 					return ex, nil, err
+				}
+			}
+			if fl.vars != nil {
+				if v, ok := fl.vars[obj]; ok {
+					ex := ir.Expr(fl.useVar(v))
+					if want != nil && irNumWidth(want) == ir.I64 && v.Typ != nil && irNumWidth(v.Typ) == ir.I32 {
+						unsigned := false
+						if vr, ok := obj.(*types.Var); ok {
+							unsigned = isUnsigned(vr.Type())
+						}
+						if unsigned {
+							ex = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{ex}}
+						} else {
+							ex = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{ex}}
+						}
+					}
+					return ex, nil, nil
 				}
 			}
 		}
@@ -1177,6 +1205,36 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 	return nil
 }
 
+// genericInstFuncValue lowers F[T] / F[T,U] used as a function value
+// (e.g. EqualFunc(m, m, equal[int])), not as a call.
+func (fl *funcLower) genericInstFuncValue(e ast.Expr) (ir.Expr, []ir.Stmt, bool, error) {
+	origin := fl.indexExprGenericFunc(e)
+	if origin == nil {
+		return nil, nil, false, nil
+	}
+	if fl.pkg.mono == nil {
+		return nil, nil, true, fl.errorf(e, "generic func value without mono table")
+	}
+	id := identOf(e)
+	if id == nil {
+		return nil, nil, true, fl.errorf(e, "generic func value: no function ident")
+	}
+	instRec, has := fl.info.Instances[id]
+	if !has {
+		return nil, nil, true, fl.errorf(id, "generic func value %s missing Instance", id.Name)
+	}
+	args := fl.concreteArgs(instRec.TypeArgs)
+	if args == nil {
+		return nil, nil, true, fl.errorf(id, "generic func value %s has unsubstituted type args", id.Name)
+	}
+	inst, err := fl.pkg.mono.EnsureFunc(origin, args)
+	if err != nil {
+		return nil, nil, true, fl.errorf(id, "%v", err)
+	}
+	ex, stmts, err := fl.monoInstFuncValue(inst)
+	return ex, stmts, true, err
+}
+
 // indexExprGenericFunc returns the generic Func origin when fun is F[T] / F[T,U]
 // naming a generic function (instantiation used as a call callee), including
 // package-qualified forms like pkg.F[T].
@@ -1234,6 +1292,10 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	dst := fl.typeOf(e)
 	src := fl.typeOf(e.Args[0])
 	if isIface(dst) {
+		// error(nil) / any(nil) → null iface (before convertToIface mapType(nil)).
+		if isUntypedNil(src) || isNilIdent(e.Args[0]) {
+			return &ir.Instr{Op: ir.OpRefNull, Type: typeIface}, nil, nil
+		}
 		return fl.convertToIface(e.Args[0], src, dst, typeIface)
 	}
 	if isIface(src) && !isIface(dst) {
@@ -2199,6 +2261,11 @@ func identOf(e ast.Expr) *ast.Ident {
 		return e
 	case *ast.SelectorExpr:
 		return e.Sel
+	case *ast.IndexExpr:
+		// Equal[map[int]int](nil) — Instances is keyed on the function Ident.
+		return identOf(e.X)
+	case *ast.IndexListExpr:
+		return identOf(e.X)
 	}
 	return nil
 }

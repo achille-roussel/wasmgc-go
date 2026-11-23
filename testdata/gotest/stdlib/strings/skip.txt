@@ -1,71 +1,62 @@
 # strings — wasmgc-go test skips
-TestBuilder — lower/runtime gaps in strings tests
-TestBuilderAllocs — lower/runtime gaps in strings tests
-TestBuilderCopyPanic — lower/runtime gaps in strings tests
-TestBuilderGrow — lower/runtime gaps in strings tests
-TestBuilderGrowSizeclasses — lower/runtime gaps in strings tests
-TestBuilderReset — lower/runtime gaps in strings tests
-TestBuilderString — lower/runtime gaps in strings tests
-TestBuilderWrite2 — lower/runtime gaps in strings tests
-TestBuilderWriteByte — lower/runtime gaps in strings tests
-TestBuilderWriteInvalidRune — lower/runtime gaps in strings tests
-TestCaseConsistency — lower/runtime gaps in strings tests
-TestClone — lower/runtime gaps in strings tests
-TestCompare — lower/runtime gaps in strings tests
-TestCompareIdenticalString — lower/runtime gaps in strings tests
-TestCompareStrings — lower/runtime gaps in strings tests
-TestContains — lower/runtime gaps in strings tests
-TestContainsAny — lower/runtime gaps in strings tests
-TestContainsFunc — lower/runtime gaps in strings tests
-TestContainsRune — lower/runtime gaps in strings tests
-TestCount — lower/runtime gaps in strings tests
-TestCut — lower/runtime gaps in strings tests
-TestCutLast — lower/runtime gaps in strings tests
-TestCutPrefix — lower/runtime gaps in strings tests
-TestCutSuffix — lower/runtime gaps in strings tests
-TestEmptyReaderConcurrent — lower/runtime gaps in strings tests
-TestEqualFold — lower/runtime gaps in strings tests
-TestFields — lower/runtime gaps in strings tests
-TestFieldsFunc — lower/runtime gaps in strings tests
-TestFinderCreation — lower/runtime gaps in strings tests
-TestFinderNext — lower/runtime gaps in strings tests
-TestGenericTrieBuilding — lower/runtime gaps in strings tests
-TestIndex — lower/runtime gaps in strings tests
-TestIndexAny — lower/runtime gaps in strings tests
-TestIndexByte — lower/runtime gaps in strings tests
-TestIndexFunc — lower/runtime gaps in strings tests
-TestIndexRandom — lower/runtime gaps in strings tests
-TestIndexRune — lower/runtime gaps in strings tests
-TestLastIndex — lower/runtime gaps in strings tests
-TestLastIndexAny — lower/runtime gaps in strings tests
-TestLastIndexByte — lower/runtime gaps in strings tests
-TestLines — lower/runtime gaps in strings tests
-TestMap — lower/runtime gaps in strings tests
-TestPickAlgorithm — lower/runtime gaps in strings tests
-TestReadAfterBigSeek — lower/runtime gaps in strings tests
-TestReadByte — lower/runtime gaps in strings tests
-TestReader — lower/runtime gaps in strings tests
-TestReaderAt — lower/runtime gaps in strings tests
-TestReaderAtConcurrent — lower/runtime gaps in strings tests
-TestReaderLenSize — lower/runtime gaps in strings tests
-TestReaderReset — lower/runtime gaps in strings tests
-TestReaderZero — lower/runtime gaps in strings tests
-TestReadRune — lower/runtime gaps in strings tests
-TestRepeat — lower/runtime gaps in strings tests
-TestRepeatCatchesOverflow — lower/runtime gaps in strings tests
-TestReplace — lower/runtime gaps in strings tests
-TestReplacer — lower/runtime gaps in strings tests
-TestRunes — lower/runtime gaps in strings tests
-TestSpecialCase — lower/runtime gaps in strings tests
-TestSplit — lower/runtime gaps in strings tests
-TestSplitAfter — lower/runtime gaps in strings tests
-TestTitle — lower/runtime gaps in strings tests
-TestToLower — lower/runtime gaps in strings tests
-TestToUpper — lower/runtime gaps in strings tests
-TestToValidUTF8 — lower/runtime gaps in strings tests
-TestTrim — lower/runtime gaps in strings tests
-TestTrimFunc — lower/runtime gaps in strings tests
-TestTrimSpace — lower/runtime gaps in strings tests
-TestUnreadRuneError — lower/runtime gaps in strings tests
-TestWriteStringError — lower/runtime gaps in strings tests
-TestWriteTo — lower/runtime gaps in strings tests
+TestBuilder — compile: load: typecheck strings_test:
+TestBuilderAllocs — compile: load: typecheck strings_test:
+TestBuilderCopyPanic — compile: load: typecheck strings_test:
+TestBuilderGrow — compile: load: typecheck strings_test:
+TestBuilderGrowSizeclasses — compile: load: typecheck strings_test:
+TestBuilderReset — compile: load: typecheck strings_test:
+TestBuilderString — compile: load: typecheck strings_test:
+TestBuilderWrite2 — compile: load: typecheck strings_test:
+TestBuilderWriteByte — compile: load: typecheck strings_test:
+TestBuilderWriteInvalidRune — compile: load: typecheck strings_test:
+TestCaseConsistency — compile: load: typecheck strings_test:
+TestClone — compile: load: typecheck strings_test:
+TestCompare — compile: load: typecheck strings_test:
+TestCompareStrings — compile: load: typecheck strings_test:
+TestContains — compile: load: typecheck strings_test:
+TestContainsAny — compile: load: typecheck strings_test:
+TestContainsFunc — compile: load: typecheck strings_test:
+TestContainsRune — compile: load: typecheck strings_test:
+TestCount — compile: load: typecheck strings_test:
+TestCut — compile: load: typecheck strings_test:
+TestCutLast — compile: load: typecheck strings_test:
+TestCutPrefix — compile: load: typecheck strings_test:
+TestCutSuffix — compile: load: typecheck strings_test:
+TestEqualFold — compile: load: typecheck strings_test:
+TestFields — compile: load: typecheck strings_test:
+TestFieldsFunc — compile: load: typecheck strings_test:
+TestFinderCreation — runtime error
+TestFinderNext — runtime error
+TestGenericTrieBuilding — compile: load: typecheck strings_test:
+TestIndex — compile: load: typecheck strings_test:
+TestIndexAny — compile: load: typecheck strings_test:
+TestIndexByte — compile: load: typecheck strings_test:
+TestIndexFunc — compile: load: typecheck strings_test:
+TestIndexRandom — compile: load: typecheck strings_test:
+TestIndexRune — compile: load: typecheck strings_test:
+TestLastIndex — compile: load: typecheck strings_test:
+TestLastIndexAny — compile: load: typecheck strings_test:
+TestLastIndexByte — compile: load: typecheck strings_test:
+TestLines — compile: load: typecheck strings_test:
+TestMap — compile: load: typecheck strings_test:
+TestPickAlgorithm — compile: load: typecheck strings_test:
+TestReadByte — compile: load: typecheck strings_test:
+TestReadRune — compile: load: typecheck strings_test:
+TestReaderAt — runtime error
+TestRepeat — compile: load: typecheck strings_test:
+TestRepeatCatchesOverflow — compile: load: typecheck strings_test:
+TestReplace — compile: load: typecheck strings_test:
+TestReplacer — compile: load: typecheck strings_test:
+TestRunes — compile: load: typecheck strings_test:
+TestSpecialCase — compile: load: typecheck strings_test:
+TestSplit — compile: load: typecheck strings_test:
+TestSplitAfter — compile: load: typecheck strings_test:
+TestTitle — compile: load: typecheck strings_test:
+TestToLower — compile: load: typecheck strings_test:
+TestToUpper — compile: load: typecheck strings_test:
+TestToValidUTF8 — compile: load: typecheck strings_test:
+TestTrim — compile: load: typecheck strings_test:
+TestTrimFunc — compile: load: typecheck strings_test:
+TestTrimSpace — compile: load: typecheck strings_test:
+TestUnreadRuneError — compile: load: typecheck strings_test:
+TestWriteStringError — compile: load: typecheck strings_test:

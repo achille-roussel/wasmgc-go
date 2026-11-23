@@ -225,19 +225,43 @@ func (fl *funcLower) declStmt(s *ast.DeclStmt) ([]ir.Stmt, error) {
 					return nil, err
 				}
 				out = append(out, stmts...)
-				out = append(out, fl.assignVar(v, ex))
-				// Plain local write (bypasses writeVar/cell); capture sync needs this.
-				fl.markPlainDirty(obj)
-			} else if z, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
-				// Arrays / named structs: Wasm refnull default is null, but
-				// Go zero is an allocated empty value (e.g. var arr [32]byte).
-				out = append(out, fl.assignVar(v, z))
-				fl.markPlainDirty(obj)
+				out = append(out, fl.assignDeclValue(obj, v, ex)...)
+			} else {
+				// Always re-zero on DeclStmt. `var x T` inside a loop must
+				// reset x each iteration — including when x is later
+				// cell-captured by a range-over-func yield (maps.Keys).
+				var z ir.Expr
+				if gz, ok := fl.goZeroValue(obj.Type(), v.Typ); ok {
+					z = gz
+				} else {
+					var err error
+					z, err = fl.zeroValue(v.Typ)
+					if err != nil {
+						return nil, fl.errorf(name, "zero init: %v", err)
+					}
+				}
+				out = append(out, fl.assignDeclValue(obj, v, z)...)
 			}
-			// else: defineLocal already zero-inits non-defaultable refs.
 		}
 	}
 	return out, nil
+}
+
+// assignDeclValue writes rhs for a var declaration. If the local is already
+// cell-boxed, update the cell; otherwise write the plain local and mark it
+// dirty so a later closure/range-func capture syncs plain→cell (needed when
+// `var x` is lowered before the capture site that calls ensureLocalCell).
+func (fl *funcLower) assignDeclValue(obj types.Object, v *ir.Var, rhs ir.Expr) []ir.Stmt {
+	if fl.cells != nil {
+		if _, ok := fl.cells[obj]; ok {
+			ws, err := fl.writeVar(obj, rhs)
+			if err == nil {
+				return ws
+			}
+		}
+	}
+	fl.markPlainDirty(obj)
+	return []ir.Stmt{fl.assignVar(v, rhs)}
 }
 
 func needsZeroInit(ty ir.Type) bool {

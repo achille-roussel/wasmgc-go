@@ -546,12 +546,16 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	case *types.Slice:
 		var args []ir.Expr
 		var stmts []ir.Stmt
-		elemWant, _ := fl.mapType(ut.Elem())
+		elemGo := ut.Elem()
+		elemWant, err := fl.mapType(elemGo)
+		if err != nil {
+			return nil, nil, fl.errorf(e, "%v", err)
+		}
 		for _, el := range e.Elts {
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
 				el = kv.Value
 			}
-			ex, st, err := fl.expr(el, elemWant)
+			ex, st, err := fl.coerceExpr(el, elemGo, elemWant)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -638,11 +642,13 @@ func (fl *funcLower) constInt(e ast.Expr) (int64, bool) {
 }
 
 func (fl *funcLower) structLitField(val ast.Expr, fieldTy types.Type) (ir.Expr, []ir.Stmt, error) {
-	if isIface(fieldTy) && !isIface(fl.typeOf(val)) && !isNilIdent(val) {
-		return fl.convertToIface(val, fl.typeOf(val), fieldTy, typeIface)
+	ft, err := fl.mapType(fieldTy)
+	if err != nil {
+		return nil, nil, err
 	}
-	ft, _ := fl.mapType(fieldTy)
-	return fl.expr(val, ft)
+	// coerceExpr types untyped nil into iface/pointer/slice/map fields
+	// (errors.Is/As tables: {nil, nil, true}).
+	return fl.coerceExpr(val, fieldTy, ft)
 }
 
 func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Type) (ir.Expr, []ir.Stmt, error) {

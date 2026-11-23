@@ -1,15 +1,2 @@
 # maps — wasmgc-go test skips
-TestAll — lower: untyped nil in test tables / maps overlay limits
-TestClone — lower: untyped nil in test tables / maps overlay limits
-TestCloneLarge — lower: untyped nil in test tables / maps overlay limits
-TestCloneNil — lower: untyped nil in test tables / maps overlay limits
-TestCloneWithDelete — lower: untyped nil in test tables / maps overlay limits
-TestCloneWithMapAssign — lower: untyped nil in test tables / maps overlay limits
-TestCollect — lower: untyped nil in test tables / maps overlay limits
-TestCopy — lower: untyped nil in test tables / maps overlay limits
-TestDeleteFunc — lower: untyped nil in test tables / maps overlay limits
-TestEqual — lower: untyped nil in test tables / maps overlay limits
-TestEqualFunc — lower: untyped nil in test tables / maps overlay limits
-TestInsert — lower: untyped nil in test tables / maps overlay limits
-TestKeys — lower: untyped nil in test tables / maps overlay limits
-TestValues — lower: untyped nil in test tables / maps overlay limits
+TestCloneLarge — Clone overlay is pure Go assign; large float keys / -0 signbit freeze (issue 64474) not preserved

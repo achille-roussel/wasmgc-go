@@ -1,7 +1,2 @@
 # container/heap — wasmgc-go test skips
-TestFix — build: sync/atomic unsafe.Pointer fat pointer
-TestInit0 — build: sync/atomic unsafe.Pointer fat pointer
-TestInit1 — build: sync/atomic unsafe.Pointer fat pointer
-TestRemove0 — build: sync/atomic unsafe.Pointer fat pointer
-TestRemove1 — build: sync/atomic unsafe.Pointer fat pointer
-TestRemove2 — build: sync/atomic unsafe.Pointer fat pointer
+TestFix — compile: sync/atomic: lower: param addr: cannot form fat pointer to unsafe.Pointer]

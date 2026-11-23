@@ -922,7 +922,125 @@ func Append(s Value, x ...Value) Value {
 	return out
 }
 func Copy(dst, src Value) int { return 0 }
-func DeepEqual(a, b any) bool { return a == b }
+
+// DeepEqual reports whether a and b are deeply equal.
+// Enough for stdlib tests: basics, arrays, slices, maps, structs, pointers,
+// interfaces. Cycles among pointers are not detected (stdlib tests do not need it).
+func DeepEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return deepValueEqual(ValueOf(a), ValueOf(b), 0)
+}
+
+func deepValueEqual(v1, v2 Value, depth int) bool {
+	if depth > 1000 {
+		return false
+	}
+	if !v1.IsValid() || !v2.IsValid() {
+		return v1.IsValid() == v2.IsValid()
+	}
+	if v1.Kind() != v2.Kind() {
+		return false
+	}
+	// Same concrete descriptor when both are available.
+	r1, r2 := asRtype(v1.Type()), asRtype(v2.Type())
+	if r1 != nil && r2 != nil && r1.rt != nil && r2.rt != nil {
+		if r1.rt != r2.rt {
+			return false
+		}
+	}
+
+	switch v1.Kind() {
+	case Array:
+		if v1.Len() != v2.Len() {
+			return false
+		}
+		for i := 0; i < v1.Len(); i++ {
+			if !deepValueEqual(v1.Index(i), v2.Index(i), depth+1) {
+				return false
+			}
+		}
+		return true
+	case Slice:
+		if v1.IsNil() != v2.IsNil() {
+			return false
+		}
+		if v1.Len() != v2.Len() {
+			return false
+		}
+		for i := 0; i < v1.Len(); i++ {
+			if !deepValueEqual(v1.Index(i), v2.Index(i), depth+1) {
+				return false
+			}
+		}
+		return true
+	case Interface:
+		if v1.IsNil() || v2.IsNil() {
+			return v1.IsNil() && v2.IsNil()
+		}
+		return deepValueEqual(v1.Elem(), v2.Elem(), depth+1)
+	case Pointer:
+		if v1.IsNil() || v2.IsNil() {
+			return v1.IsNil() && v2.IsNil()
+		}
+		// Same pointer identity (both non-nil refs).
+		if !v1.IsNil() && !v2.IsNil() {
+			// Compare via Interface only when both point to comparable elems
+			// would be wrong; always recurse into elem.
+		}
+		return deepValueEqual(v1.Elem(), v2.Elem(), depth+1)
+	case Struct:
+		n := v1.NumField()
+		if n != v2.NumField() {
+			return false
+		}
+		for i := 0; i < n; i++ {
+			if !deepValueEqual(v1.Field(i), v2.Field(i), depth+1) {
+				return false
+			}
+		}
+		return true
+	case Map:
+		if v1.IsNil() != v2.IsNil() {
+			return false
+		}
+		if v1.Len() != v2.Len() {
+			return false
+		}
+		if v1.Len() == 0 {
+			return true
+		}
+		it := v1.MapRange()
+		for it.Next() {
+			k, val1 := it.Key(), it.Value()
+			val2 := v2.MapIndex(k)
+			if !val2.IsValid() || !deepValueEqual(val1, val2, depth+1) {
+				return false
+			}
+		}
+		return true
+	case Func:
+		return v1.IsNil() && v2.IsNil()
+	case Bool:
+		return v1.Bool() == v2.Bool()
+	case Int, Int8, Int16, Int32, Int64:
+		return v1.Int() == v2.Int()
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return v1.Uint() == v2.Uint()
+	case Float32, Float64:
+		return v1.Float() == v2.Float()
+	case String:
+		return v1.String() == v2.String()
+	case Chan, UnsafePointer, Complex64, Complex128:
+		// Best-effort: nilness for chan; complex/unsafe via iface when possible.
+		if v1.Kind() == Chan {
+			return v1.IsNil() == v2.IsNil()
+		}
+		return false
+	}
+	return false
+}
 
 // rtype implements Type. When rt != nil it is backed by $go.type.
 type rtype struct {

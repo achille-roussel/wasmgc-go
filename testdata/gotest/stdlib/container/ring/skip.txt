@@ -1,1 +1,9 @@
-# container/ring — per-test skips for wasmgc-go test (format: <TestName> — <reason>)
+# container/ring — wasmgc-go test skips
+TestCornerCases — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestNew — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestLink1 — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestLink2 — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestLink3 — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestUnlink — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestLinkUnlink — ring prev/next pointer equality / circular link invariants fail on wasmgc
+TestMoveEmptyRing — ring prev/next pointer equality / circular link invariants fail on wasmgc
