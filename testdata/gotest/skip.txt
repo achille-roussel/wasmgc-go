@@ -58,7 +58,6 @@ fixedbugs/bug054.go — failed: build: pipeline: IR verify: temp %str0 redefined
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
-fixedbugs/bug154.go — wasm validate/compile error
 fixedbugs/bug177.go — output mismatch
 fixedbugs/bug178.go — compile error: lower: break label L not in scope
 fixedbugs/bug187.go — wasm validate/compile error
@@ -80,7 +79,6 @@ fixedbugs/bug273.go — wasm validate/compile error
 fixedbugs/bug293.go — output mismatch
 fixedbugs/bug312.go — runtime error
 fixedbugs/bug328.go — unsupported: unsafe
-fixedbugs/bug329.go — output mismatch: complex print/value
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
@@ -105,14 +103,12 @@ fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue10486.go — compile error: codegen
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue11286.go — compile error: codegen
-fixedbugs/issue11945.go — wasm validate/compile error
 fixedbugs/issue12577.go — wasm validate/compile error
 fixedbugs/issue12621.go — runtime error
 fixedbugs/issue1304.go — runtime error
 fixedbugs/issue13162.go — runtime error
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
-fixedbugs/issue14651.go — wasm validate/compile error
 fixedbugs/issue14725.go — runtime error: panic: f1 returned 0, wanted 1
 fixedbugs/issue15039.go — failed: panic: big != bad
 fixedbugs/issue15175.go — output mismatch
@@ -247,7 +243,6 @@ fixedbugs/issue55122b.go — compile error: lower: star assign: unknown type $go
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
 fixedbugs/issue5753.go — wasm validate/compile error
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
-fixedbugs/issue5793.go — compile error: lower: complex wants 2 args
 fixedbugs/issue5809.go — output mismatch
 fixedbugs/issue5820.go — wasm validate/compile error
 fixedbugs/issue58300.go — compile error: codegen
@@ -260,7 +255,7 @@ fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue60601.go — runtime error
 fixedbugs/issue62360.go — unsupported: unsafe
-fixedbugs/issue6269.go — failed: build: literal of type i32 not supported literal of type i32 not supported
+fixedbugs/issue6269.go — output mismatch (flaky)
 fixedbugs/issue64565.go — wasm validate/compile error: i32.lt_s vs ref after string(rune)
 fixedbugs/issue65417.go — runtime error
 fixedbugs/issue66066b.go — output mismatch
@@ -294,7 +289,6 @@ fixedbugs/issue79197.go — runtime error
 fixedbugs/issue79236.go — runtime error
 fixedbugs/issue79236b.go — runtime error
 fixedbugs/issue79762.go — runtime error: null deref / stub Stack
-fixedbugs/issue79812.go — compile error: unsupported conversion complex128 → float64
 fixedbugs/issue79886.go — failed: panic: want -2305843009213693952; got 6917529027641081856
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
@@ -316,7 +310,6 @@ fixedbugs/issue9604.go — failed: panic: ^uint16(0xffff) != 0
 fixedbugs/issue9691.go — failed: panic: bad
 fixedbugs/issue9738.go — output mismatch
 fixedbugs/walk_bounded_overshift_empty_bound.go — runtime error
-float_lit2.go — wasm validate/compile error
 floatcmp.go — runtime error
 for.go — output mismatch
 gcgort.go — compile error: IR verify complex64 nullability
@@ -332,14 +325,10 @@ inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
 intcvt.go — output mismatch
 interface/convert.go — wasm validate/compile error
-interface/embed.go — failed: build: pipeline: IR verify: return value 0: have i32, want i64 in $go.acc.go_array_i32.elem.get pipe…
 interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
-ken/cplx1.go — runtime error: illegal cast (complex compare)
 ken/cplx2.go — compile error: IR verify: complex64 assign from i32
-ken/cplx3.go — compile error: IR verify: complex128 assign from i32
-ken/cplx4.go — failed: build: pipeline: IR verify: cannot assign i32 to var c3 of type refnull $go.complex128 in main.main …
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
 ken/label.go — failed: build: pipeline: IR verify: br target $goto.loop not in scope pipeline: IR verify: br target $goto.l…
@@ -379,7 +368,6 @@ reflectmethod5.go — compile error: codegen
 reflectmethod6.go — compile error: codegen
 reflectmethod7.go — failed: panic: FAIL
 reorder.go — output mismatch
-shift3.go — wasm validate/compile error
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error
@@ -399,7 +387,6 @@ typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/dottype.go — compile error: lower: print of type (int, bool) not supported in M3 (need string or int)
 typeparam/equal.go — failed: panic: assertion failed
-typeparam/fact.go — wasm validate/compile error
 typeparam/genembed.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn8014 of type ref $go.ifacefn.main_getter$stri…
 typeparam/graph.go — failed: build: mono: pending main._NodeC$main.mazeEdge.Edges missing package/info mono: pending main._NodeC$…
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …
@@ -438,7 +425,6 @@ typeparam/issue52026.go — compile error: codegen
 typeparam/issue54225.go — compile error: codegen
 typeparam/issue54456.go — failed: panic: bad type identity
 typeparam/issue58513.go — compile error: lower: variable To has no IR local (in main.Assert$int)
-typeparam/list.go — wasm validate/compile error
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
 typeparam/mdempsky/14.go — wasm validate/compile error: struct.new anyref vs i32
 typeparam/mdempsky/15.go — compile error: codegen
@@ -448,7 +434,6 @@ typeparam/mdempsky/18.go — failed: build: pipeline: IR verify: cannot assign i
 typeparam/mdempsky/20.go — compile error: codegen
 typeparam/mdempsky/21.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn7 of type ref $go.ifacefn.main_I$int.M in mai…
 typeparam/metrics.go — failed: panic: _Metric2.Metrics first slice = [1 2 3 3], want [1 2 3]
-typeparam/min.go — wasm validate/compile error
 typeparam/nested.go — output mismatch
 typeparam/ordered.go — failed: build: desc: no concrete type for main.orderedSlice$float64 desc: no concrete type for main.orderedS…
 typeparam/orderedmap.go — compile error: codegen unknown type global

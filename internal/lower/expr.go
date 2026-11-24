@@ -83,10 +83,10 @@ func (fl *funcLower) ident(e *ast.Ident, want ir.Type) (ir.Expr, []ir.Stmt, erro
 			if err != nil {
 				return nil, nil, fl.errorf(e, "%v", err)
 			}
-			// Prefer contextual want for untyped ints used as uint64 (math/bits).
-			if want != nil && irNumWidth(want) == ir.I64 && irNumWidth(ty) == ir.I32 {
-				ty = want
-			}
+			// Prefer contextual want for untyped numeric consts: untyped float
+			// defaults to f64 but must be f32 in a float32 context; untyped int
+			// defaults to i32 but must be f64/i64 when the expression wants that.
+			ty = preferNumericWant(ty, want, c.Type())
 			ex, err := fl.constVal(c.Val(), ty)
 			return ex, nil, err
 		}
@@ -187,6 +187,41 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 			}
 		}
 	}
+	// Untyped int/float/complex → complex64/128 context (e.g. complex64 == 5).
+	if name := complexIRName(want); name != "" {
+		elem := ir.TypeF64
+		if name == "$go.complex64" {
+			elem = ir.TypeF32
+		}
+		fl.ensureComplexType(name, elem)
+		var reEx, imEx ir.Expr
+		switch v.Kind() {
+		case constant.Complex:
+			if name == "$go.complex64" {
+				re32, _ := constant.Float32Val(constant.Real(v))
+				im32, _ := constant.Float32Val(constant.Imag(v))
+				reEx, imEx = fl.f32const(float64(re32)), fl.f32const(float64(im32))
+			} else {
+				re, _ := constant.Float64Val(constant.Real(v))
+				im, _ := constant.Float64Val(constant.Imag(v))
+				reEx, imEx = fl.f64const(re), fl.f64const(im)
+			}
+		case constant.Int, constant.Float:
+			if name == "$go.complex64" {
+				f, _ := constant.Float32Val(constant.ToFloat(v))
+				reEx, imEx = fl.f32const(float64(f)), fl.f32const(0)
+			} else {
+				f, _ := constant.Float64Val(constant.ToFloat(v))
+				reEx, imEx = fl.f64const(f), fl.f64const(0)
+			}
+		default:
+			return nil, fmt.Errorf("cannot convert %v to %s", v, name)
+		}
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+			Args: []ir.Expr{reEx, imEx},
+		}, nil
+	}
 	switch v.Kind() {
 	case constant.Bool:
 		if constant.BoolVal(v) {
@@ -201,8 +236,9 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 			return fl.f64const(f), nil
 		}
 		if want != nil && irNumWidth(want) == ir.F32 {
-			f, _ := constant.Float64Val(constant.ToFloat(v))
-			return fl.f32const(f), nil
+			// Use Float32Val so rounding matches host Go (float_lit2 edges).
+			f, _ := constant.Float32Val(constant.ToFloat(v))
+			return fl.f32const(float64(f)), nil
 		}
 		if want != nil && irNumWidth(want) == ir.I64 {
 			if i, ok := constant.Int64Val(v); ok {
@@ -246,23 +282,37 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 				f, _ := constant.Float64Val(v)
 				return fl.i32const(int64(int32(f))), nil
 			case ir.F32:
-				f, _ := constant.Float64Val(v)
-				return fl.f32const(f), nil
+				f, _ := constant.Float32Val(v)
+				return fl.f32const(float64(f)), nil
 			}
 		}
 		f, _ := constant.Float64Val(v)
 		return fl.f64const(f), nil
 	case constant.Complex:
+		// Untyped complex used as integer (e.g. shift count 0i) or float.
+		if want != nil {
+			if _, ok := want.(*ir.NumType); ok {
+				switch irNumWidth(want) {
+				case ir.I32, ir.I64, ir.F32, ir.F64:
+					return fl.constVal(constant.Real(v), want)
+				}
+			}
+		}
 		// Stored complex is a struct of two floats (docs/design/03).
-		re, _ := constant.Float64Val(constant.Real(v))
-		im, _ := constant.Float64Val(constant.Imag(v))
 		name := "$go.complex128"
-		reEx, imEx := fl.f64const(re), fl.f64const(im)
+		var reEx, imEx ir.Expr
 		if want != nil {
 			if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex64" {
 				name = "$go.complex64"
-				reEx, imEx = fl.f32const(re), fl.f32const(im)
+				re32, _ := constant.Float32Val(constant.Real(v))
+				im32, _ := constant.Float32Val(constant.Imag(v))
+				reEx, imEx = fl.f32const(float64(re32)), fl.f32const(float64(im32))
 			}
+		}
+		if reEx == nil {
+			re, _ := constant.Float64Val(constant.Real(v))
+			im, _ := constant.Float64Val(constant.Imag(v))
+			reEx, imEx = fl.f64const(re), fl.f64const(im)
 		}
 		elem := ir.TypeF64
 		if name == "$go.complex64" {
@@ -314,6 +364,9 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 			return nil, nil, err
 		}
 		ty := fl.typeOf(e.X)
+		if isComplex(ty) || complexIRName(want) != "" {
+			return fl.complexUnaryNeg(x, ty, want, stmts)
+		}
 		irt, _ := fl.mapType(ty)
 		if want != nil {
 			irt = want
@@ -424,6 +477,17 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			}
 		}
 	}
+	// Complex arithmetic / compare — not shifts (untyped complex counts like
+	// 0i are integers in a shift context).
+	switch e.Op {
+	case token.SHL, token.SHR:
+		// fall through to integer shift path
+	default:
+		xt0, yt0 := fl.typeOf(e.X), fl.typeOf(e.Y)
+		if isComplex(xt0) || isComplex(yt0) || isComplex(fl.typeOf(e)) {
+			return fl.complexBinary(e, want)
+		}
+	}
 	if e.Op == token.ADD && isString(fl.typeOf(e)) {
 		return fl.stringConcat(e)
 	}
@@ -500,12 +564,16 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	if irNumWidth(xWant) == ir.I64 || irNumWidth(yWant) == ir.I64 || irNumWidth(want) == ir.I64 {
 		xWant, yWant = ir.TypeI64, ir.TypeI64
 	}
+	// Untyped numeric literal on one side must match the other operand's
+	// concrete numeric width (e.g. float64 n == 1, or n-1 with float T).
+	xWant, yWant = unifyUntypedBinaryWants(xWant, yWant, xt, fl.typeOf(e.Y))
 
 	// Wasm i64 shifts take an i64 count. Lower the count at its natural
 	// (often i32) width, then extend — forcing yWant=i64 misses paths that
 	// ignore want (and double-extend when children already widened).
 	// Shifts are integer-only: ignore float want for operands (1<<52 in
-	// a float64 multiply must not lower 1 as f64.const).
+	// a float64 multiply must not lower 1 as f64.const). Untyped float /
+	// complex counts (1., 0i) must still become integers.
 	if e.Op == token.SHL || e.Op == token.SHR {
 		if irNumWidth(xWant) == ir.F32 || irNumWidth(xWant) == ir.F64 || xWant == nil {
 			xWant = ir.TypeI32
@@ -517,8 +585,41 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		}
 		if yNat != nil {
 			yWant = yNat
-		} else if irNumWidth(yWant) == ir.F32 || irNumWidth(yWant) == ir.F64 {
+		}
+		if irNumWidth(yWant) == ir.F32 || irNumWidth(yWant) == ir.F64 || !isNumericIR(yWant) {
 			yWant = ir.TypeI32
+		}
+	}
+
+	// Go shifts: if the count is a constant ≥ bit width, << yields 0
+	// (Wasm masks the count; host Go does not). Covers MaxUint shift tests.
+	if e.Op == token.SHL || e.Op == token.SHR {
+		if tv, ok := fl.info.Types[e.Y]; ok && tv.Value != nil {
+			bitW := int64(32)
+			if irNumWidth(xWant) == ir.I64 {
+				bitW = 64
+			}
+			cnt := constant.ToInt(tv.Value)
+			if cnt.Kind() != constant.Unknown &&
+				constant.Compare(cnt, token.GEQ, constant.MakeInt64(bitW)) {
+				// Still evaluate LHS for side effects.
+				x, xstmts, err := fl.expr(e.X, xWant)
+				if err != nil {
+					return nil, nil, err
+				}
+				if e.Op == token.SHL || isUnsigned(xt) {
+					if irNumWidth(xWant) == ir.I64 {
+						return fl.i64const(0), xstmts, nil
+					}
+					return fl.i32const(0), xstmts, nil
+				}
+				// Signed >> with huge count: 0 if x≥0 else -1 ≡ x>>(width-1).
+				sh := bitW - 1
+				if irNumWidth(xWant) == ir.I64 {
+					return &ir.Instr{Op: ir.OpI64ShrS, Args: []ir.Expr{x, fl.i64const(sh)}}, xstmts, nil
+				}
+				return &ir.Instr{Op: ir.OpI32ShrS, Args: []ir.Expr{x, fl.i32const(sh)}}, xstmts, nil
+			}
 		}
 	}
 
@@ -1390,11 +1491,32 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if err != nil {
 		return nil, nil, fl.errorf(e.Args[0], "%v", err)
 	}
-	x, stmts, err := fl.expr(e.Args[0], srcIR)
+	// Constant args: emit at destination width via constVal (float32(real(C))
+	// / float32(1.5) / complex64(0)). Avoids f64.const+demote and skips
+	// builtins that ignore want (real/imag of untyped complex).
+	if tv, ok := fl.info.Types[e.Args[0]]; ok && tv.Value != nil && isNumericIR(dstIR) {
+		if ex, err := fl.constVal(tv.Value, dstIR); err == nil {
+			return ex, nil, nil
+		}
+	}
+	if tv, ok := fl.info.Types[e.Args[0]]; ok && tv.Value != nil && complexIRName(dstIR) != "" {
+		if ex, err := fl.constVal(tv.Value, dstIR); err == nil {
+			return ex, nil, nil
+		}
+	}
+	// Untyped numeric args without a folded value: prefer dest width.
+	argWant := preferNumericWant(srcIR, dstIR, src)
+	x, stmts, err := fl.expr(e.Args[0], argWant)
 	if err != nil {
 		return nil, nil, err
 	}
-	if ir.TypesEqual(dstIR, srcIR) {
+	actualSrc := srcIR
+	if isUntypedBasic(src) {
+		if tv, ok := fl.info.Types[e.Args[0]]; ok && tv.Value != nil {
+			actualSrc = argWant
+		}
+	}
+	if ir.TypesEqual(dstIR, actualSrc) {
 		return x, stmts, nil
 	}
 	// unsafe.Pointer ↔ *T / ref: Wasm GC has no integer address; this is ref.cast
@@ -1449,10 +1571,32 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		ex, st, err := fl.complexConvert(x, src, dst, srcIR, dstIR)
 		return ex, append(stmts, st...), err
 	}
-	if !isNumericIR(srcIR) || !isNumericIR(dstIR) {
+	// int/float → complex: real part, imag 0 (and the reverse is unsupported
+	// except via real()/imag() builtins).
+	if isComplex(dst) && (isInteger(src) || isFloat(src) || isUntypedBasic(src)) {
+		name, elem := complexTypeShape(dst, dstIR)
+		fl.ensureComplexType(name, elem)
+		re := x
+		if isNumericIR(srcIR) && srcIR != elem {
+			if conv, err := numericConv(srcIR, elem, isUnsigned(src), false); err == nil && conv != 0 {
+				re = &ir.Instr{Op: conv, Args: []ir.Expr{x}}
+			}
+		}
+		var zero ir.Expr
+		if elem == ir.TypeF32 {
+			zero = fl.f32const(0)
+		} else {
+			zero = fl.f64const(0)
+		}
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+			Args: []ir.Expr{re, zero},
+		}, stmts, nil
+	}
+	if !isNumericIR(actualSrc) || !isNumericIR(dstIR) {
 		return nil, nil, fl.errorf(e, "unsupported conversion %s → %s", src, dst)
 	}
-	conv, err := numericConv(srcIR, dstIR, isUnsigned(src), isUnsigned(dst))
+	conv, err := numericConv(actualSrc, dstIR, isUnsigned(src), isUnsigned(dst))
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
@@ -1465,6 +1609,54 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 func isNumericIR(t ir.Type) bool {
 	_, ok := t.(*ir.NumType)
 	return ok
+}
+
+// preferNumericWant replaces the default IR width of an untyped numeric
+// constant with the contextual want when both are numeric Wasm types,
+// or when the context is complex64/128 (untyped int/float → complex).
+func preferNumericWant(ty, want ir.Type, goTy types.Type) ir.Type {
+	if want == nil || ty == nil || !isUntypedBasic(goTy) {
+		return ty
+	}
+	if wr, ok := want.(*ir.Ref); ok && (wr.Named == "$go.complex64" || wr.Named == "$go.complex128") {
+		return want
+	}
+	if !isNumericIR(want) || !isNumericIR(ty) {
+		return ty
+	}
+	if ir.TypesEqual(ty, want) {
+		return ty
+	}
+	return want
+}
+
+// complexIRName returns the $go.complex{64,128} name for want, or "".
+func complexIRName(want ir.Type) string {
+	if r, ok := want.(*ir.Ref); ok {
+		if r.Named == "$go.complex64" || r.Named == "$go.complex128" {
+			return r.Named
+		}
+	}
+	return ""
+}
+
+// unifyUntypedBinaryWants widens an untyped numeric operand to the other
+// side's concrete float/int width (float64 == 1, n-1 with float T, …).
+func unifyUntypedBinaryWants(xWant, yWant ir.Type, xt, yt types.Type) (ir.Type, ir.Type) {
+	if isUntypedBasic(yt) && isNumericIR(xWant) && isNumericIR(yWant) && !ir.TypesEqual(xWant, yWant) {
+		// Prefer float or wider int from the typed side.
+		if irNumWidth(xWant) == ir.F32 || irNumWidth(xWant) == ir.F64 ||
+			irNumWidth(xWant) == ir.I64 || (irNumWidth(xWant) == ir.I32 && irNumWidth(yWant) != ir.I32) {
+			yWant = xWant
+		}
+	}
+	if isUntypedBasic(xt) && isNumericIR(yWant) && isNumericIR(xWant) && !ir.TypesEqual(xWant, yWant) {
+		if irNumWidth(yWant) == ir.F32 || irNumWidth(yWant) == ir.F64 ||
+			irNumWidth(yWant) == ir.I64 || (irNumWidth(yWant) == ir.I32 && irNumWidth(xWant) != ir.I32) {
+			xWant = yWant
+		}
+	}
+	return xWant, yWant
 }
 
 // bytesToString builds a $go.string from a []byte / [N]byte value.
@@ -1618,6 +1810,146 @@ func mustMapBasic(t types.Type) ir.Type {
 		}
 	}
 	return ir.TypeI32
+}
+
+// complexTypeShape returns the IR struct name and float element type for a
+// Go complex type (or want hint).
+func complexTypeShape(t types.Type, want ir.Type) (name string, elem ir.Type) {
+	name, elem = "$go.complex128", ir.TypeF64
+	if want != nil {
+		if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex64" {
+			return "$go.complex64", ir.TypeF32
+		}
+		if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex128" {
+			return "$go.complex128", ir.TypeF64
+		}
+	}
+	if t != nil {
+		if b, ok := types.Unalias(t).Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+			return "$go.complex64", ir.TypeF32
+		}
+	}
+	return name, elem
+}
+
+func (fl *funcLower) complexUnaryNeg(x ir.Expr, ty types.Type, want ir.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
+	name, elem := complexTypeShape(ty, want)
+	fl.ensureComplexType(name, elem)
+	neg := ir.OpF64Neg
+	if elem == ir.TypeF32 {
+		neg = ir.OpF32Neg
+	}
+	re := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: name}, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: name}, Field: "imag", Args: []ir.Expr{x}}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+		Args: []ir.Expr{
+			&ir.Instr{Op: neg, Args: []ir.Expr{re}},
+			&ir.Instr{Op: neg, Args: []ir.Expr{im}},
+		},
+	}, stmts, nil
+}
+
+func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	xt, yt := fl.typeOf(e.X), fl.typeOf(e.Y)
+	et := fl.typeOf(e)
+	// Result shape: comparisons → bool; arithmetic → complex of result type.
+	name, elem := complexTypeShape(et, want)
+	if e.Op == token.EQL || e.Op == token.NEQ {
+		// Prefer the wider/typed operand's shape for both sides.
+		name, elem = complexTypeShape(xt, want)
+		if !isComplex(xt) {
+			name, elem = complexTypeShape(yt, want)
+		}
+		// If one side is complex64 and the other untyped→128, use 64 when
+		// the typed operand is 64.
+		if isComplex(xt) {
+			name, elem = complexTypeShape(xt, nil)
+		} else if isComplex(yt) {
+			name, elem = complexTypeShape(yt, nil)
+		}
+	}
+	fl.ensureComplexType(name, elem)
+	cWant := &ir.Ref{Named: name}
+	x, xstmts, err := fl.expr(e.X, cWant)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, cWant)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+
+	xre := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "real", Args: []ir.Expr{x}}
+	xim := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "imag", Args: []ir.Expr{x}}
+	yre := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "real", Args: []ir.Expr{y}}
+	yim := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "imag", Args: []ir.Expr{y}}
+
+	add, sub, mul, div, eq := ir.OpF64Add, ir.OpF64Sub, ir.OpF64Mul, ir.OpF64Div, ir.OpF64Eq
+	if elem == ir.TypeF32 {
+		add, sub, mul, div, eq = ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div, ir.OpF32Eq
+	}
+
+	switch e.Op {
+	case token.EQL, token.NEQ:
+		reEq := &ir.Instr{Op: eq, Args: []ir.Expr{xre, yre}}
+		imEq := &ir.Instr{Op: eq, Args: []ir.Expr{xim, yim}}
+		both := &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{reEq, imEq}}
+		if e.Op == token.NEQ {
+			both = &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{both}}
+		}
+		return both, stmts, nil
+	case token.ADD:
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: cWant,
+			Args: []ir.Expr{
+				&ir.Instr{Op: add, Args: []ir.Expr{xre, yre}},
+				&ir.Instr{Op: add, Args: []ir.Expr{xim, yim}},
+			},
+		}, stmts, nil
+	case token.SUB:
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: cWant,
+			Args: []ir.Expr{
+				&ir.Instr{Op: sub, Args: []ir.Expr{xre, yre}},
+				&ir.Instr{Op: sub, Args: []ir.Expr{xim, yim}},
+			},
+		}, stmts, nil
+	case token.MUL:
+		// (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+		ac := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yre}}
+		bd := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yim}}
+		ad := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yim}}
+		bc := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yre}}
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: cWant,
+			Args: []ir.Expr{
+				&ir.Instr{Op: sub, Args: []ir.Expr{ac, bd}},
+				&ir.Instr{Op: add, Args: []ir.Expr{ad, bc}},
+			},
+		}, stmts, nil
+	case token.QUO:
+		// (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
+		ac := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yre}}
+		bd := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yim}}
+		bc := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yre}}
+		ad := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yim}}
+		cc := &ir.Instr{Op: mul, Args: []ir.Expr{yre, yre}}
+		dd := &ir.Instr{Op: mul, Args: []ir.Expr{yim, yim}}
+		den := &ir.Instr{Op: add, Args: []ir.Expr{cc, dd}}
+		reN := &ir.Instr{Op: add, Args: []ir.Expr{ac, bd}}
+		imN := &ir.Instr{Op: sub, Args: []ir.Expr{bc, ad}}
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: cWant,
+			Args: []ir.Expr{
+				&ir.Instr{Op: div, Args: []ir.Expr{reN, den}},
+				&ir.Instr{Op: div, Args: []ir.Expr{imN, den}},
+			},
+		}, stmts, nil
+	default:
+		return nil, nil, fl.errorf(e, "unsupported complex op %v", e.Op)
+	}
 }
 
 func (fl *funcLower) complexConvert(x ir.Expr, src, dst types.Type, srcIR, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {
