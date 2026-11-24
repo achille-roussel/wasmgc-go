@@ -1,5 +1,3 @@
 # errors — wasmgc-go test skips
-TestAs — As needs reflectlite Value.Set / Implements
-TestAsValidation — As panics / validation path (reflectlite)
 TestAsType — AsType generics / As method edge cases
 TestIs — t.Run closures capture range vars (needs Go 1.22 per-iter); Is/Unwrap itabs work
