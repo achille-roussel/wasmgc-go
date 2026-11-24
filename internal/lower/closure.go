@@ -731,20 +731,50 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 	fn := sel.Obj().(*types.Func)
 	recvExpr := e.X
 	recvTy := fl.typeOf(recvExpr)
-	recvIR, err := fl.mapType(recvTy)
-	if err != nil {
-		return nil, nil, fl.errorf(e, "%v", err)
+	landed := selectionRecvType(recvTy, sel)
+	ifaceRecv := isIface(recvTy) || isIface(landed)
+	if !ifaceRecv {
+		// Type-param method value after mono: selection still names the
+		// constraint method; bind the concrete implementation.
+		if m := concreteMethod(recvTy, fn); m != nil {
+			fn = m
+		}
 	}
-	recvVal, stmts, err := fl.expr(recvExpr, recvIR)
-	if err != nil {
-		return nil, nil, err
+	captureTy := recvTy
+	var captureIR ir.Type
+	var stmts []ir.Stmt
+	var recvVal ir.Expr
+	var err error
+	if ifaceRecv {
+		ifaceTy := landed
+		if !isIface(ifaceTy) {
+			ifaceTy = recvTy
+		}
+		captureTy = ifaceTy
+		captureIR = typeIface
+		recvVal, stmts, err = fl.methodRecvSel(recvExpr, sel, ifaceTy, typeIface)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		captureIR, err = fl.mapType(captureTy)
+		if err != nil {
+			return nil, nil, fl.errorf(e, "%v", err)
+		}
+		recvVal, stmts, err = fl.expr(recvExpr, captureIR)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	recvT := fl.newTemp(recvIR)
+	recvT := fl.newTemp(captureIR)
 	stmts = append(stmts, fl.assignTemp(recvT, recvVal))
 
 	// Build a synthetic capture layout: one field for the receiver.
 	capField := "recv"
 	closName := "$go.clos.method." + sanitizeTypeName(methodIRName(fn))
+	if ifaceRecv {
+		closName = "$go.clos.method." + sanitizeTypeName(desc.TypeKey(captureTy)+"."+fn.Name())
+	}
 	fl.pkg.ensureClosBase()
 	if fl.mod.LookupType(closName) == nil {
 		fl.mod.InternType(&ir.TypeDef{
@@ -753,7 +783,7 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 			Super: closBaseName,
 			Fields: []ir.Field{
 				{Name: "fn", Type: &ir.Ref{Null: true, Heap: ir.HeapFunc}},
-				{Name: capField, Type: recvIR},
+				{Name: capField, Type: captureIR},
 			},
 		})
 	}
@@ -761,8 +791,11 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 	msig := fn.Type().(*types.Signature)
 	valSig := types.NewSignatureType(nil, nil, nil, msig.Params(), msig.Results(), msig.Variadic())
 	wrapper := methodIRName(fn) + "$mval"
+	if ifaceRecv {
+		wrapper = "iface." + sanitizeTypeName(desc.TypeKey(captureTy)+"."+fn.Name()) + "$mval"
+	}
 	if fl.mod.LookupFunc(wrapper) == nil {
-		if err := fl.pkg.emitMethodValueWrapper(wrapper, fn, closName, capField, recvIR, recvTy); err != nil {
+		if err := fl.pkg.emitMethodValueWrapper(wrapper, fn, closName, capField, captureIR, captureTy); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -823,27 +856,11 @@ func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closNa
 	}
 	var call ir.Expr
 	if isIface(recvGo) {
-		iface, _ := recvGo.Underlying().(*types.Interface)
-		ifaceKey := desc.TypeKey(recvGo)
-		san := desc.Sanitize(ifaceKey)
-		idx := 0
-		if iface != nil {
-			idx = methodIndex(iface, fn)
-		}
 		var res ir.Type
 		if len(results) > 0 {
 			res = results[0]
 		}
-		call = &ir.Instr{
-			Op:     ir.OpIfaceCall,
-			Type:   res,
-			Type2:  &ir.Ref{Named: "$go.itabtype." + san},
-			Global: ifaceKey,
-			Func:   fn.Name(),
-			Field:  itoa(idx),
-			Str:    "$go.ifacefn." + san + "." + fn.Name(),
-			Args:   callArgs,
-		}
+		call = makeIfaceCall(fn, recvGo, callArgs, res)
 	} else {
 		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
 	}
@@ -885,9 +902,92 @@ func wrapperCallBody(call ir.Expr, results []ir.Type) ir.Region {
 }
 
 // methodExpr lowers T.M (method expression) as a func value.
-func (fl *funcLower) methodExpr(fn *types.Func) (ir.Expr, []ir.Stmt, error) {
-	// Represented as a top-level-style closure whose underlying call is the method.
+// Interface MethodExprs (I.m, error.Error, T.String with iface bound) dispatch
+// via OpIfaceCall; concrete ones call the implementation function.
+func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error) {
+	fn := sel.Obj().(*types.Func)
+	recvTy := sel.Recv()
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		recvTy = fl.pkg.subst.Apply(recvTy)
+	}
+	if isIface(recvTy) {
+		return fl.ifaceMethodExpr(fn, recvTy)
+	}
+	if m := concreteMethod(recvTy, fn); m != nil {
+		fn = m
+	}
 	return fl.topLevelFuncValue(fn)
+}
+
+// ifaceMethodExpr builds a closure for I.M whose wrapper uses OpIfaceCall.
+func (fl *funcLower) ifaceMethodExpr(fn *types.Func, ifaceType types.Type) (ir.Expr, []ir.Stmt, error) {
+	sig := fn.Type().(*types.Signature)
+	fl.pkg.ensureClosBase()
+	wrapper := "iface." + sanitizeTypeName(desc.TypeKey(ifaceType)+"."+fn.Name()) + "$clos"
+	if fl.mod.LookupFunc(wrapper) == nil {
+		if err := fl.pkg.emitIfaceMethodClosWrapper(wrapper, fn, ifaceType); err != nil {
+			return nil, nil, err
+		}
+	}
+	funcTy, err := fl.pkg.ensureFuncType(sig, closBaseName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: closBaseName},
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefFunc, Func: wrapper, Type: &ir.Ref{Named: funcTy}},
+		},
+	}, nil, nil
+}
+
+// emitIfaceMethodClosWrapper emits (clos, recv iface, args...) → OpIfaceCall.
+func (l *pkgLower) emitIfaceMethodClosWrapper(wrapper string, fn *types.Func, ifaceType types.Type) error {
+	sig := fn.Type().(*types.Signature)
+	l.ensureClosBase()
+	closParam := &ir.Var{Name: "clos", Typ: &ir.Ref{Named: closBaseName}}
+	params := []*ir.Var{closParam}
+	var args []ir.Expr
+	recv := &ir.Var{Name: "recv", Typ: typeIface}
+	params = append(params, recv)
+	args = append(args, &ir.Name{Raw: recv.Name, Var: recv})
+	for i := 0; i < sig.Params().Len(); i++ {
+		p := sig.Params().At(i)
+		ty, err := l.mapType(p.Type())
+		if err != nil {
+			return err
+		}
+		name := p.Name()
+		if name == "" {
+			name = "a" + strconv.Itoa(i)
+		}
+		v := &ir.Var{Name: name, Typ: ty}
+		params = append(params, v)
+		args = append(args, &ir.Name{Raw: v.Name, Var: v})
+	}
+	var results []ir.Type
+	for i := 0; i < sig.Results().Len(); i++ {
+		ty, err := l.mapType(sig.Results().At(i).Type())
+		if err != nil {
+			return err
+		}
+		results = append(results, ty)
+	}
+	var res ir.Type
+	if len(results) > 0 {
+		res = results[0]
+	}
+	call := makeIfaceCall(fn, ifaceType, args, res)
+	body := wrapperCallBody(call, results)
+	l.mod.Funcs = append(l.mod.Funcs, &ir.Func{
+		Name:    wrapper,
+		Params:  params,
+		Results: results,
+		Body:    body,
+	})
+	_, err := l.ensureFuncType(sig, closBaseName)
+	return err
 }
 
 // callFuncValue emits call_ref through a func value.

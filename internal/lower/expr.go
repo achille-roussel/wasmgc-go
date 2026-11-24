@@ -2035,6 +2035,13 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 	if !ok {
 		return "", nil, fl.errorf(fun, "selection is not a method")
 	}
+	// After mono subst, type-param receivers become concrete while the
+	// selection still names the constraint method — call the implementation.
+	if recvTy := fl.typeOf(fun.X); recvTy != nil {
+		if m := concreteMethod(recvTy, fn); m != nil {
+			fn = m
+		}
+	}
 	sig := fn.Type().(*types.Signature)
 	for i := 0; i < sig.Results().Len(); i++ {
 		ty, err := fl.mapType(sig.Results().At(i).Type())
@@ -2047,13 +2054,31 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 	return name, results, nil
 }
 
-// ifaceMethod reports whether the call is through an interface receiver.
+// ifaceMethod reports whether the call is through an interface receiver
+// (direct iface value, or method promoted from an embedded interface field).
 func (fl *funcLower) ifaceMethod(fun *ast.SelectorExpr) (*types.Selection, bool) {
 	sel := fl.info.Selections[fun]
 	if sel == nil || sel.Kind() != types.MethodVal {
 		return nil, false
 	}
-	return sel, isIface(fl.typeOf(fun.X))
+	recvTy := fl.typeOf(fun.X)
+	if isIface(recvTy) {
+		return sel, true
+	}
+	if landed := selectionRecvType(recvTy, sel); isIface(landed) {
+		return sel, true
+	}
+	// After mono, Selection.Index is from the type-param view (no embedding),
+	// but the concrete type may promote the method from an embedded iface.
+	fn, _ := sel.Obj().(*types.Func)
+	if fn != nil && recvTy != nil {
+		if abs := fn.Type().(*types.Signature).Recv(); abs != nil && isIface(abs.Type()) {
+			if concreteMethod(recvTy, fn) == nil {
+				return sel, true
+			}
+		}
+	}
+	return sel, false
 }
 
 func methodIRName(fn *types.Func) string {

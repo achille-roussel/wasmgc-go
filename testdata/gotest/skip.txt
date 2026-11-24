@@ -13,7 +13,7 @@ abi/leaf2.go — output mismatch
 abi/method_wrapper.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*S).M p…
 abi/named_results.go — compile error: codegen
 abi/named_return_stuff.go — compile error: codegen
-abi/open_defer_1.go — compile error: codegen
+abi/open_defer_1.go — wasm validate/compile error: struct.new anyref vs i32 in init
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
 abi/reg_not_ssa.go — output mismatch
@@ -64,7 +64,7 @@ fixedbugs/bug054.go — failed: build: pipeline: IR verify: temp %str0 redefined
 fixedbugs/bug058.go — failed: panic: assignment to entry in nil map
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
-fixedbugs/bug130.go — compile error: codegen
+fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug154.go — wasm validate/compile error
 fixedbugs/bug168.go — wasm validate/compile error
 fixedbugs/bug177.go — output mismatch
@@ -76,8 +76,6 @@ fixedbugs/bug202.go — wasm validate/compile error
 fixedbugs/bug204.go — output mismatch
 fixedbugs/bug206.go — could not import go/ast
 fixedbugs/bug207.go — runtime error
-fixedbugs/bug221.go — compile error: codegen
-fixedbugs/bug236.go — compile error: codegen
 fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
@@ -131,14 +129,13 @@ fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — compile error: codegen
 fixedbugs/issue14651.go — wasm validate/compile error
 fixedbugs/issue14725.go — runtime error: panic: f1 returned 0, wanted 1
-fixedbugs/issue15039.go — compile error: codegen
+fixedbugs/issue15039.go — failed: panic: big != bad
 fixedbugs/issue15175.go — output mismatch
 fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
-fixedbugs/issue15975.go — compile error: codegen
+fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue15992.go — compile error: lower: copy wants 2 args
-fixedbugs/issue16016.go — compile error: codegen
 fixedbugs/issue16095.go — runtime error
 fixedbugs/issue16130.go — failed: panic: got string, expected runtime.Error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
@@ -176,7 +173,6 @@ fixedbugs/issue23188.go — runtime error
 fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue23522.go — runtime error
 fixedbugs/issue23545.go — failed: panic: FAIL
-fixedbugs/issue23814.go — compile error: codegen
 fixedbugs/issue23837.go — compile error: codegen
 fixedbugs/issue24449.go — unsupported: unsafe
 fixedbugs/issue24491a.go — unsupported: unsafe
@@ -199,7 +195,6 @@ fixedbugs/issue29013a.go — runtime error
 fixedbugs/issue29013b.go — runtime error
 fixedbugs/issue29190.go — runtime error
 fixedbugs/issue29264.go — runtime error
-fixedbugs/issue29304.go — compile error: codegen
 fixedbugs/issue29312.go — runtime error
 fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
@@ -245,7 +240,6 @@ fixedbugs/issue4396a.go — runtime error
 fixedbugs/issue4448.go — wasm validate/compile error
 fixedbugs/issue44823.go — failed: panic: FAIL
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
-fixedbugs/issue4495.go — compile error: codegen
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue45242.go — failed: panic: got [], want []
 fixedbugs/issue4562.go — compile error: codegen
@@ -261,14 +255,12 @@ fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
 fixedbugs/issue48357.go — runtime error
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
-fixedbugs/issue49100b.go — compile error: codegen
 fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1 destinations but rhs produces 2 values pipeline: IR ver…
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue50671.go — failed: build: pipeline: IR verify: return value 1: have f64, want i64 in main.F pipeline: IR verify: return…
 fixedbugs/issue51101.go — wasm validate/compile error
 fixedbugs/issue51913.go — failed: panic: FAIL
-fixedbugs/issue52072.go — compile error: codegen
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788.go — compile error: build: load: typecheck
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
@@ -298,11 +290,11 @@ fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice o
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
 fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue5963.go — compile error: codegen
-fixedbugs/issue6055.go — compile error: codegen
+fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue60601.go — runtime error
 fixedbugs/issue62360.go — unsupported: unsafe
 fixedbugs/issue6269.go — failed: build: literal of type i32 not supported literal of type i32 not supported
-fixedbugs/issue64565.go — compile error: codegen
+fixedbugs/issue64565.go — wasm validate/compile error: i32.lt_s vs ref after string(rune)
 fixedbugs/issue65417.go — runtime error
 fixedbugs/issue66066b.go — output mismatch
 fixedbugs/issue68227.go — wasm validate/compile error
@@ -357,12 +349,10 @@ fixedbugs/issue80517_1.go — runtime error
 fixedbugs/issue80517_2.go — runtime error
 fixedbugs/issue80517_3.go — runtime error
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
-fixedbugs/issue81089.go — compile error: codegen
 fixedbugs/issue8132.go — compile error: codegen
 fixedbugs/issue8158.go — compile error: codegen
 fixedbugs/issue81612.go — compile error: codegen
 fixedbugs/issue81863.go — runtime error
-fixedbugs/issue8325.go — compile error: codegen
 fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue8613.go — runtime error
@@ -404,35 +394,31 @@ ken/cplx4.go — failed: build: pipeline: IR verify: cannot assign i32 to var c3
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
 ken/interfun.go — compile error: codegen
-ken/intervar.go — compile error: codegen
 ken/label.go — failed: build: pipeline: IR verify: br target $goto.loop not in scope pipeline: IR verify: br target $goto.l…
 ken/modconst.go — unsupported: unsafe
 ken/range.go — wasm validate/compile error
-ken/rob1.go — compile error: codegen
 ken/rob2.go — wasm validate/compile error
 ken/shift.go — wasm validate/compile error
 ken/simparray.go — wasm validate/compile error
-ken/simpswitch.go — compile error: codegen
 ken/slicearray.go — wasm validate/compile error
 ken/sliceslice.go — wasm validate/compile error
-ken/string.go — compile error: codegen
+ken/string.go — output mismatch
 literal2.go — runtime error
 makeslice.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 mallocfin.go — compile error: codegen
 map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
 maymorestack.go — compile error: codegen
-method.go — compile error: codegen
+method.go — codegen: unknown heap type i32 in Val itab wrapper
 method3.go — wasm validate/compile error
 method5.go — compile error: codegen
-method7.go — compile error: codegen
-named.go — codegen: unknown function unicode.utf8.AppendRune
+method7.go — runtime error: illegal cast (literal iface MethodExpr)
 newexpr.go — wasm validate/compile error
 nil.go — runtime error: nil *[N]T element access (range/len compile OK)
 nilptr.go — unsupported: unsafe
 nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
-range.go — codegen: unknown function unicode.utf8.AppendRune
+range.go — failed: panic: fail
 range3.go — failed: panic: must not be executed
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
@@ -455,14 +441,14 @@ stackobj.go — compile error: codegen
 stackobj2.go — compile error: codegen
 stackobj3.go — compile error: codegen
 strcopy.go — runtime error
-string_lit.go — compile error: codegen
+string_lit.go — failed: panic: syscall.Exit
 stringrange.go — output mismatch
 switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — output mismatch
-turing.go — compile error: codegen
+turing.go — runtime error: null deref
 typeparam/absdiff2.go — failed: build: mono: pending main.numericAbs$complex128.Abs missing package/info mono: pending main.numericA…
 typeparam/absdiff3.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
-typeparam/boundmethod.go — compile error: codegen
+typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method body
 typeparam/chans.go — could not import context
 typeparam/combine.go — compile error: lower: unsupported expression *ast.IndexListExpr
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
@@ -481,7 +467,7 @@ typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missi
 typeparam/issue45722.go — could not import log
 typeparam/issue47258.go — failed: build: pipeline: IR verify: cannot assign i32 to var want2 of type refnull $go.complex64 in main.mai…
 typeparam/issue47272.go — output mismatch
-typeparam/issue47713.go — compile error: codegen
+typeparam/issue47713.go — wasm validate/compile error: BinaryMarshaler call shape
 typeparam/issue47775b.go — compile error: codegen
 typeparam/issue47925b.go — failed: panic: interface conversion: type assertion failed
 typeparam/issue47925c.go — failed: panic: interface conversion: type assertion failed
@@ -525,12 +511,11 @@ typeparam/issue58513.go — compile error: lower: variable To has no IR local (i
 typeparam/list.go — wasm validate/compile error
 typeparam/map.go — failed: panic: got [1 2 3], want [1 2 3]
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
-typeparam/mdempsky/14.go — compile error: codegen
+typeparam/mdempsky/14.go — wasm validate/compile error: struct.new anyref vs i32
 typeparam/mdempsky/15.go — compile error: codegen
 typeparam/mdempsky/16.go — wasm validate/compile error
 typeparam/mdempsky/17.go — compile error: lower: tuple type not a single value: (k any, v any)
 typeparam/mdempsky/18.go — failed: build: pipeline: IR verify: cannot assign i32 to var ok of type refnull $go.iface in main.f$int pipe…
-typeparam/mdempsky/19.go — compile error: codegen
 typeparam/mdempsky/20.go — compile error: codegen
 typeparam/mdempsky/21.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn7 of type ref $go.ifacefn.main_I$int.M in mai…
 typeparam/metrics.go — failed: panic: _Metric2.Metrics first slice = [1 2 3 3], want [1 2 3]
@@ -539,14 +524,11 @@ typeparam/nested.go — output mismatch
 typeparam/ordered.go — failed: build: desc: no concrete type for main.orderedSlice$float64 desc: no concrete type for main.orderedS…
 typeparam/orderedmap.go — could not import context
 typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
-typeparam/shape1.go — compile error: codegen
+typeparam/shape1.go — wasm validate/compile error: mono f$*incrementer recv width
 typeparam/shape_assert.go — wasm validate/compile error
 typeparam/slices.go — failed: build: unsubstituted type parameter Elem unsubstituted type parameter Elem
-typeparam/stringable.go — compile error: codegen
-typeparam/stringer.go — compile error: codegen
 typeparam/typeswitch1.go — output mismatch
 typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (in main.f$any)
-typeparam/typeswitch3.go — compile error: codegen
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
 typeparam/typeswitch5.go — output mismatch
 typeparam/typeswitch7.go — output mismatch

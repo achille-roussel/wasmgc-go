@@ -253,11 +253,24 @@ func (fl *funcLower) typeAssert(e *ast.TypeAssertExpr, want ir.Type, commaOk boo
 
 func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *types.Selection) (ir.Expr, []ir.Stmt, error) {
 	fn := sel.Obj().(*types.Func)
-	recvType := fl.typeOf(fun.X)
-	if !isIface(recvType) {
+	exprTy := fl.typeOf(fun.X)
+	ifaceType := selectionRecvType(exprTy, sel)
+	if !isIface(ifaceType) {
+		// Direct interface value (no embedding path).
+		ifaceType = exprTy
+	}
+	if !isIface(ifaceType) {
+		// Concrete receiver with promoted iface method (e.g. mono of
+		// conn.Hello where T became *PoolConn{Conn}): use the method's
+		// declared interface type and extract the embedded field.
+		if r := fn.Type().(*types.Signature).Recv(); r != nil && isIface(r.Type()) {
+			ifaceType = r.Type()
+		}
+	}
+	if !isIface(ifaceType) {
 		return nil, nil, fl.errorf(fun, "internal: ifaceCall on non-interface")
 	}
-	recv, stmts, err := fl.expr(fun.X, typeIface)
+	recv, stmts, err := fl.ifaceMethodRecv(fun.X, sel, fn, exprTy, ifaceType)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -287,14 +300,6 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		stmts = append(stmts, st...)
 		args = append(args, ex)
 	}
-	ifaceKey := desc.TypeKey(recvType)
-	iface, _ := recvType.Underlying().(*types.Interface)
-	if iface == nil {
-		return nil, nil, fl.errorf(fun, "receiver is not an interface")
-	}
-	methodIdx := methodIndex(iface, fn)
-	san := desc.Sanitize(ifaceKey)
-	sigName := "$go.ifacefn." + san + "." + fn.Name()
 	var res ir.Type
 	if sig.Results().Len() > 0 {
 		var err error
@@ -309,16 +314,127 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 			res = mapped
 		}
 	}
+	return makeIfaceCall(fn, ifaceType, args, res), stmts, nil
+}
+
+// makeIfaceCall builds an OpIfaceCall through the itable for ifaceType.
+func makeIfaceCall(fn *types.Func, ifaceType types.Type, args []ir.Expr, res ir.Type) ir.Expr {
+	ifaceKey := desc.TypeKey(ifaceType)
+	iface, _ := types.Unalias(ifaceType).Underlying().(*types.Interface)
+	san := desc.Sanitize(ifaceKey)
+	idx := 0
+	if iface != nil {
+		idx = methodIndex(iface, fn)
+	}
 	return &ir.Instr{
 		Op:     ir.OpIfaceCall,
 		Type:   res,
 		Type2:  &ir.Ref{Named: "$go.itabtype." + san},
 		Global: ifaceKey, // so desc emits itabtype even without a concrete itab
 		Func:   fn.Name(),
-		Field:  itoa(methodIdx),
-		Str:    sigName,
+		Field:  itoa(idx),
+		Str:    "$go.ifacefn." + san + "." + fn.Name(),
 		Args:   args,
-	}, stmts, nil
+	}
+}
+
+// selectionRecvType walks Selection.Index embedding fields on base and returns
+// the type that holds the method (the last type before the method index).
+func selectionRecvType(base types.Type, sel *types.Selection) types.Type {
+	if base == nil || sel == nil {
+		return base
+	}
+	ty := base
+	idx := sel.Index()
+	if len(idx) <= 1 {
+		return ty
+	}
+	for _, fi := range idx[:len(idx)-1] {
+		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			ty = p.Elem()
+		}
+		st := structOf(ty)
+		if st == nil || fi < 0 || fi >= st.NumFields() {
+			return base
+		}
+		ty = st.Field(fi).Type()
+	}
+	return ty
+}
+
+// ifaceMethodRecv lowers the interface receiver for an iface call, following
+// Selection.Index when it encodes embedding, or LookupFieldOrMethod when mono
+// left a type-param Index on a concrete type that embeds the interface.
+func (fl *funcLower) ifaceMethodRecv(x ast.Expr, sel *types.Selection, fn *types.Func, exprTy, ifaceType types.Type) (ir.Expr, []ir.Stmt, error) {
+	if landed := selectionRecvType(exprTy, sel); isIface(landed) || isIface(exprTy) {
+		return fl.methodRecvSel(x, sel, ifaceType, typeIface)
+	}
+	// Rebuild embedding path from the concrete type.
+	if exprTy != nil && !isIface(exprTy) {
+		_, index, _ := types.LookupFieldOrMethod(exprTy, true, fn.Pkg(), fn.Name())
+		if len(index) > 1 {
+			return fl.methodRecvByIndex(x, exprTy, index[:len(index)-1], typeIface)
+		}
+	}
+	return fl.methodRecvSel(x, sel, ifaceType, typeIface)
+}
+
+// methodRecvByIndex walks embedding field indices (not including the method
+// index) starting from expression x of type base.
+func (fl *funcLower) methodRecvByIndex(x ast.Expr, base types.Type, fields []int, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	cur, stmts, err := fl.expr(x, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	ty := base
+	if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+		ty = p.Elem()
+	}
+	for _, fi := range fields {
+		st := structOf(ty)
+		if st == nil || fi < 0 || fi >= st.NumFields() {
+			return nil, nil, fl.errorf(x, "iface embedding index %d out of range for %s", fi, ty)
+		}
+		fld := st.Field(fi)
+		stName := ""
+		if irt, err := fl.mapType(ty); err == nil {
+			stName = refTypeName(irt)
+		}
+		if stName == "" {
+			return nil, nil, fl.errorf(x, "no IR type for %s", ty)
+		}
+		cur = &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: stName},
+			Field: fld.Name(),
+			Args:  []ir.Expr{cur},
+		}
+		ty = fld.Type()
+		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			ty = p.Elem()
+		}
+	}
+	_ = want
+	return cur, stmts, nil
+}
+
+// concreteMethod looks up fn's name on a concrete (non-interface) receiver.
+// Used when a type-param / constraint selection still points at the interface
+// method after monomorphization substituted a concrete type.
+func concreteMethod(recv types.Type, abstract *types.Func) *types.Func {
+	if recv == nil || abstract == nil || isIface(recv) {
+		return nil
+	}
+	obj, _, _ := types.LookupFieldOrMethod(recv, true, abstract.Pkg(), abstract.Name())
+	fn, ok := obj.(*types.Func)
+	if !ok || fn == nil {
+		return nil
+	}
+	if sig, _ := fn.Type().(*types.Signature); sig != nil && sig.Recv() != nil && isIface(sig.Recv().Type()) {
+		// Still an interface method (e.g. embedded iface field) — not concrete.
+		return nil
+	}
+	return fn
 }
 
 func methodIndex(iface *types.Interface, fn *types.Func) int {

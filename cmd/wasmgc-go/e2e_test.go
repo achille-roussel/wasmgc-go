@@ -71,6 +71,22 @@ func TestMethodExprNilE2E(t *testing.T) {
 	runM2(t, "method_expr_nil", "5\n3\n5\n0\n", 16384)
 }
 
+// TestIfaceMethodExprE2E: I.m MethodExpr + defer of iface method via OpIfaceCall.
+func TestIfaceMethodExprE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "iface_method_expr", "7\n7\nclosed\n", 16384)
+}
+
+// TestStringRuneE2E: string(rune) links unicode.utf8.AppendRune without import.
+func TestStringRuneE2E(t *testing.T) {
+	if !pipeline.Default.Real() {
+		t.Fatal("expected real lowerer wired in pipeline.Default")
+	}
+	runM2(t, "string_rune", "A\n世\n", 16384)
+}
+
 // TestM3AppendE2E: slice lit + append → 4\n4\n.
 func TestM3AppendE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
