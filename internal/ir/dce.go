@@ -57,7 +57,9 @@ func PruneUnreachable(m *Module) {
 	// Keep the whole print cluster if any print helper is live so println's
 	// size golden stays stable across EnsurePrint linking whole print.go.
 	printCluster := []string{
-		"runtime.printstring", "runtime.printint", "runtime.printnl", "runtime.printuint", "runtime.printuint64",
+		"runtime.printstring", "runtime.printint", "runtime.printnl", "runtime.printuint",
+		// printuint64 is linked with print.go but kept only when referenced
+		// (issue 21887); seeding it here bloated println.wasm.
 	}
 	seedPrint := false
 	seedGetArg := false
