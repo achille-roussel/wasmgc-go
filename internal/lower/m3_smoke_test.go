@@ -86,6 +86,22 @@ func main() {
 `, "3\n")
 }
 
+func TestM3PkgGlobalAddrSmoke(t *testing.T) {
+	// Address-taken package scalars must spill into $go.cell.* so the fat
+	// pointer base is anyref (Wasm globals of i32 cannot be bases).
+	runM3(t, `package main
+var g byte = 123
+var f *byte = &g
+func main() {
+	println(int(*f))
+	*f = 7
+	println(int(g))
+	g = 9
+	println(int(*f))
+}
+`, "123\n7\n9\n")
+}
+
 func TestM3EscapeFieldIR(t *testing.T) {
 	src := `package main
 type S struct { X int }
@@ -131,4 +147,15 @@ func main() {
 	if strings.Contains(low, "struct.new $go.ptr") {
 		t.Fatalf("fat pointer struct.new after RuntimeOps:\n%s", low)
 	}
+}
+
+func TestM3PkgByteSliceIndexSmoke(t *testing.T) {
+	runM3(t, `package main
+var b = []byte{1, 2, 3}
+func main() {
+	println(int(b[1]))
+	b[1] = 9
+	println(int(b[1]))
+}
+`, "2\n9\n")
 }

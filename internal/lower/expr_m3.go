@@ -31,6 +31,23 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 	switch x := x.(type) {
 	case *ast.Ident:
 		if g := fl.lookupGlobal(x); g != nil {
+			obj := fl.info.Uses[x]
+			if obj == nil {
+				obj = fl.info.Defs[x]
+			}
+			// Address-taken package scalars live in $go.cell.*; fat-pointer
+			// base must be the cell ref (anyref), not the scalar global.get.
+			if obj != nil {
+				if _, ok := fl.pkg.globalCellElem[obj]; ok {
+					base := &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}
+					return &ir.Instr{
+						Op:    ir.OpAddr,
+						Args:  []ir.Expr{base},
+						Field: "v",
+						Type:  ptrTy,
+					}, nil, nil
+				}
+			}
 			base := &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}
 			return &ir.Instr{Op: ir.OpAddr, Args: []ir.Expr{base}, Type: ptrTy}, nil, nil
 		}
@@ -316,16 +333,16 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				ex, err := fl.constVal(c.Val(), ty)
 				return ex, nil, err
 			}
-			if _, ok := obj.(*types.Var); ok {
+			if v, ok := obj.(*types.Var); ok {
 				if g := fl.lookupGlobal(e.Sel); g != nil {
-					return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
+					return fl.readGlobal(v, g), nil, nil
 				}
 				// Cross-package var: Qual.Name → pkg.Name global.
 				if id, ok := e.X.(*ast.Ident); ok {
 					if pn, ok := fl.info.Uses[id].(*types.PkgName); ok && pn.Imported() != nil {
 						gname := pn.Imported().Name() + "." + e.Sel.Name
 						if g := fl.pkg.mod.LookupGlobal(gname); g != nil {
-							return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
+							return fl.readGlobal(v, g), nil, nil
 						}
 						// Global may be declared when the package is lowered;
 						// emit the qualified name anyway.

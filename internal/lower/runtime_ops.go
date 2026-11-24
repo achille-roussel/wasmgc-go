@@ -454,6 +454,13 @@ func (rt *runtimeLower) sliceTypeFrom(orig, rewritten ir.Expr, elem ir.Type) (sl
 				return sliceParts(x.Var.Typ)
 			}
 		case *ir.Instr:
+			// global.get has no Instr.Type; use the declared global type
+			// (package-level []byte must stay $go.slice.i8, not fall back to i32).
+			if x.Op == ir.OpGlobalGet && x.Global != "" && rt.mod != nil {
+				if g := rt.mod.LookupGlobal(x.Global); g != nil {
+					return sliceParts(g.Typ)
+				}
+			}
 			// struct.get's Type is the struct; recover the field's slice type.
 			if x.Op == ir.OpStructGet && x.Field != "" && x.Type != nil {
 				if r, ok := x.Type.(*ir.Ref); ok && r.Named != "" {
