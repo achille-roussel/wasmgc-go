@@ -921,6 +921,20 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 	}
 }
 
+// elemZeroIsNull reports whether the Go zero for an array element is a null
+// reference (pointer/slice/map/chan/func/iface). Structs, strings, numbers,
+// and nested arrays need a concrete zero value instead.
+func elemZeroIsNull(goTy types.Type) bool {
+	if goTy == nil {
+		return true
+	}
+	switch types.Unalias(goTy).Underlying().(type) {
+	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
+		return true
+	}
+	return false
+}
+
 // goZeroValue builds the Go zero for a local/global when Wasm's null default
 // is wrong. ok is false when null/0 is already correct (pointers, slices, …).
 func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) {
@@ -938,11 +952,24 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		if n < 0 {
 			n = 0
 		}
-		// Non-defaultable elems (e.g. (ref $go.string)) cannot use
-		// array.new_default — seed with a zero element via array.new.
-		elemIR, err := fl.mapType(u.Elem())
-		if err == nil {
-			if er, ok := elemIR.(*ir.Ref); ok && !er.Null {
+		// array.new_default fills ref elements with null. Go zeros for
+		// structs/strings/nested arrays are non-null values.
+		//
+		// array.new(z, n) aliases the same ref for every slot — fine for
+		// immutable strings, but mutable structs must each get a fresh
+		// zero via a fill helper.
+		if !elemZeroIsNull(u.Elem()) {
+			elemIR, err := fl.mapType(u.Elem())
+			if err == nil {
+				if isStruct(u.Elem()) {
+					fn := fl.ensureZeroArrayFunc(r.Named, elemIR)
+					return &ir.Instr{
+						Op:   ir.OpCall,
+						Func: fn,
+						Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: n}},
+						Type: &ir.Ref{Named: r.Named},
+					}, true
+				}
 				z, zerr := fl.zeroValue(elemIR)
 				if zerr == nil {
 					return &ir.Instr{
@@ -1053,4 +1080,73 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 	}
 	delete(seen, td.Name)
 	return &ir.Instr{Op: ir.OpStructNew, Type: t, Args: args}, nil
+}
+
+// ensureZeroArrayFunc returns a helper that builds [n]T with a fresh Go-zero
+// element in every slot. array.new(z, n) would alias one struct across all
+// indices; field stores would then clobber every element.
+func (fl *funcLower) ensureZeroArrayFunc(arrName string, elemIR ir.Type) string {
+	name := "$go.zeroArray." + strings.TrimPrefix(arrName, "$")
+	if fl.mod.LookupFunc(name) != nil {
+		return name
+	}
+	aty := &ir.Ref{Named: arrName}
+	nVar := &ir.Var{Name: "n", Typ: ir.TypeI32}
+	aVar := &ir.Var{Name: "a", Typ: aty}
+	iVar := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	mkZero := func() ir.Expr {
+		ez, eerr := fl.zeroValue(elemIR)
+		if eerr != nil {
+			return &ir.Instr{Op: ir.OpRefNull, Type: elemIR}
+		}
+		return ez
+	}
+	loopL := fl.freshLabel("zeroArrL")
+	breakL := fl.freshLabel("zeroArrB")
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: aVar},
+		&ir.VarDef{Var: iVar},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "a", Var: aVar}}, Rhs: &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: aty,
+			Args: []ir.Expr{&ir.Name{Raw: "n", Var: nVar}},
+		}},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iVar}}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 0}},
+		&ir.Block{Name: breakL, Body: &ir.Loop{
+			Name: loopL,
+			Body: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{
+						&ir.Name{Raw: "i", Var: iVar},
+						&ir.Name{Raw: "n", Var: nVar},
+					}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Br{Label: breakL}}},
+				},
+				&ir.ExprStmt{X: &ir.Instr{
+					Op:   ir.OpArraySet,
+					Type: aty,
+					Args: []ir.Expr{
+						&ir.Name{Raw: "a", Var: aVar},
+						&ir.Name{Raw: "i", Var: iVar},
+						mkZero(),
+					},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iVar}}, Rhs: &ir.Instr{
+					Op: ir.OpI32Add, Args: []ir.Expr{
+						&ir.Name{Raw: "i", Var: iVar},
+						&ir.Const{Op: ir.OpI32Const, I64: 1},
+					},
+				}},
+				&ir.Br{Label: loopL},
+			}},
+		}},
+		&ir.Return{Results: []ir.Expr{&ir.Name{Raw: "a", Var: aVar}}},
+	}}
+	fl.mod.Funcs = append(fl.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{nVar},
+		Results: []ir.Type{aty},
+		Body:    body,
+	})
+	return name
 }

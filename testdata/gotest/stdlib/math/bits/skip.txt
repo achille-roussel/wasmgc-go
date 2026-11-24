@@ -1,26 +1,12 @@
 # math/bits — wasmgc-go test skips
 TestAdd64OverflowPanic — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestAddSubUint — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestAddSubUint32 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestAddSubUint64 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDiv32PanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDiv32PanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDiv64PanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDiv64PanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDivPanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestDivPanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestLeadingZeros — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestLen — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestMulDiv — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestMulDiv32 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestMulDiv64 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestOnesCount — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestRem32 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestRem32Overflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestRem64 — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestRem64Overflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestReverse — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestReverseBytes — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestRotateLeft — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
 TestSub64OverflowPanic — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestTrailingZeros — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits

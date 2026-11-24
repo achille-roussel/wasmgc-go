@@ -627,6 +627,12 @@ func (g *gen) emitIndexFunc(tr *typeRec) string {
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	data := &ir.Var{Name: "data", Typ: anyT}
 	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+
+	// Arrays are bare Wasm array refs.
+	if tr.kind == KindArray {
+		return g.emitArrayIndexFunc(tr, name, data, idx, anyT)
+	}
+
 	elemT, sliceName := g.sliceElemIR(tr)
 	if sliceName == "" {
 		g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
@@ -645,10 +651,7 @@ func (g *gen) emitIndexFunc(tr *typeRec) string {
 	}}
 	var elemGo types.Type
 	if tr.goType != nil {
-		switch u := tr.goType.Underlying().(type) {
-		case *types.Slice:
-			elemGo = u.Elem()
-		case *types.Array:
+		if u, ok := tr.goType.Underlying().(*types.Slice); ok {
 			elemGo = u.Elem()
 		}
 	}
@@ -668,6 +671,63 @@ func (g *gen) emitIndexFunc(tr *typeRec) string {
 				Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
 			}},
 			&ir.Return{Results: []ir.Expr{boxed}},
+		}},
+	})
+	return name
+}
+
+func (g *gen) emitArrayIndexFunc(tr *typeRec, name string, data, idx *ir.Var, anyT ir.Type) string {
+	arrName := g.arrayIRName(tr)
+	nullRet := &ir.Return{Results: []ir.Expr{&ir.Instr{Op: ir.OpRefNull, Type: anyT}}}
+	if arrName == "" {
+		g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+			Name: name, Params: []*ir.Var{data, idx}, Results: []ir.Type{anyT},
+			Body: &ir.Seq{Stmts: []ir.Stmt{nullRet}},
+		})
+		return name
+	}
+	aty := &ir.Ref{Named: arrName}
+	av := &ir.Var{Name: "a", Typ: aty}
+	var elemGo types.Type
+	if tr.goType != nil {
+		if a, ok := tr.goType.Underlying().(*types.Array); ok {
+			elemGo = a.Elem()
+		}
+	}
+	getOp := ir.OpArrayGet
+	switch arrName {
+	case "$go.bytes":
+		getOp = ir.OpArrayGetU
+	case "$go.i16s":
+		getOp = ir.OpArrayGetU
+	}
+	// Instr.Type is the ARRAY type (codegen typeIndexOf), matching lower.indexExpr.
+	get := &ir.Instr{Op: getOp, Type: aty, Args: []ir.Expr{
+		&ir.Name{Raw: "a", Var: av}, &ir.Name{Raw: "i", Var: idx},
+	}}
+	var boxed ir.Expr = get
+	if elemGo != nil {
+		boxed = g.boxFieldToAny(elemGo, get)
+	} else {
+		boxed = &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{get}}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{data, idx},
+		Results: []ir.Type{anyT},
+		Body: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.VarDef{Var: av},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{nullRet}},
+				Else: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.Assign{Lhs: []ir.Dest{{Name: "a", Var: av}}, Rhs: &ir.Instr{
+						Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+					}},
+					&ir.Return{Results: []ir.Expr{boxed}},
+				}},
+			},
+			&ir.Unreachable{},
 		}},
 	})
 	return name
@@ -739,34 +799,109 @@ func (g *gen) emitLenFunc(tr *typeRec) string {
 	}
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	data := &ir.Var{Name: "data", Typ: anyT}
+	zero := &ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}
+
+	// Arrays are bare Wasm array refs — use array.len (not a slice header).
+	if tr.kind == KindArray {
+		arrName := g.arrayIRName(tr)
+		if arrName == "" {
+			g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+				Name: name, Params: []*ir.Var{data}, Results: []ir.Type{ir.TypeI32},
+				Body: &ir.Seq{Stmts: []ir.Stmt{zero}},
+			})
+			return name
+		}
+		aty := &ir.Ref{Named: arrName}
+		av := &ir.Var{Name: "a", Typ: aty}
+		g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+			Name:    name,
+			Params:  []*ir.Var{data},
+			Results: []ir.Type{ir.TypeI32},
+			Body: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.VarDef{Var: av},
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{zero}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "a", Var: av}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+						}},
+						&ir.Return{Results: []ir.Expr{&ir.Instr{
+							Op: ir.OpArrayLen, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "a", Var: av}},
+						}}},
+					}},
+				},
+				&ir.Unreachable{},
+			}},
+		})
+		return name
+	}
+
 	_, sliceName := g.sliceElemIR(tr)
 	if sliceName == "" {
 		g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
 			Name: name, Params: []*ir.Var{data}, Results: []ir.Type{ir.TypeI32},
-			Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
-				&ir.Const{Op: ir.OpI32Const, I64: 0},
-			}}}},
+			Body: &ir.Seq{Stmts: []ir.Stmt{zero}},
 		})
 		return name
 	}
 	sty := &ir.Ref{Named: sliceName}
 	sv := &ir.Var{Name: "s", Typ: sty}
+	// Nil slices are a null data word; ref.cast to a non-nullable slice
+	// header traps with illegal cast. Go's Len(nil) is 0.
 	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
 		Name:    name,
 		Params:  []*ir.Var{data},
 		Results: []ir.Type{ir.TypeI32},
 		Body: &ir.Seq{Stmts: []ir.Stmt{
 			&ir.VarDef{Var: sv},
-			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: sv}}, Rhs: &ir.Instr{
-				Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-			}},
-			&ir.Return{Results: []ir.Expr{&ir.Instr{
-				Op: ir.OpStructGet, Type: sty, Field: "len",
-				Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}},
-			}}},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{zero}},
+				Else: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: sv}}, Rhs: &ir.Instr{
+						Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+					}},
+					&ir.Return{Results: []ir.Expr{&ir.Instr{
+						Op: ir.OpStructGet, Type: sty, Field: "len",
+						Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}},
+					}}},
+				}},
+			},
+			&ir.Unreachable{},
 		}},
 	})
 	return name
+}
+
+// arrayIRName is the Wasm array type name for an array typeRec, or "".
+// Must match lower.ensureArrayType: []byte/[N]byte → $go.bytes, etc.
+func (g *gen) arrayIRName(tr *typeRec) string {
+	if tr.goType == nil {
+		return ""
+	}
+	a, ok := tr.goType.Underlying().(*types.Array)
+	if !ok {
+		return ""
+	}
+	elem := types.Unalias(a.Elem())
+	if b, ok := elem.Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Int8, types.Uint8, types.Bool:
+			g.mod.InternType(&ir.TypeDef{Name: "$go.bytes", Kind: ir.TypeArray, Elem: ir.TypeI8, ElemMut: true})
+			return "$go.bytes"
+		case types.Int16, types.Uint16:
+			g.mod.InternType(&ir.TypeDef{Name: "$go.i16s", Kind: ir.TypeArray, Elem: ir.TypeI16, ElemMut: true})
+			return "$go.i16s"
+		}
+	}
+	elemIR, err := mapTypeApprox(elem)
+	if err != nil {
+		elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
+	}
+	arrName := arrayNameFor(elemIR)
+	g.mod.InternType(&ir.TypeDef{Name: arrName, Kind: ir.TypeArray, Elem: storageElemApprox(elemIR), ElemMut: true})
+	return arrName
 }
 
 func (g *gen) ensureSliceHeaderMutable(sliceName string) {

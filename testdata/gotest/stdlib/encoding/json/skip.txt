@@ -39,7 +39,6 @@ TestDecoderReset — lower/runtime/reflect gaps in encoding/json tests
 TestDuplicatedFieldDisappears — lower/runtime/reflect gaps in encoding/json tests
 TestDuplicateNames — lower/runtime/reflect gaps in encoding/json tests
 TestEmbeddedBug — lower/runtime/reflect gaps in encoding/json tests
-TestEmptyString — lower/runtime/reflect gaps in encoding/json tests
 TestEmptyStructs — lower/runtime/reflect gaps in encoding/json tests
 TestEncodeBytekind — lower/runtime/reflect gaps in encoding/json tests
 TestEncodePointerString — lower/runtime/reflect gaps in encoding/json tests
@@ -53,7 +52,6 @@ TestEncoderSetEscapeHTML — lower/runtime/reflect gaps in encoding/json tests
 TestEncodeString — lower/runtime/reflect gaps in encoding/json tests
 TestEqualFold — lower/runtime/reflect gaps in encoding/json tests
 TestErrorMessageFromMisusedString — lower/runtime/reflect gaps in encoding/json tests
-TestEscape — lower/runtime/reflect gaps in encoding/json tests
 TestEscapeHTML — lower/runtime/reflect gaps in encoding/json tests
 TestFaultyDecoder — lower/runtime/reflect gaps in encoding/json tests
 TestFaultyEncoder — lower/runtime/reflect gaps in encoding/json tests
@@ -99,7 +97,6 @@ TestNilMarshal — lower/runtime/reflect gaps in encoding/json tests
 TestNilMarshalerTextMapKey — lower/runtime/reflect gaps in encoding/json tests
 TestNilSlicesAndMaps — lower/runtime/reflect gaps in encoding/json tests
 TestNullRawMessage — lower/runtime/reflect gaps in encoding/json tests
-TestNullString — lower/runtime/reflect gaps in encoding/json tests
 TestNumberAccessors — lower/runtime/reflect gaps in encoding/json tests
 TestNumberIsValid — lower/runtime/reflect gaps in encoding/json tests
 TestObjectNamespace — lower/runtime/reflect gaps in encoding/json tests
@@ -125,7 +122,6 @@ TestResumableDecoder — lower/runtime/reflect gaps in encoding/json tests
 TestRoundtripStringTag — lower/runtime/reflect gaps in encoding/json tests
 TestSamePointerNoCycle — lower/runtime/reflect gaps in encoding/json tests
 TestSemanticError — lower/runtime/reflect gaps in encoding/json tests
-TestSkipArrayObjects — lower/runtime/reflect gaps in encoding/json tests
 TestSliceNoCycle — lower/runtime/reflect gaps in encoding/json tests
 TestSliceOfCustomByte — lower/runtime/reflect gaps in encoding/json tests
 TestStateMachine — lower/runtime/reflect gaps in encoding/json tests
@@ -164,7 +160,6 @@ TestUnmarshalRescanLiteralMangledUnquote — lower/runtime/reflect gaps in encod
 TestUnmarshalReuse — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalSyntax — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalTypeError — lower/runtime/reflect gaps in encoding/json tests
-TestUnmarshalTypeErrorMessage — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalUnexported — lower/runtime/reflect gaps in encoding/json tests
 TestUnsupportedValueErrorValue — lower/runtime/reflect gaps in encoding/json tests
 TestUnsupportedValues — lower/runtime/reflect gaps in encoding/json tests

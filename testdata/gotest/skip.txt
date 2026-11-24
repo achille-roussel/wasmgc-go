@@ -51,7 +51,6 @@ fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug177.go — output mismatch
 fixedbugs/bug196.go — wasm validate/compile error
-fixedbugs/bug207.go — runtime error
 fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
