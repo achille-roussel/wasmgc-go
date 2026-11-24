@@ -1577,28 +1577,44 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 		stmts = append(stmts, &ir.Return{Results: results})
 		return stmts, nil
 	}
+	// When returning into named results, sync cells so deferred closures see
+	// the values (issue 32175). For multi-result returns, evaluate every RHS
+	// into a temp first — writing named results one-by-one would break
+	// `return b, a` (assign into a before reading a for the second result).
+	needNamedSync := len(fl.namedResults) > 0
+	stageTemps := needNamedSync && len(s.Results) > 1
 	var out []ir.Stmt
 	var results []ir.Expr
+	temps := make([]*ir.Temp, len(s.Results))
+	resObjs := make([]types.Object, len(s.Results))
 	for i, r := range s.Results {
 		var want ir.Type
 		var dstGo types.Type
-		var resObj types.Object
 		if i < len(fl.results) {
 			want = fl.results[i]
 		}
 		if fl.sig != nil && i < fl.sig.Results().Len() {
-			resObj = fl.sig.Results().At(i)
-			dstGo = resObj.Type()
+			resObjs[i] = fl.sig.Results().At(i)
+			dstGo = resObjs[i].Type()
 		}
 		ex, stmts, err := fl.coerceExpr(r, dstGo, want)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, stmts...)
-		if i < len(fl.namedResults) && fl.namedResults[i] != nil {
-			out = append(out, fl.assignLocalSync(resObj, fl.namedResults[i], ex)...)
-			if resObj != nil {
-				if rx, err := fl.readVar(resObj); err == nil {
+		if stageTemps {
+			if want == nil {
+				want = typeIface
+			}
+			t := fl.newTemp(want)
+			out = append(out, fl.assignTemp(t, ex))
+			temps[i] = t
+			continue
+		}
+		if needNamedSync && i < len(fl.namedResults) && fl.namedResults[i] != nil {
+			out = append(out, fl.assignLocalSync(resObjs[i], fl.namedResults[i], ex)...)
+			if resObjs[i] != nil {
+				if rx, err := fl.readVar(resObjs[i]); err == nil {
 					ex = rx
 				} else {
 					ex = fl.useVar(fl.namedResults[i])
@@ -1608,6 +1624,14 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 			}
 		}
 		results = append(results, ex)
+	}
+	if stageTemps {
+		for i, t := range temps {
+			if i < len(fl.namedResults) && fl.namedResults[i] != nil {
+				out = append(out, fl.assignLocalSync(resObjs[i], fl.namedResults[i], fl.useTemp(t))...)
+			}
+			results = append(results, fl.useTemp(t))
+		}
 	}
 	out = append(out, &ir.Return{Results: results})
 	return out, nil
