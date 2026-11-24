@@ -2054,7 +2054,30 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	if err != nil {
 		return nil, fl.errorf(s.X, "%v", err)
 	}
-	x, xstmts, err := fl.expr(s.X, xIR)
+	// range (*p) / range p for *[N]T: evaluate the pointer without nil-checking
+	// *p (issue73476, issue72844). Length comes from the type. Value access
+	// nil-checks below when needVal.
+	xExpr := s.X
+	for {
+		if p, ok := xExpr.(*ast.ParenExpr); ok {
+			xExpr = p.X
+			continue
+		}
+		break
+	}
+	var x ir.Expr
+	var xstmts []ir.Stmt
+	rangeViaNilableArrayPtr := isPtrToArray(xType)
+	if star, ok := xExpr.(*ast.StarExpr); ok {
+		if pt := fl.typeOf(star.X); pt != nil && isPtrToArray(pt) {
+			ptrTy, _ := fl.mapType(pt)
+			x, xstmts, err = fl.expr(star.X, ptrTy)
+			rangeViaNilableArrayPtr = true
+		}
+	}
+	if x == nil {
+		x, xstmts, err = fl.expr(s.X, xIR)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2156,6 +2179,16 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	var elem ir.Expr
 	needVal := s.Value != nil && !isBlankIdent(s.Value)
 	needKey := s.Key != nil && !isBlankIdent(s.Key)
+	// Value access over nil *[N]T / (*nil) panics; index-only range does not.
+	if needVal && rangeViaNilableArrayPtr {
+		bodySeq.Stmts = append(bodySeq.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(xv)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+				&ir.Unreachable{},
+			}},
+		})
+	}
 	var elemIR ir.Type
 	if needVal || (needKey && keyVar == nil && s.Tok != token.DEFINE) {
 		elemGo := rangeElemType(xType)

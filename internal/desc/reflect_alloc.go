@@ -474,6 +474,37 @@ func (g *gen) zeroValueExpr(tr *typeRec) ir.Expr {
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: &ir.Ref{Named: wasmName}}
 		}
 		return g.structZeroIR(td, &ir.Ref{Named: wasmName}, map[string]bool{})
+	case KindArray:
+		// Arrays are never nil in Go; SetZero/json-null must allocate a real
+		// zero array (MergeNull / ReflectNew), not leave a null ref.
+		arrName := g.arrayIRName(tr)
+		if arrName == "" || tr.goType == nil {
+			return nil
+		}
+		a, ok := tr.goType.Underlying().(*types.Array)
+		if !ok {
+			return nil
+		}
+		n := a.Len()
+		if n < 0 {
+			n = 0
+		}
+		aty := &ir.Ref{Named: arrName}
+		if arrName == "$go.array.go.string" {
+			return &ir.Instr{
+				Op:   ir.OpArrayNew,
+				Type: aty,
+				Args: []ir.Expr{
+					g.stringConstExpr(""),
+					&ir.Const{Op: ir.OpI32Const, I64: n},
+				},
+			}
+		}
+		return &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: aty,
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: n}},
+		}
 	case KindSlice:
 		// Nil slice.
 		_, sliceName := g.sliceElemIR(tr)

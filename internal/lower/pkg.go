@@ -1027,12 +1027,31 @@ func (fl *funcLower) cloneStruct(v *ir.Var) ([]ir.Stmt, error) {
 
 // needsValueClone reports whether assigning a value of t must allocate a fresh
 // object (array/struct values). Pointers, slices, maps, chans, ifaces stay shared.
+// js.Value is an externref despite an empty struct underlying — never clone it.
+// Zero-size structs have no mutable payload to alias.
 func needsValueClone(t types.Type) bool {
 	if t == nil {
 		return false
 	}
-	switch types.Unalias(t).Underlying().(type) {
-	case *types.Array, *types.Struct:
+	t = types.Unalias(t)
+	if isJSValueType(t) {
+		return false
+	}
+	if isZeroSize(t) {
+		return false
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Array:
+		return true
+	case *types.Struct:
+		// Structs that hold func values are reference-shaped at those fields;
+		// cloning them is unnecessary for Go value semantics of the funcs and
+		// has broken range over tables of function pointers (jsonPackages).
+		for i := 0; i < u.NumFields(); i++ {
+			if _, ok := u.Field(i).Type().Underlying().(*types.Signature); ok {
+				return false
+			}
+		}
 		return true
 	default:
 		return false

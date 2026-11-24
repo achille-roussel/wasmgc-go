@@ -689,8 +689,9 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 	argTy := fl.typeOf(e.Args[0])
 	// [N]T and *[N]T: len/cap is the constant N. For *[N]T, do not OpLen the
 	// (possibly nil) pointer — evaluate the arg for side effects only.
+	// len(*p) must not nil-check *p (issue72844); only evaluate p's side effects.
 	if n, ok := arrayRangeLen(argTy); ok {
-		_, stmts, err := fl.expr(e.Args[0], nil)
+		_, stmts, err := fl.exprArrayLenSideEffects(e.Args[0])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -704,6 +705,24 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 	}
 	_ = want
 	return &ir.Instr{Op: op, Args: []ir.Expr{arg}}, stmts, nil
+}
+
+// exprArrayLenSideEffects evaluates expressions used only for their side
+// effects under len/cap of [N]T / *[N]T. *p of a *[N]T is not nil-checked.
+func (fl *funcLower) exprArrayLenSideEffects(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	if star, ok := e.(*ast.StarExpr); ok {
+		if pt := fl.typeOf(star.X); pt != nil && isPtrToArray(pt) {
+			return fl.expr(star.X, nil)
+		}
+	}
+	return fl.expr(e, nil)
 }
 
 func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {

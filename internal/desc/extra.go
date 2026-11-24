@@ -317,7 +317,11 @@ func (g *gen) ensureStructWasmType(wasmName string, st *types.Struct) {
 		if err != nil {
 			ft = &ir.Ref{Null: true, Heap: ir.HeapAny}
 		}
-		fields = append(fields, ir.Field{Name: f.Name(), Type: ft, Mut: true})
+		name := f.Name()
+		if name == "_" {
+			name = fmt.Sprintf("_%d", i) // match lower.structFields
+		}
+		fields = append(fields, ir.Field{Name: name, Type: ft, Mut: true})
 	}
 	if td := g.mod.LookupType(wasmName); td != nil {
 		if len(td.Fields) == 0 {
@@ -375,10 +379,20 @@ func (g *gen) emitGetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) s
 	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{
 		&ir.Instr{Op: ir.OpRefNull, Type: anyT},
 	}}
+	var wasmFields []ir.Field
+	if td := g.mod.LookupType(wasmName); td != nil {
+		wasmFields = td.Fields
+	}
 	for li := len(logical) - 1; li >= 0; li-- {
 		fi := logical[li]
 		f := st.Field(fi)
-		get := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}}}
+		fname := f.Name()
+		if li < len(wasmFields) {
+			fname = wasmFields[li].Name
+		} else if fname == "_" {
+			fname = fmt.Sprintf("_%d", fi)
+		}
+		get := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: fname, Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}}}
 		boxed := g.boxFieldToAny(f.Type(), get)
 		chain = &ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
@@ -439,8 +453,14 @@ func (g *gen) emitSetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) s
 			fieldIR = wasmFields[li].Type
 		}
 		unboxed := g.unboxAnyToField(f.Type(), &ir.Name{Raw: "v", Var: val}, fieldIR)
+		fname := f.Name()
+		if li < len(wasmFields) {
+			fname = wasmFields[li].Name
+		} else if fname == "_" {
+			fname = fmt.Sprintf("_%d", fi)
+		}
 		set := &ir.ExprStmt{X: &ir.Instr{
-			Op: ir.OpStructSet, Type: sty, Field: f.Name(),
+			Op: ir.OpStructSet, Type: sty, Field: fname,
 			Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}, unboxed},
 		}}
 		chain = &ir.If{
