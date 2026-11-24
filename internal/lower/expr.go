@@ -685,7 +685,9 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		}
 	}
 	// Integer / and % must Go-panic on y==0 (Wasm traps otherwise).
-	if (e.Op == token.QUO || e.Op == token.REM) && isInteger(xt) {
+	// Skip the check when the divisor is a non-zero constant so helpers like
+	// printuint(v/10) do not pull runtime.panicDivide into every println.
+	if (e.Op == token.QUO || e.Op == token.REM) && isInteger(xt) && !nonzeroIntConst(fl, e.Y) {
 		yVar := fl.newVar("divy", yWant)
 		stmts = append(stmts, fl.assignVar(yVar, y))
 		y = fl.useVar(yVar)
@@ -719,6 +721,22 @@ func isArithmeticOp(op token.Token) bool {
 		return true
 	}
 	return false
+}
+
+// nonzeroIntConst reports whether e is a compile-time integer ≠ 0.
+func nonzeroIntConst(fl *funcLower, e ast.Expr) bool {
+	if fl == nil || fl.info == nil || e == nil {
+		return false
+	}
+	tv, ok := fl.info.Types[e]
+	if !ok || tv.Value == nil {
+		return false
+	}
+	v := constant.ToInt(tv.Value)
+	if v.Kind() == constant.Unknown {
+		return false
+	}
+	return !constant.Compare(v, token.EQL, constant.MakeInt64(0))
 }
 
 // truncateInt narrows an i32/i64 arithmetic result to the Go integer type's
