@@ -59,6 +59,40 @@ func printuint(v uint) {
 	}
 }
 
+// printuint64 writes the decimal representation of an unsigned 64-bit value
+// (issue 21887: ^uint64(0) must not print as -1).
+func printuint64(v uint64) {
+	if v == 0 {
+		printstring("0")
+		return
+	}
+	if v >= 10 {
+		printuint64(v / 10)
+	}
+	d := uint(v % 10)
+	if d == 0 {
+		printstring("0")
+	} else if d == 1 {
+		printstring("1")
+	} else if d == 2 {
+		printstring("2")
+	} else if d == 3 {
+		printstring("3")
+	} else if d == 4 {
+		printstring("4")
+	} else if d == 5 {
+		printstring("5")
+	} else if d == 6 {
+		printstring("6")
+	} else if d == 7 {
+		printstring("7")
+	} else if d == 8 {
+		printstring("8")
+	} else {
+		printstring("9")
+	}
+}
+
 // printF64bits is body-less; EnsurePrint fills i64.reinterpret_f64
 // (same pattern as runtime.f64bits in map.go).
 func printF64bits(f float64) uint64

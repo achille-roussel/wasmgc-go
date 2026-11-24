@@ -1544,8 +1544,10 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 		for i, t := range temps {
 			ex := fl.useTemp(t)
 			var dstGo types.Type
+			var resObj types.Object
 			if fl.sig != nil && i < fl.sig.Results().Len() {
-				dstGo = fl.sig.Results().At(i).Type()
+				resObj = fl.sig.Results().At(i)
+				dstGo = resObj.Type()
 			}
 			if fl.pkg != nil && len(fl.pkg.subst) > 0 && dstGo != nil {
 				dstGo = fl.pkg.subst.Apply(dstGo)
@@ -1572,7 +1574,15 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 					ex = fl.useTemp(nt)
 				}
 			}
+			// Assign into named results before return so defer a++ sees them
+			// and bare/result returns observe the post-defer values (bug293).
+			if i < len(fl.namedResults) && fl.namedResults[i] != nil {
+				stmts = append(stmts, fl.assignLocalSync(resObj, fl.namedResults[i], ex)...)
+			}
 			results = append(results, ex)
+		}
+		if len(fl.namedResults) > 0 {
+			return append(stmts, fl.resultReturn()), nil
 		}
 		stmts = append(stmts, &ir.Return{Results: results})
 		return stmts, nil

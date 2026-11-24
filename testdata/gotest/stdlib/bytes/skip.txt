@@ -1,8 +1,3 @@
 # bytes — wasmgc-go test skips
 TestGrow — compile: wasm compile/validate error
-TestSplit — runtime fail after typecheck unlock
-TestSplitAfter — runtime fail after typecheck unlock
-TestToUpper — runtime fail after typecheck unlock
-TestToLower — runtime fail after typecheck unlock
-TestRepeat — runtime fail after typecheck unlock
 TestRepeatCatchesOverflow — runtime fail after typecheck unlock

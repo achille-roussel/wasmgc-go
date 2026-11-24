@@ -1,26 +1,5 @@
 # sort — wasmgc-go test skips
-TestAdversary — sort tables / pdqsort / exhaustive / stable paths
-TestBreakPatterns — sort tables / pdqsort / exhaustive / stable paths
-TestCountSortOps — sort tables / pdqsort / exhaustive / stable paths
-TestCountStableOps — sort tables / pdqsort / exhaustive / stable paths
-TestFindExhaustive — sort tables / pdqsort / exhaustive / stable paths
-TestFloat64s — sort tables / pdqsort / exhaustive / stable paths
-TestHeapsortBM — sort tables / pdqsort / exhaustive / stable paths
-TestInts — sort tables / pdqsort / exhaustive / stable paths
-TestNonDeterministicComparison — sort tables / pdqsort / exhaustive / stable paths
-TestReverseRange — sort tables / pdqsort / exhaustive / stable paths
 TestReverseSortIntSlice — sort tables / pdqsort / exhaustive / stable paths
-TestSearchEfficiency — sort tables / pdqsort / exhaustive / stable paths
-TestSearchExhaustive — sort tables / pdqsort / exhaustive / stable paths
 TestSlice — sort tables / pdqsort / exhaustive / stable paths
-TestSortBM — sort tables / pdqsort / exhaustive / stable paths
-TestSortFloat64Slice — sort tables / pdqsort / exhaustive / stable paths
-TestSortFloat64sCompareSlicesSort — sort tables / pdqsort / exhaustive / stable paths
-TestSortIntSlice — sort tables / pdqsort / exhaustive / stable paths
-TestSortLarge_Random — sort tables / pdqsort / exhaustive / stable paths
-TestSortStringSlice — sort tables / pdqsort / exhaustive / stable paths
 TestStability — sort tables / pdqsort / exhaustive / stable paths
-TestStableBM — sort tables / pdqsort / exhaustive / stable paths
-TestStableInts — sort tables / pdqsort / exhaustive / stable paths
-TestStrings — sort tables / pdqsort / exhaustive / stable paths
 TestStructSorts — sort tables / pdqsort / exhaustive / stable paths

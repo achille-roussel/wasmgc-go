@@ -60,7 +60,6 @@ fixedbugs/bug262.go — output mismatch
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
 fixedbugs/bug272.go — wasm validate/compile error
 fixedbugs/bug273.go — wasm validate/compile error
-fixedbugs/bug293.go — output mismatch
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
@@ -101,7 +100,6 @@ fixedbugs/issue19799.go — compile error: codegen
 fixedbugs/issue20811.go — failed: build: pipeline: IR verify: cannot assign ref $go.string to var h4 of type i32 in main.main pipeline…
 fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
-fixedbugs/issue21887.go — output mismatch
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
 fixedbugs/issue22605.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue22662.go — compile error: codegen
@@ -124,7 +122,6 @@ fixedbugs/issue27518b.go — compile error: codegen
 fixedbugs/issue27695.go — runtime error: reflect.Value.Interface on zero Value
 fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
-fixedbugs/issue28390.go — output mismatch
 fixedbugs/issue28748.go — compile error: build: load: typecheck
 fixedbugs/issue28797.go — runtime error
 fixedbugs/issue29013a.go — runtime error
@@ -138,7 +135,6 @@ fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30977.go — compile error: codegen
-fixedbugs/issue31546.go — output mismatch
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
 fixedbugs/issue32187.go — runtime error: interface conversion type assertion failed
 fixedbugs/issue32288.go — runtime error

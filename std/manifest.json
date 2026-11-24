@@ -76,7 +76,7 @@
     },
     "errors": {
       "tier": "vendor",
-      "notes": "Upstream Is/Unwrap/Join; iface→iface assert itabs from desc"
+      "notes": "Upstream Is/Unwrap/Join; iface\u2192iface assert itabs from desc"
     },
     "strconv": {
       "tier": "vendor"
@@ -89,7 +89,9 @@
     },
     "strings": {
       "tier": "overlay",
-      "overlays": ["builder.go"],
+      "overlays": [
+        "builder.go"
+      ],
       "notes": "M9: Builder without abi.NoEscape/MakeNoZero; String via []byte share"
     },
     "bytes": {
@@ -187,9 +189,10 @@
     "internal/bytealg": {
       "tier": "overlay",
       "overlays": [
-        "compare_generic.go"
+        "compare_generic.go",
+        "bytealg.go"
       ],
-      "notes": "goto-free Compare; SIMD deferred, scalar paths"
+      "notes": "goto-free Compare; MakeNoZero via make; SIMD deferred"
     },
     "internal/stringslite": {
       "tier": "rewrite",
@@ -197,7 +200,9 @@
     },
     "internal/strconv": {
       "tier": "vendor",
-      "overlays": ["deps.go"]
+      "overlays": [
+        "deps.go"
+      ]
     },
     "internal/fmtsort": {
       "tier": "vendor"
@@ -272,12 +277,16 @@
     },
     "internal/filepathlite": {
       "tier": "overlay",
-      "overlays": ["path_wasmgc.go"],
+      "overlays": [
+        "path_wasmgc.go"
+      ],
       "notes": "path_unix.go is tagged js&&wasm; wasmgc twin with unix separators"
     },
     "path/filepath": {
       "tier": "overlay",
-      "overlays": ["path_wasmgc.go"],
+      "overlays": [
+        "path_wasmgc.go"
+      ],
       "notes": "path_unix.go is tagged js&&wasm; wasmgc twin (splitList/join/abs)"
     },
     "testing/internal/testdeps": {
@@ -296,6 +305,10 @@
     },
     "C": {
       "tier": "out"
+    },
+    "math/rand/v2": {
+      "tier": "rewrite",
+      "notes": "Minimal IntN/New/NewPCG stub for sort/slices tests"
     }
   }
 }

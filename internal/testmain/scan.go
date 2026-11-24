@@ -512,10 +512,33 @@ func importLocalName(is *ast.ImportSpec) string {
 		return is.Name.Name
 	}
 	path := strings.Trim(is.Path.Value, `"`)
+	base := path
 	if i := strings.LastIndex(path, "/"); i >= 0 {
-		return path[i+1:]
+		base = path[i+1:]
 	}
-	return path
+	// Major-version path suffix (/v2, /v3, …): default name is the prior
+	// element (math/rand/v2 → rand), matching cmd/go — not the "v2" segment.
+	if isMajorVersionSuffix(base) {
+		parent := path[:len(path)-len(base)-1] // trim "/vN"
+		if j := strings.LastIndex(parent, "/"); j >= 0 {
+			return parent[j+1:]
+		}
+		return parent
+	}
+	return base
+}
+
+func isMajorVersionSuffix(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	// v1 is not a major-version import path suffix in modules.
+	return s != "v1"
 }
 
 // WriteStripped writes a FileInfo's AST to destPath.

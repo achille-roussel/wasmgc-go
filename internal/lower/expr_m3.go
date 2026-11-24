@@ -746,13 +746,24 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 			}
 		}
 	} else {
-		for i, el := range e.Elts {
+		// Positional elements map to fields in order; blank (`_`) fields consume
+		// an element (for side effects) but stay zero (issue 31546).
+		ei := 0
+		for i := 0; i < n && ei < len(e.Elts); i++ {
+			el := e.Elts[ei]
+			ei++
 			ex, stmts2, err := fl.structLitField(el, st.Field(i).Type())
 			if err != nil {
 				return nil, nil, err
 			}
 			stmts = append(stmts, stmts2...)
+			if st.Field(i).Name() == "_" {
+				continue // leave vals[i] as the zero from above
+			}
 			vals[i] = ex
+		}
+		if ei != len(e.Elts) {
+			return nil, nil, fl.errorf(e, "too many values in struct literal")
 		}
 	}
 	// Skip zero-size fields in IR args — mapType/structFields already skipped them.
