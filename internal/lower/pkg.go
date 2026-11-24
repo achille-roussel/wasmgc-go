@@ -25,19 +25,26 @@ type pkgLower struct {
 	initCount int
 	initLower *funcLower                  // shared across package var inits
 	globals   map[types.Object]*ir.Global // package-level vars
+	// globalCellElem marks package vars stored as $go.cell.* (address-taken
+	// scalars/refs that need a fat-pointer base). The value is the element IR type.
+	globalCellElem map[types.Object]ir.Type
 }
 
 func (l *pkgLower) lower() error {
 	if l.globals == nil {
 		l.globals = map[types.Object]*ir.Global{}
 	}
+	if l.globalCellElem == nil {
+		l.globalCellElem = map[types.Object]ir.Type{}
+	}
+	addrTaken := l.collectAddrTakenGlobals()
 
 	// Pass 1: declare every package var as a global so forward refs
 	// (e.g. unicode.TurkishCase = _TurkishCase) resolve via lookupGlobal.
 	type varInit struct {
 		name  *ast.Ident
 		obj   types.Object
-		ty    ir.Type
+		ty    ir.Type // element / value IR type (not the cell wrapper)
 		gname string
 		val   ast.Expr // nil → emit Go zero value (needed for struct refs)
 	}
@@ -72,7 +79,16 @@ func (l *pkgLower) lower() error {
 						return l.errorf(name, "%v", err)
 					}
 					gname := pkgIRPrefix(l.pkg) + "." + name.Name
-					g := &ir.Global{Name: gname, Typ: ty, Mut: true}
+					gTyp := ty
+					if addrTaken[obj] {
+						cellName, err := l.ensureCellType(ty)
+						if err != nil {
+							return l.errorf(name, "%v", err)
+						}
+						gTyp = &ir.Ref{Named: cellName, Null: true}
+						l.globalCellElem[obj] = ty
+					}
+					g := &ir.Global{Name: gname, Typ: gTyp, Mut: true}
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
 					if multi {
@@ -83,10 +99,11 @@ func (l *pkgLower) lower() error {
 						pending = append(pending, varInit{
 							name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
 						})
-					} else if needsHeapZero(obj.Type(), ty) {
+					} else if addrTaken[obj] || needsHeapZero(obj.Type(), ty) {
 						// Wasm defaults refnull globals to null, but Go's zero
 						// for a struct value is a usable empty object (e.g.
-						// sync.Map / sync.Mutex package vars).
+						// sync.Map / sync.Mutex package vars). Address-taken
+						// scalars always need a cell allocated in init.
 						pending = append(pending, varInit{
 							name: name, obj: obj, ty: ty, gname: gname,
 						})
@@ -115,11 +132,7 @@ func (l *pkgLower) lower() error {
 			return err
 		}
 		initStmts = append(initStmts, stmts...)
-		initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{
-			Op:     ir.OpGlobalSet,
-			Global: vi.gname,
-			Args:   []ir.Expr{ex},
-		}})
+		initStmts = append(initStmts, fl.storeGlobalInit(vi.obj, vi.gname, ex))
 	}
 	for _, mi := range pendingMulti {
 		if l.initLower == nil {
@@ -310,13 +323,109 @@ func (l *pkgLower) lowerPkgMultiValueSpec(fl *funcLower, names []*ast.Ident, rhs
 			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
 			continue
 		}
-		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
-			Op:     ir.OpGlobalSet,
-			Global: g.Name,
-			Args:   []ir.Expr{ex},
-		}})
+		stmts = append(stmts, fl.storeGlobalInit(obj, g.Name, ex))
 	}
 	return stmts, nil
+}
+
+// collectAddrTakenGlobals finds package-level vars whose address is taken and
+// that need a fat-pointer base (everything except *Struct / *[N]T object pointers).
+// Wasm i32/i64/f32/f64 globals cannot be fat-pointer bases (base is anyref), so
+// those vars are spilled into $go.cell.* heap objects.
+func (l *pkgLower) collectAddrTakenGlobals() map[types.Object]bool {
+	out := map[types.Object]bool{}
+	pkgScope := l.pkg.Scope()
+	for _, f := range l.files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			u, ok := n.(*ast.UnaryExpr)
+			if !ok || u.Op != token.AND {
+				return true
+			}
+			x := ast.Expr(u.X)
+			for {
+				if p, ok := x.(*ast.ParenExpr); ok {
+					x = p.X
+					continue
+				}
+				break
+			}
+			id, _ := x.(*ast.Ident)
+			if id == nil {
+				return true
+			}
+			obj := l.info.Uses[id]
+			if obj == nil {
+				obj = l.info.Defs[id]
+			}
+			v, ok := obj.(*types.Var)
+			if !ok || v == nil || v.Pkg() != l.pkg || v.Parent() != pkgScope {
+				return true
+			}
+			if !isObjectPointer(types.NewPointer(v.Type())) {
+				out[v] = true
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// storeGlobalInit writes the first value of a package global during init.
+// Address-taken scalars are wrapped in a freshly allocated $go.cell.*.
+func (fl *funcLower) storeGlobalInit(obj types.Object, gname string, ex ir.Expr) ir.Stmt {
+	if _, ok := fl.pkg.globalCellElem[obj]; ok {
+		g := fl.pkg.globals[obj]
+		cellTy := g.Typ.(*ir.Ref).Named
+		return &ir.ExprStmt{X: &ir.Instr{
+			Op:     ir.OpGlobalSet,
+			Global: gname,
+			Args: []ir.Expr{&ir.Instr{
+				Op:   ir.OpStructNew,
+				Type: &ir.Ref{Named: cellTy},
+				Args: []ir.Expr{ex},
+			}},
+		}}
+	}
+	return &ir.ExprStmt{X: &ir.Instr{
+		Op:     ir.OpGlobalSet,
+		Global: gname,
+		Args:   []ir.Expr{ex},
+	}}
+}
+
+// readGlobal loads a package var, unwrapping $go.cell.*.v when applicable.
+func (fl *funcLower) readGlobal(obj types.Object, g *ir.Global) ir.Expr {
+	if _, ok := fl.pkg.globalCellElem[obj]; ok {
+		cellTy := g.Typ.(*ir.Ref).Named
+		return &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: cellTy},
+			Field: "v",
+			Args:  []ir.Expr{&ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}},
+		}
+	}
+	return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}
+}
+
+// writeGlobal stores into a package var, updating $go.cell.*.v when applicable.
+func (fl *funcLower) writeGlobal(obj types.Object, g *ir.Global, rhs ir.Expr) []ir.Stmt {
+	if _, ok := fl.pkg.globalCellElem[obj]; ok {
+		cellTy := g.Typ.(*ir.Ref).Named
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+			Op:    ir.OpStructSet,
+			Type:  &ir.Ref{Named: cellTy},
+			Field: "v",
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: g.Name},
+				rhs,
+			},
+		}}}
+	}
+	return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+		Op:     ir.OpGlobalSet,
+		Global: g.Name,
+		Args:   []ir.Expr{rhs},
+	}}}
 }
 
 // needsHeapZero reports whether a package var with no explicit initializer

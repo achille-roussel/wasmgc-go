@@ -626,11 +626,7 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 				}
 			}
 			if g, ok := fl.pkg.globals[obj]; ok {
-				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
-					Op:     ir.OpGlobalSet,
-					Global: g.Name,
-					Args:   []ir.Expr{rhs},
-				}}}, nil
+				return fl.writeGlobal(obj, g, rhs), nil
 			}
 		}
 		if v, err := fl.lookupVar(lhs); err == nil && v != nil {
@@ -688,15 +684,13 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 				if v, ok := obj.(*types.Var); ok {
 					fl.markAssigned(v)
 					if g := fl.lookupGlobal(lhs.Sel); g != nil {
-						return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
-							Op: ir.OpGlobalSet, Global: g.Name, Args: []ir.Expr{rhs},
-						}}}, nil
+						return fl.writeGlobal(v, g, rhs), nil
 					}
 					if id, ok := lhs.X.(*ast.Ident); ok {
 						if pn, ok := fl.info.Uses[id].(*types.PkgName); ok && pn.Imported() != nil {
 							gname := pn.Imported().Name() + "." + lhs.Sel.Name
 							if g := fl.pkg.mod.LookupGlobal(gname); g != nil {
-								gname = g.Name
+								return fl.writeGlobal(v, g, rhs), nil
 							}
 							return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 								Op: ir.OpGlobalSet, Global: gname, Args: []ir.Expr{rhs},

@@ -123,6 +123,13 @@ func (fl *funcLower) ident(e *ast.Ident, want ir.Type) (ir.Expr, []ir.Stmt, erro
 		}
 	}
 	if g := fl.lookupGlobal(e); g != nil {
+		obj := fl.info.Uses[e]
+		if obj == nil {
+			obj = fl.info.Defs[e]
+		}
+		if obj != nil {
+			return fl.readGlobal(obj, g), nil, nil
+		}
 		return &ir.Instr{Op: ir.OpGlobalGet, Global: g.Name}, nil, nil
 	}
 	v, err := fl.lookupVar(e)

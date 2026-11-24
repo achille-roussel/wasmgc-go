@@ -13,7 +13,6 @@ abi/leaf2.go — output mismatch
 abi/method_wrapper.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*S).M p…
 abi/named_results.go — output mismatch: named results / print spacing
 abi/named_return_stuff.go — output mismatch: named returns / print spacing
-abi/open_defer_1.go — wasm validate/compile error: struct.new anyref vs i32 in init
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
 abi/reg_not_ssa.go — output mismatch
@@ -42,7 +41,6 @@ const7.go — could not import os/exec
 convT2X.go — codegen: missing struct field
 convert4.go — runtime error
 convert5.go — failed: build: pipeline: IR verify: duplicate var v_0 in main.main pipeline: IR verify: duplicate var v_0 in…
-copy.go — wasm validate/compile error
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 decl.go — failed: build: pipeline: IR verify: duplicate var h1 in main.main pipeline: IR verify: duplicate var h1 in m…
 defer.go — wasm validate/compile error
@@ -61,7 +59,6 @@ fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug154.go — wasm validate/compile error
-fixedbugs/bug168.go — wasm validate/compile error
 fixedbugs/bug177.go — output mismatch
 fixedbugs/bug178.go — compile error: lower: break label L not in scope
 fixedbugs/bug187.go — wasm validate/compile error
@@ -101,7 +98,6 @@ fixedbugs/bug446.go — failed: panic: dummy1 != 1
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
-fixedbugs/bug494.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*MyInt)…
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/gcc65755.go — compile error: codegen
@@ -126,7 +122,6 @@ fixedbugs/issue15528.go — unsupported: unsafe
 fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue15992.go — compile error: lower: copy wants 2 args
 fixedbugs/issue16095.go — runtime error
-fixedbugs/issue16130.go — failed: panic: got string, expected runtime.Error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue16515.go — compile error: codegen
 fixedbugs/issue16760.go — runtime error
@@ -190,7 +185,6 @@ fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30977.go — compile error: codegen
-fixedbugs/issue31419.go — wasm validate/compile error
 fixedbugs/issue31546.go — output mismatch
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
 fixedbugs/issue32175.go — output mismatch: named result capture through defer CallExpr thunk
@@ -231,14 +225,12 @@ fixedbugs/issue4620.go — output mismatch
 fixedbugs/issue46304.go — runtime error
 fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
-fixedbugs/issue47771.go — compile error: codegen
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
 fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1 destinations but rhs produces 2 values pipeline: IR ver…
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
-fixedbugs/issue51101.go — wasm validate/compile error
 fixedbugs/issue51913.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
@@ -276,7 +268,6 @@ fixedbugs/issue68227.go — wasm validate/compile error
 fixedbugs/issue68322.go — runtime error
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
-fixedbugs/issue68816.go — runtime error
 fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
 fixedbugs/issue70189.go — runtime error
@@ -291,7 +282,6 @@ fixedbugs/issue73917.go — runtime error
 fixedbugs/issue73920.go — runtime error
 fixedbugs/issue75327.go — failed: build: pipeline: IR verify: cannot assign i64 to var h20905 of type i32 in main.foo pipeline: IR ver…
 fixedbugs/issue75365.go — output mismatch
-fixedbugs/issue7550.go — failed: build: pipeline: IR verify: cannot assign refnull $go.slice.go.struct.anon to var sl6 of type refnul…
 fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.outer not in scope pipeline: IR verify: br target $goto.…
 fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ratio loop
 fixedbugs/issue76008.go — output mismatch
@@ -306,7 +296,6 @@ fixedbugs/issue79236b.go — runtime error
 fixedbugs/issue79762.go — runtime error: null deref / stub Stack
 fixedbugs/issue79812.go — compile error: unsupported conversion complex128 → float64
 fixedbugs/issue79886.go — failed: panic: want -2305843009213693952; got 6917529027641081856
-fixedbugs/issue7995.go — wasm validate/compile error
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
 fixedbugs/issue80127.go — runtime error
@@ -314,12 +303,8 @@ fixedbugs/issue80188.go — compile error: codegen
 fixedbugs/issue80196.go — output mismatch: non-nil pointer print
 fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
-fixedbugs/issue80517_1.go — runtime error
-fixedbugs/issue80517_2.go — runtime error
-fixedbugs/issue80517_3.go — runtime error
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue8132.go — compile error: codegen
-fixedbugs/issue81612.go — compile error: codegen
 fixedbugs/issue81863.go — runtime error
 fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
@@ -364,7 +349,6 @@ ken/rob2.go — wasm validate/compile error
 ken/shift.go — wasm validate/compile error
 ken/simparray.go — wasm validate/compile error
 ken/slicearray.go — wasm validate/compile error
-ken/sliceslice.go — wasm validate/compile error
 ken/string.go — output mismatch
 literal2.go — runtime error
 mallocfin.go — compile error: codegen
