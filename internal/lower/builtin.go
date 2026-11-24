@@ -241,11 +241,16 @@ func (fl *funcLower) printIRValue(ex ir.Expr, ty types.Type) ([]ir.Stmt, error) 
 		if err != nil {
 			return nil, err
 		}
-		if irNumWidth(want) == ir.I64 {
+		// Unsigned ≤32-bit: printuint so ^uint(0) / uint8(255) are not
+		// sign-printed. uint64 still lacks a 64-bit print helper.
+		fn := "runtime.printint"
+		if isUnsigned(ty) && irNumWidth(want) != ir.I64 {
+			fn = "runtime.printuint"
+		} else if irNumWidth(want) == ir.I64 {
 			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
 		}
 		return []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}}},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}}},
 		}, nil
 	}
 	if isFloat(ty) {

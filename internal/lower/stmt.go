@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"errors"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -9,6 +10,8 @@ import (
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
+
+var errShiftOpAssignOnce = errors.New("shift op-assign once not used")
 
 func (fl *funcLower) stmtBlock(b *ast.BlockStmt) (ir.Region, error) {
 	if b == nil {
@@ -456,14 +459,17 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 	}
 	out = append(out, stmts...)
 	srcGos := fl.callResultGoTypes(call)
-	for i, t := range temps {
-		if i >= len(s.Lhs) {
-			break
-		}
-		var ex ir.Expr = fl.useTemp(t)
-		dstGo := fl.typeOf(s.Lhs[i])
+	n := len(temps)
+	if n > len(s.Lhs) {
+		n = len(s.Lhs)
+	}
+	rhss := make([]ir.Expr, n)
+	lhs := s.Lhs[:n]
+	for i := 0; i < n; i++ {
+		var ex ir.Expr = fl.useTemp(temps[i])
+		dstGo := fl.typeOf(lhs[i])
 		if dstGo == nil {
-			if id, ok := s.Lhs[i].(*ast.Ident); ok {
+			if id, ok := lhs[i].(*ast.Ident); ok {
 				if obj := fl.info.Defs[id]; obj != nil {
 					dstGo = obj.Type()
 				} else if obj := fl.info.Uses[id]; obj != nil {
@@ -487,12 +493,13 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 			srcGo != nil && !isIface(srcGo) && !isTypeParam(srcGo) {
 			ex = fl.boxIRToIface(ex, srcGo, dstGo)
 		}
-		as, err := fl.assignTo(s.Lhs[i], ex)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, as...)
+		rhss[i] = ex
 	}
+	as, err := fl.assignParallel(lhs, rhss)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, as...)
 	return out, nil
 }
 
@@ -588,6 +595,15 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 		}
 		var rhs ir.Expr
 		if s.Tok != token.ASSIGN && s.Tok != token.DEFINE {
+			// *p / x[i] / m[k] op= y: evaluate the destination before y
+			// (issue 21687 — y must not be able to redirect the store).
+			if as, ok, err := fl.opAssignAddrOnce(s.Lhs[i], s.Tok, s.Rhs[i], want); ok || err != nil {
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, as...)
+				continue
+			}
 			lhsEx, ls, err := fl.expr(s.Lhs[i], want)
 			if err != nil {
 				return nil, err
@@ -741,15 +757,454 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 		out = append(out, as...)
 	}
 	if parallel {
-		for i := range s.Lhs {
-			as, err := fl.assignTo(s.Lhs[i], slots[i].expr)
+		rhss := make([]ir.Expr, len(slots))
+		for i := range slots {
+			rhss[i] = slots[i].expr
+		}
+		as, err := fl.assignParallel(s.Lhs, rhss)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, as...)
+	}
+	return out, nil
+}
+
+// parallelDest captures an LHS destination evaluated before parallel writes.
+type parallelDest struct {
+	kind int // 0=assignTo, 1=slice/array index, 2=star store, 3=map
+	lhs  ast.Expr
+	base *ir.Temp
+	idx  *ir.Temp
+	arr  ir.Type
+	keyT *ir.Temp
+	mT   *ir.Temp
+	keyS string
+	elem string
+	box  string
+}
+
+// prepareParallelDests evaluates IndexExpr/StarExpr addresses before any write
+// so `i, x[i] = 1, 100` and `p, *p = fp()` use the pre-assignment destinations.
+func (fl *funcLower) prepareParallelDests(lhs []ast.Expr) ([]parallelDest, []ir.Stmt, error) {
+	preps := make([]parallelDest, len(lhs))
+	var out []ir.Stmt
+	for i, e := range lhs {
+		switch lx := e.(type) {
+		case *ast.IndexExpr:
+			xt := fl.typeOf(lx.X)
+			if isSlice(xt) || isArray(xt) || isPtrToArray(xt) {
+				base, bstmts, err := fl.expr(lx.X, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				idx, istmts, err := fl.expr(lx.Index, ir.TypeI32)
+				if err != nil {
+					return nil, nil, err
+				}
+				out = append(out, bstmts...)
+				out = append(out, istmts...)
+				if it := fl.typeOf(lx.Index); it != nil {
+					if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+						idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
+					}
+				}
+				baseTy, _ := fl.mapType(xt)
+				if baseTy == nil {
+					baseTy = &ir.Ref{Null: true}
+				}
+				baseT := fl.newTemp(baseTy)
+				idxT := fl.newTemp(ir.TypeI32)
+				out = append(out, fl.assignTemp(baseT, base), fl.assignTemp(idxT, idx))
+				arrTy := ir.Type(ir.TypeI32)
+				if isArray(xt) || isPtrToArray(xt) {
+					elemT := xt
+					if isPtrToArray(xt) {
+						if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
+							elemT = p.Elem()
+						}
+					}
+					if irt, err := fl.mapType(elemT); err == nil {
+						arrTy = irt
+					}
+				}
+				preps[i] = parallelDest{kind: 1, lhs: e, base: baseT, idx: idxT, arr: arrTy}
+				continue
+			}
+			if isMap(xt) {
+				mIR, _ := fl.mapType(xt)
+				if mIR == nil {
+					mIR = &ir.Ref{Null: true, Named: "$go.hmap"}
+				}
+				m, mstmts, err := fl.expr(lx.X, mIR)
+				if err != nil {
+					return nil, nil, err
+				}
+				out = append(out, mstmts...)
+				mT := fl.newTemp(mIR)
+				out = append(out, fl.assignTemp(mT, m))
+				emptyIface := types.NewInterfaceType(nil, nil)
+				key, kstmts, err := fl.convertToIface(lx.Index, fl.typeOf(lx.Index), emptyIface, typeIface)
+				if err != nil {
+					return nil, nil, err
+				}
+				out = append(out, kstmts...)
+				keyT := fl.newTemp(typeIface)
+				out = append(out, fl.assignTemp(keyT, key))
+				keyT0, elemT := mapKeyElem(xt)
+				dp := parallelDest{kind: 3, lhs: e, mT: mT, keyT: keyT}
+				if keyT0 != nil {
+					dp.keyS = desc.TypeKey(keyT0)
+				}
+				if elemT != nil {
+					dp.elem = desc.TypeKey(elemT)
+					dp.box = boxKind(elemT)
+				}
+				preps[i] = dp
+				continue
+			}
+		case *ast.StarExpr:
+			ptr, pstmts, err := fl.expr(lx.X, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, pstmts...)
+			ptrTy, _ := fl.mapType(fl.typeOf(lx.X))
+			if ptrTy == nil {
+				ptrTy = &ir.Ref{Null: true}
+			}
+			ptrT := fl.newTemp(ptrTy)
+			out = append(out, fl.assignTemp(ptrT, ptr))
+			preps[i] = parallelDest{kind: 2, lhs: e, base: ptrT}
+			continue
+		}
+		preps[i] = parallelDest{kind: 0, lhs: e}
+	}
+	return preps, out, nil
+}
+
+func (fl *funcLower) commitParallelDest(p parallelDest, rhs ir.Expr) ([]ir.Stmt, error) {
+	switch p.kind {
+	case 1:
+		xt := fl.typeOf(p.lhs.(*ast.IndexExpr).X)
+		if isSlice(xt) {
+			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
+		}
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: p.arr, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
+	case 2:
+		return fl.assignToSavedStar(p.lhs.(*ast.StarExpr), fl.useTemp(p.base), rhs)
+	case 3:
+		val := rhs
+		if p.elem != "" && p.box != "" {
+			xt := fl.typeOf(p.lhs.(*ast.IndexExpr).X)
+			_, elemT := mapKeyElem(xt)
+			if elemT != nil && !isIface(elemT) {
+				emptyIface := types.NewInterfaceType(nil, nil)
+				itab := desc.ItabGlobal(emptyIface, elemT)
+				val = &ir.Instr{
+					Op: ir.OpIfaceMake, Type: typeIface, Global: itab,
+					Str: "type:" + desc.TypeKey(elemT), Field: p.box, Args: []ir.Expr{rhs},
+				}
+			}
+		}
+		set := &ir.Instr{Op: ir.OpMapSet, Args: []ir.Expr{fl.useTemp(p.mT), fl.useTemp(p.keyT), val}}
+		if p.keyS != "" {
+			set.Str = p.keyS
+		}
+		if p.elem != "" {
+			set.Global = p.elem
+			set.Field = p.box
+		}
+		return []ir.Stmt{&ir.ExprStmt{X: set}}, nil
+	default:
+		return fl.assignTo(p.lhs, rhs)
+	}
+}
+
+// assignParallel writes rhs[i] into lhs[i] after evaluating destinations first.
+func (fl *funcLower) assignParallel(lhs []ast.Expr, rhs []ir.Expr) ([]ir.Stmt, error) {
+	preps, out, err := fl.prepareParallelDests(lhs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range lhs {
+		as, err := fl.commitParallelDest(preps[i], rhs[i])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, as...)
+	}
+	return out, nil
+}
+
+// assignToSavedStar is assignTo for *p when the pointer expression was already
+// evaluated into ptr (parallel assignment).
+func (fl *funcLower) assignToSavedStar(lhs *ast.StarExpr, ptr, rhs ir.Expr) ([]ir.Stmt, error) {
+	var stmts []ir.Stmt
+	if xt := fl.typeOf(lhs.X); xt != nil && isObjectPointer(xt) {
+		elem := types.Unalias(xt).Underlying().(*types.Pointer).Elem()
+		if arr, ok := types.Unalias(elem).Underlying().(*types.Array); ok {
+			arrIR, err := fl.mapType(elem)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, as...)
+			r, ok := arrIR.(*ir.Ref)
+			if !ok || r.Named == "" {
+				return nil, fl.errorf(lhs, "star assign: bad array type")
+			}
+			if _, _, err := fl.pkg.ensureArrayType(arr.Elem()); err != nil {
+				return nil, err
+			}
+			rhsT := fl.newTemp(arrIR)
+			stmts = append(stmts, fl.assignTemp(rhsT, rhs))
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpArrayCopy, Type: arrIR, Type2: arrIR,
+				Args: []ir.Expr{
+					ptr, fl.i32const(0),
+					fl.useTemp(rhsT), fl.i32const(0),
+					fl.i32const(arr.Len()),
+				},
+			}})
+			return stmts, nil
+		}
+		name, err := fl.mapType(elem)
+		if err != nil {
+			return nil, err
+		}
+		r, ok := name.(*ir.Ref)
+		if !ok || r.Named == "" {
+			return nil, fl.errorf(lhs, "star assign: bad struct type")
+		}
+		td := fl.mod.LookupType(r.Named)
+		if td == nil {
+			return nil, fl.errorf(lhs, "star assign: unknown type %s", r.Named)
+		}
+		rhsT := fl.newTemp(name)
+		stmts = append(stmts, fl.assignTemp(rhsT, rhs))
+		for _, f := range td.Fields {
+			get := &ir.Instr{
+				Op: ir.OpStructGet, Type: name, Field: f.Name,
+				Args: []ir.Expr{fl.useTemp(rhsT)},
+			}
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpStructSet, Type: name, Field: f.Name,
+				Args: []ir.Expr{ptr, get},
+			}})
+		}
+		return stmts, nil
+	}
+	stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{ptr, rhs}}})
+	return stmts, nil
+}
+
+
+// opAssignAddrOnce lowers *p/x[i]/m[k] op= y with the destination evaluated
+// before y. Returns ok=false to fall back to the generic op-assign path.
+func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.Expr, want ir.Type) ([]ir.Stmt, bool, error) {
+	combine := func(lhsEx, rhsEx ir.Expr, lhsGo types.Type) (ir.Expr, error) {
+		if tok == token.ADD_ASSIGN && lhsGo != nil && isString(lhsGo) {
+			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{lhsEx, rhsEx}}, nil
+		}
+		if tok == token.AND_NOT_ASSIGN {
+			if irNumWidth(want) == ir.I64 {
+				ynot := &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{rhsEx, fl.i64const(-1)}}
+				return &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}, nil
+			}
+			ynot := &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{rhsEx, fl.i32const(-1)}}
+			return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}, nil
+		}
+		if tok == token.SHL_ASSIGN || tok == token.SHR_ASSIGN {
+			return nil, errShiftOpAssignOnce
+		}
+		op, err := fl.binaryOpFromAssign(tok, lhsGo)
+		if err != nil {
+			return nil, err
+		}
+		out := ir.Expr(&ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}})
+		switch tok {
+		case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
+			token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN:
+			out = fl.truncateInt(out, lhsGo)
+		}
+		return out, nil
+	}
+
+	switch lhs := lhs.(type) {
+	case *ast.StarExpr:
+		xt := fl.typeOf(lhs.X)
+		if xt != nil && isObjectPointer(xt) {
+			return nil, false, nil // object-pointer *T uses field copy path
+		}
+		ptr, pstmts, err := fl.expr(lhs.X, nil)
+		if err != nil {
+			return nil, true, err
+		}
+		var out []ir.Stmt
+		out = append(out, pstmts...)
+		ptrTy, _ := fl.mapType(xt)
+		if ptrTy == nil {
+			ptrTy = &ir.Ref{Null: true, Named: "$go.ptr.i32"}
+		}
+		ptrT := fl.newTemp(ptrTy)
+		out = append(out, fl.assignTemp(ptrT, ptr))
+		loadT := fl.newTemp(want)
+		out = append(out, fl.assignTemp(loadT, &ir.Instr{Op: ir.OpDeref, Type: want, Args: []ir.Expr{fl.useTemp(ptrT)}}))
+		rhsEx, rs, err := fl.expr(rhsAst, want)
+		if err != nil {
+			return nil, true, err
+		}
+		out = append(out, rs...)
+		combined, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
+		if err != nil {
+			return nil, true, err
+		}
+		out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{fl.useTemp(ptrT), combined}}})
+		return out, true, nil
+
+	case *ast.IndexExpr:
+		xt := fl.typeOf(lhs.X)
+		if isMap(xt) {
+			mIR, err := fl.mapType(xt)
+			if err != nil {
+				return nil, true, err
+			}
+			m, mstmts, err := fl.expr(lhs.X, mIR)
+			if err != nil {
+				return nil, true, err
+			}
+			var out []ir.Stmt
+			out = append(out, mstmts...)
+			mT := fl.newTemp(mIR)
+			out = append(out, fl.assignTemp(mT, m))
+			emptyIface := types.NewInterfaceType(nil, nil)
+			key, kstmts, err := fl.convertToIface(lhs.Index, fl.typeOf(lhs.Index), emptyIface, typeIface)
+			if err != nil {
+				return nil, true, err
+			}
+			out = append(out, kstmts...)
+			keyT := fl.newTemp(typeIface)
+			out = append(out, fl.assignTemp(keyT, key))
+			keyT0, elemT := mapKeyElem(xt)
+			get := &ir.Instr{Op: ir.OpMapGet, Type: want, Args: []ir.Expr{fl.useTemp(mT), fl.useTemp(keyT)}}
+			if keyT0 != nil {
+				get.Str = desc.TypeKey(keyT0)
+			}
+			if elemT != nil {
+				get.Global = desc.TypeKey(elemT)
+				get.Field = boxKind(elemT)
+			}
+			oldT := fl.newTemp(want)
+			out = append(out, fl.assignTemp(oldT, get))
+			rhsEx, rs, err := fl.expr(rhsAst, want)
+			if err != nil {
+				return nil, true, err
+			}
+			out = append(out, rs...)
+			combined, err := combine(fl.useTemp(oldT), rhsEx, fl.typeOf(lhs))
+			if err != nil {
+				return nil, true, err
+			}
+			// Store using saved map+key (not re-evaluating lhs.X).
+			var val ir.Expr = combined
+			if elemT != nil && !isIface(elemT) {
+				box := boxKind(elemT)
+				itab := desc.ItabGlobal(emptyIface, elemT)
+				val = &ir.Instr{
+					Op: ir.OpIfaceMake, Type: typeIface, Global: itab,
+					Str: "type:" + desc.TypeKey(elemT), Field: box, Args: []ir.Expr{combined},
+				}
+			}
+			set := &ir.Instr{Op: ir.OpMapSet, Args: []ir.Expr{fl.useTemp(mT), fl.useTemp(keyT), val}}
+			if keyT0 != nil {
+				set.Str = desc.TypeKey(keyT0)
+			}
+			if elemT != nil {
+				set.Global = desc.TypeKey(elemT)
+				set.Field = boxKind(elemT)
+			}
+			out = append(out, &ir.ExprStmt{X: set})
+			return out, true, nil
+		}
+		if isSlice(xt) || isArray(xt) || isPtrToArray(xt) {
+			base, bstmts, err := fl.expr(lhs.X, nil)
+			if err != nil {
+				return nil, true, err
+			}
+			idx, istmts, err := fl.expr(lhs.Index, ir.TypeI32)
+			if err != nil {
+				return nil, true, err
+			}
+			var out []ir.Stmt
+			out = append(out, bstmts...)
+			out = append(out, istmts...)
+			if it := fl.typeOf(lhs.Index); it != nil {
+				if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+					idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
+				}
+			}
+			baseTy, _ := fl.mapType(xt)
+			if baseTy == nil {
+				baseTy = &ir.Ref{Null: true}
+			}
+			baseT := fl.newTemp(baseTy)
+			idxT := fl.newTemp(ir.TypeI32)
+			out = append(out, fl.assignTemp(baseT, base), fl.assignTemp(idxT, idx))
+			var loaded ir.Expr
+			if isSlice(xt) {
+				loaded = &ir.Instr{Op: ir.OpSliceGet, Type: want, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT)}}
+			} else {
+				arrT := xt
+				if isPtrToArray(xt) {
+					if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
+						arrT = p.Elem()
+					}
+				}
+				arrName := ""
+				arrIR, _ := fl.mapType(arrT)
+				if r, ok := arrIR.(*ir.Ref); ok {
+					arrName = r.Named
+					arrIR = &ir.Ref{Named: arrName}
+				}
+				op := ir.OpArrayGet
+				switch arrName {
+				case "$go.bytes":
+					op = ir.OpArrayGetU
+				case "$go.i16s":
+					if et := arrayElemType(arrT); et != nil && isUnsigned(et) {
+						op = ir.OpArrayGetU
+					} else {
+						op = ir.OpArrayGetS
+					}
+				}
+				loaded = &ir.Instr{Op: op, Type: arrIR, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT)}}
+			}
+			loadT := fl.newTemp(want)
+			out = append(out, fl.assignTemp(loadT, loaded))
+			rhsEx, rs, err := fl.expr(rhsAst, want)
+			if err != nil {
+				return nil, true, err
+			}
+			out = append(out, rs...)
+			combined, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
+			if err != nil {
+				return nil, true, err
+			}
+			if isSlice(xt) {
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT), combined}}})
+			} else {
+				arrT := xt
+				if isPtrToArray(xt) {
+					if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
+						arrT = p.Elem()
+					}
+				}
+				arrIR, _ := fl.mapType(arrT)
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: arrIR, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT), combined}}})
+			}
+			return out, true, nil
 		}
 	}
-	return out, nil
+	return nil, false, nil
 }
 
 func (fl *funcLower) multiAssign(s *ast.AssignStmt) ([]ir.Stmt, error) {
@@ -802,16 +1257,19 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 		Rhs: ex,
 	})
 	assertGo := fl.typeOf(ta.Type)
-	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), assertGo)
+	v0, err := fl.maybeBoxExpr(fl.useTemp(vt), assertGo, s.Lhs[0])
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
+	v1, err := fl.maybeBoxExpr(fl.useTemp(ot), types.Typ[types.Bool], s.Lhs[1])
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, as0...)
-	out = append(out, as1...)
+	as, err := fl.assignParallel(s.Lhs, []ir.Expr{v0, v1})
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, as...)
 	return out, nil
 }
 
@@ -1124,17 +1582,31 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 	for i, r := range s.Results {
 		var want ir.Type
 		var dstGo types.Type
+		var resObj types.Object
 		if i < len(fl.results) {
 			want = fl.results[i]
 		}
 		if fl.sig != nil && i < fl.sig.Results().Len() {
-			dstGo = fl.sig.Results().At(i).Type()
+			resObj = fl.sig.Results().At(i)
+			dstGo = resObj.Type()
 		}
 		ex, stmts, err := fl.coerceExpr(r, dstGo, want)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, stmts...)
+		if i < len(fl.namedResults) && fl.namedResults[i] != nil {
+			out = append(out, fl.assignLocalSync(resObj, fl.namedResults[i], ex)...)
+			if resObj != nil {
+				if rx, err := fl.readVar(resObj); err == nil {
+					ex = rx
+				} else {
+					ex = fl.useVar(fl.namedResults[i])
+				}
+			} else {
+				ex = fl.useVar(fl.namedResults[i])
+			}
+		}
 		results = append(results, ex)
 	}
 	out = append(out, &ir.Return{Results: results})
@@ -1288,6 +1760,139 @@ func (fl *funcLower) labeledStmt(s *ast.LabeledStmt) ([]ir.Stmt, error) {
 
 // rangeStmt lowers for-range over slices/arrays (index loop), maps, and
 // channels (recv until !ok). Strings wait for a later milestone.
+func isBlankIdent(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "_"
+}
+
+// emitRangeAssignForm evaluates LHS addresses first, then assigns key/val
+// left-to-right (Go parallel assignment; needed for `i, x[i] = range`).
+func (fl *funcLower) emitRangeAssignForm(
+	s *ast.RangeStmt,
+	needKey, needVal bool,
+	keyEx, valEx ir.Expr,
+	keyObj types.Object, keyVar *ir.Var,
+	valObj types.Object, valVar *ir.Var,
+) ([]ir.Stmt, error) {
+	var out []ir.Stmt
+	var keyTmp, valTmp *ir.Temp
+	if needKey {
+		kt := ir.Type(ir.TypeI32)
+		if keyVar != nil {
+			kt = keyVar.Typ
+		}
+		keyTmp = fl.newTemp(kt)
+		out = append(out, fl.assignTemp(keyTmp, keyEx))
+	}
+	if needVal {
+		vt := ir.Type(ir.TypeI32)
+		if valVar != nil {
+			vt = valVar.Typ
+		}
+		valTmp = fl.newTemp(vt)
+		out = append(out, fl.assignTemp(valTmp, valEx))
+	}
+	type prepared struct {
+		lhs  ast.Expr
+		prep []ir.Stmt
+		base ir.Expr
+		idx  ir.Expr
+		kind int
+		arr  ir.Type
+	}
+	var preps []prepared
+	prepare := func(lhs ast.Expr) error {
+		if ix, ok := lhs.(*ast.IndexExpr); ok {
+			xt := fl.typeOf(ix.X)
+			if isSlice(xt) || isArray(xt) || isPtrToArray(xt) {
+				base, stmts, err := fl.expr(ix.X, nil)
+				if err != nil {
+					return err
+				}
+				idx, istmts, err := fl.expr(ix.Index, ir.TypeI32)
+				if err != nil {
+					return err
+				}
+				stmts = append(stmts, istmts...)
+				if it := fl.typeOf(ix.Index); it != nil {
+					if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+						idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
+					}
+				}
+				idxT := fl.newTemp(ir.TypeI32)
+				baseTy, _ := fl.mapType(xt)
+				if baseTy == nil {
+					baseTy = &ir.Ref{Null: true}
+				}
+				baseT := fl.newTemp(baseTy)
+				stmts = append(stmts, fl.assignTemp(baseT, base), fl.assignTemp(idxT, idx))
+				arrTy := ir.Type(ir.TypeI32)
+				if isArray(xt) || isPtrToArray(xt) {
+					elemT := xt
+					if isPtrToArray(xt) {
+						if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
+							elemT = p.Elem()
+						}
+					}
+					if irt, err := fl.mapType(elemT); err == nil {
+						arrTy = irt
+					}
+				}
+				preps = append(preps, prepared{lhs: lhs, prep: stmts, base: fl.useTemp(baseT), idx: fl.useTemp(idxT), kind: 1, arr: arrTy})
+				return nil
+			}
+		}
+		preps = append(preps, prepared{lhs: lhs, kind: 0})
+		return nil
+	}
+	if needKey {
+		if err := prepare(s.Key); err != nil {
+			return nil, err
+		}
+	}
+	if needVal {
+		if err := prepare(s.Value); err != nil {
+			return nil, err
+		}
+	}
+	for _, p := range preps {
+		out = append(out, p.prep...)
+	}
+	pi := 0
+	commit := func(p prepared, rhs ir.Expr, obj types.Object, v *ir.Var) error {
+		if p.kind == 1 {
+			if isSlice(fl.typeOf(p.lhs.(*ast.IndexExpr).X)) {
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{p.base, p.idx, rhs}}})
+			} else {
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: p.arr, Args: []ir.Expr{p.base, p.idx, rhs}}})
+			}
+			return nil
+		}
+		if v != nil {
+			out = append(out, fl.assignLocalSync(obj, v, rhs)...)
+			return nil
+		}
+		as, err := fl.assignTo(p.lhs, rhs)
+		if err != nil {
+			return err
+		}
+		out = append(out, as...)
+		return nil
+	}
+	if needKey {
+		if err := commit(preps[pi], fl.useTemp(keyTmp), keyObj, keyVar); err != nil {
+			return nil, err
+		}
+		pi++
+	}
+	if needVal {
+		if err := commit(preps[pi], fl.useTemp(valTmp), valObj, valVar); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, error) {
 	prevDeferLoop := fl.deferInLoop
 	fl.deferInLoop = true
@@ -1351,10 +1956,13 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	// key is a plain int; assign-form / iface keys need an explicit write each
 	// iteration (with boxing when ranging into any/iface).
 	var keyVar *ir.Var
+	var keyObj, valObj types.Object
 	keyAliasIndex := false
 	if s.Key != nil {
 		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
-			if keyObj := fl.info.Defs[id]; keyObj != nil {
+			if obj := fl.info.Defs[id]; obj != nil {
+				keyObj = obj
+				fl.markRangeIterVar(keyObj)
 				keyGo := keyObj.Type()
 				if len(fl.pkg.subst) > 0 {
 					keyGo = fl.pkg.subst.Apply(keyGo)
@@ -1363,6 +1971,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 					fl.vars[keyObj] = i
 					keyAliasIndex = true
 				}
+			} else if obj := fl.info.Uses[id]; obj != nil {
+				keyObj = obj
 			}
 			if !keyAliasIndex {
 				v, defs, err := fl.defineLocal(id)
@@ -1377,6 +1987,11 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	var valVar *ir.Var
 	if s.Value != nil {
 		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
+			if obj := fl.info.Defs[id]; obj != nil {
+				valObj = obj
+			} else if obj := fl.info.Uses[id]; obj != nil {
+				valObj = obj
+			}
 			v, defs, err := fl.defineLocal(id)
 			if err != nil {
 				return nil, err
@@ -1413,23 +2028,18 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		Label: breakL,
 		Cond:  &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
 	})
-	if keyVar != nil {
-		// Index is i32; box when the range key is any/iface.
-		keyEx := ir.Expr(fl.useVar(i))
-		if keyGo := fl.goTypeOfLocal(keyVar); keyGo != nil && isIface(keyGo) && !isTypeParam(keyGo) {
-			keyEx = fl.boxIRToIface(keyEx, types.Typ[types.Int], keyGo)
-		}
-		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, keyEx))
-	}
-	if valVar != nil {
+	keyEx := ir.Expr(fl.useVar(i))
+	var elem ir.Expr
+	needVal := s.Value != nil && !isBlankIdent(s.Value)
+	needKey := s.Key != nil && !isBlankIdent(s.Key)
+	var elemIR ir.Type
+	if needVal || (needKey && keyVar == nil && s.Tok != token.DEFINE) {
 		elemGo := rangeElemType(xType)
-		elemIR, _ := fl.mapType(elemGo)
-		if elemIR == nil {
+		elemIR, _ = fl.mapType(elemGo)
+		if elemIR == nil && valVar != nil {
 			elemIR = valVar.Typ
 		}
-		var elem ir.Expr
 		if isArray(xType) || isPtrToArray(xType) {
-			// Match indexExpr: array.get / array.get_u for [N]byte etc.
 			arrName := ""
 			arrT := xType
 			if isPtrToArray(xType) {
@@ -1461,11 +2071,38 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		} else {
 			elem = &ir.Instr{Op: ir.OpSliceGet, Type: elemIR, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
 		}
-		if valGo := fl.goTypeOfLocal(valVar); valGo != nil && isIface(valGo) && !isTypeParam(valGo) &&
-			elemGo != nil && !isIface(elemGo) && !isTypeParam(elemGo) {
-			elem = fl.boxIRToIface(elem, elemGo, valGo)
+		if valVar != nil {
+			if valGo := fl.goTypeOfLocal(valVar); valGo != nil && isIface(valGo) && !isTypeParam(valGo) &&
+				elemGo != nil && !isIface(elemGo) && !isTypeParam(elemGo) {
+				elem = fl.boxIRToIface(elem, elemGo, valGo)
+			}
 		}
-		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
+	}
+
+	assignForm := s.Tok != token.DEFINE
+	if assignForm && (needKey || needVal) {
+		var kx ir.Expr = keyEx
+		if keyVar != nil {
+			if keyGo := fl.goTypeOfLocal(keyVar); keyGo != nil && isIface(keyGo) && !isTypeParam(keyGo) {
+				kx = fl.boxIRToIface(keyEx, types.Typ[types.Int], keyGo)
+			}
+		}
+		as, err := fl.emitRangeAssignForm(s, needKey, needVal, kx, elem, keyObj, keyVar, valObj, valVar)
+		if err != nil {
+			return nil, err
+		}
+		bodySeq.Stmts = append(bodySeq.Stmts, as...)
+	} else {
+		if keyVar != nil {
+			kx := keyEx
+			if keyGo := fl.goTypeOfLocal(keyVar); keyGo != nil && isIface(keyGo) && !isTypeParam(keyGo) {
+				kx = fl.boxIRToIface(keyEx, types.Typ[types.Int], keyGo)
+			}
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, kx))
+		}
+		if valVar != nil {
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
+		}
 	}
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
@@ -1500,20 +2137,51 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 	i := fl.newVar("rsi", ir.TypeI32)
 	out = append(out, fl.assignVar(i, fl.i32const(0)))
 
-	needRune := s.Value != nil
+	needRune := s.Value != nil && !isBlankIdent(s.Value)
+	assignForm := s.Tok != token.DEFINE
 	var runeV *ir.Var
+	var keyObj, valObj types.Object
+	var keyVar, valVar *ir.Var
+	keyAliasIndex := false
 	if s.Key != nil {
 		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
 			if obj := fl.info.Defs[id]; obj != nil {
+				keyObj = obj
+				fl.markRangeIterVar(obj)
 				fl.vars[obj] = i
+				keyAliasIndex = true
+			} else if obj := fl.info.Uses[id]; obj != nil {
+				keyObj = obj
+			}
+			if !keyAliasIndex {
+				v, defs, err := fl.defineLocal(id)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, defs...)
+				keyVar = v
 			}
 		}
 	}
 	if needRune {
 		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
 			if obj := fl.info.Defs[id]; obj != nil {
-				runeV = fl.newVar(id.Name, ir.TypeI32)
-				fl.vars[obj] = runeV
+				valObj = obj
+				v, defs, err := fl.defineLocal(id)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, defs...)
+				valVar = v
+				runeV = v
+			} else if obj := fl.info.Uses[id]; obj != nil {
+				valObj = obj
+				v, defs, err := fl.defineLocal(id)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, defs...)
+				valVar = v
 			}
 		}
 		if runeV == nil {
@@ -1588,6 +2256,22 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 			}}},
 		}}},
 	})
+
+	// Assign-form: copy iteration key/value into LHS (with parallel IndexExpr prep).
+	if assignForm {
+		needKey := s.Key != nil && !isBlankIdent(s.Key)
+		needVal := needRune
+		as, err := fl.emitRangeAssignForm(s, needKey, needVal, fl.useVar(i), func() ir.Expr {
+			if runeV != nil {
+				return fl.useVar(runeV)
+			}
+			return fl.i32const(0)
+		}(), keyObj, keyVar, valObj, valVar)
+		if err != nil {
+			return nil, err
+		}
+		bodySeq.Stmts = append(bodySeq.Stmts, as...)
+	}
 
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
@@ -1755,6 +2439,7 @@ func (fl *funcLower) rangeIntStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 	if s.Key != nil {
 		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
 			if obj := fl.info.Defs[id]; obj != nil {
+				fl.markRangeIterVar(obj)
 				fl.vars[obj] = i
 			}
 		}
@@ -1781,10 +2466,15 @@ func (fl *funcLower) rangeIntStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 		}
 	}()
 
+	// Signed bounds: `range -1` must not run (Go spec). Unsigned keeps ge_u.
+	geOp := ir.OpI32GeS
+	if isUnsigned(fl.typeOf(s.X)) {
+		geOp = ir.OpI32GeU
+	}
 	bodySeq := &ir.Seq{}
 	bodySeq.Stmts = append(bodySeq.Stmts, &ir.Br{
 		Label: breakL,
-		Cond:  &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(nV)}},
+		Cond:  &ir.Instr{Op: geOp, Args: []ir.Expr{fl.useVar(i), fl.useVar(nV)}},
 	})
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
