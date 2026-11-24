@@ -69,6 +69,9 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 		pkgName := af.Name.Name
 		ext := strings.HasSuffix(pkgName, "_test")
 		// Strip benchmarks/examples/fuzz and skipped tests before typecheck.
+		// Also drop helpers whose first param is *testing.B (e.g. lowercase
+		// benchmarkFoo) so the thin testing.B stub need not implement the
+		// full harness API for packages that still have live Test* funcs.
 		stripFuncs(af, func(name string) bool {
 			if isBenchmarkOrExampleOrFuzz(name) {
 				return true
@@ -78,6 +81,7 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 			}
 			return false
 		})
+		stripTestingBHelpers(af)
 		pruneUnusedImports(af)
 		baseName := filepath.Base(f)
 		keepExport := !ext && (baseName == "export_test.go" || strings.HasPrefix(baseName, "export_"))
@@ -224,6 +228,41 @@ func stripFuncs(f *ast.File, drop func(name string) bool) {
 		keep = append(keep, d)
 	}
 	f.Decls = keep
+}
+
+// stripTestingBHelpers drops package-level funcs whose first parameter is
+// *testing.B (or testing.B). Named Benchmark* are already removed by
+// stripFuncs; this catches unexported helpers like benchmarkCompareBytesBig.
+func stripTestingBHelpers(f *ast.File) {
+	var keep []ast.Decl
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if ok && fd.Recv == nil && funcFirstParamIsTestingB(fd) {
+			continue
+		}
+		keep = append(keep, d)
+	}
+	f.Decls = keep
+}
+
+func funcFirstParamIsTestingB(fd *ast.FuncDecl) bool {
+	if fd.Type == nil || fd.Type.Params == nil || len(fd.Type.Params.List) == 0 {
+		return false
+	}
+	p := fd.Type.Params.List[0].Type
+	return isTestingBType(p)
+}
+
+func isTestingBType(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return isTestingBType(t.X)
+	case *ast.SelectorExpr:
+		pkg, ok := t.X.(*ast.Ident)
+		return ok && pkg.Name == "testing" && t.Sel != nil && t.Sel.Name == "B"
+	default:
+		return false
+	}
 }
 
 func fileHasFuncs(f *ast.File) bool {

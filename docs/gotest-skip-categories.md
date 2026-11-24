@@ -7,7 +7,7 @@ skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
 **Current (this PR):** `$GOROOT/test` **~607** pass / **419** skip-listed; stdlib
-per-test **612** (was 624 after #48).
+per-test **500** (was 612 after #49).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -52,35 +52,34 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **612** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **500** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
-| encoding/json | 171 | Blanket + StructOf | StructOf **by design**; rest fixable |
+| encoding/json | 170 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
-| bytes | 80 | Test file typecheck/load | Compile gaps |
-| strings | 61 | Test file typecheck/load | Compile gaps |
-| slices | 54 | Typecheck / runtime | Compile + runtime |
-| fmt | **41** | scan_test→regexp; shared tables; reflect | Was 51; 10 printers unskipped |
+| fmt | 41 | scan_test→regexp; shared tables; reflect | Fixable |
+| slices | **39** | Insert/Delete/Replace generics; iter+rand/v2 | Was 54 |
 | sort | 27 | Tables / pdqsort / stable | Runtime |
 | math/bits | 25 | `uint64`→`uint` overflow on 32-bit word | Sizes / build tags |
+| bytes | **23** | Remaining validate + IndexAny/Split/Repeat | Was 80 |
+| strings | **21** | Compare IR; Builder/Map leftovers | Was 61 |
 | errors | 4 | `As`/`Is`/`AsType` reflectlite | **Fixable** |
 | strconv | 3 | ParseComplex + AllocsPerRun | complex reflect |
 | maps | 1 | `Clone` large keys / `-0` | Overlay |
-| container/heap | 1 | `sync/atomic` fat pointer | unsafe/atomic |
-| encoding/gob | 1 | StructOf/ArrayOf | **by design** |
-| math | **0** | ~~MaxUint wrap~~ — truncateInt | **done** |
+| container/heap | 1 | remaining | Fixable |
+| math | **0** | — | **done** |
 | container/ring | 0 | — | **done** |
 | unicode/utf8 | 0 | — | **done** |
 | container/list | 0 | — | Passing |
 
 ### Highest-ROI stdlib unlocks (next)
 
-1. **fmt** scan_test / regexp IR temp-outside-region; shared `fmtTests` `array.new_fixed`.
-2. **errors** `As`/`Is` (4) — reflectlite Set / Implements.
-3. **strconv** ParseComplex — complex128 reflect Kind.
-4. Unlock **bytes/strings/slices** typecheck failures.
-5. Un-blanket **json / time** after export_test / http / zoneinfo depth.
+1. **json / time** — http stubs, export_test, zoneinfo depth.
+2. **fmt** scan_test / regexp IR; shared `fmtTests`.
+3. **slices** Insert/Delete/Replace unsubstituted type params; `math/rand/v2`.
+4. **bytes** IndexAny / Split / validate leftovers.
+5. GOROOT compile / wasm-validate buckets.
 
 ---
 
@@ -88,10 +87,10 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | PR | Category | Status |
 |---|---|---|
-| Through #48 | GOROOT + math/strconv/errors.Join | **done** (~604/422; stdlib 624) |
-| fmt printers + math wrap + byte/rune TypeKey | stdlib + GOROOT | **this PR** |
-| fmt scan/regexp + json/time | stdlib | next |
-| GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
+| Through #49 | GOROOT + fmt/math/TypeKey | **done** (~607/419; stdlib 612) |
+| bytes/strings/slices typecheck unlock | stdlib | **this PR** (−112) |
+| json/time + fmt scan | stdlib | next |
+| GOROOT compile/validate buckets | GOROOT | −15+ each batch |
 
 ---
 
@@ -104,20 +103,21 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | `$GOROOT/test` | 380 | 646 |
 | Stdlib per-test | — | ~1038 |
 
-### After PR #48
+### After PR #49
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | ~604 | 422 |
-| Stdlib per-test | — | 624 |
+| `$GOROOT/test` | ~607 | 419 |
+| Stdlib per-test | — | 612 |
 
 ### After this PR
 
 | Layer | Pass | Skip |
 |---|---:|---:|
 | `$GOROOT/test` | **~607** | **419** |
-| fmt | 10 more | **41** (was 51) |
-| math | full package | **0** (was 2) |
-| Stdlib per-test | — | **612** |
+| bytes | 57 more | **23** (was 80) |
+| strings | 40 more | **21** (was 61) |
+| slices | 15 more | **39** (was 54) |
+| Stdlib per-test | — | **500** |
 
 Update this section when a burn-down PR lands.

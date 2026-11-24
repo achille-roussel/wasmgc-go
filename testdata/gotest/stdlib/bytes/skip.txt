@@ -1,81 +1,24 @@
 # bytes — wasmgc-go test skips
-TestBasicOperations — compile: load: typecheck bytes_test:
-TestBufferGrowNegative — compile: load: typecheck bytes_test:
 TestBufferGrowth — compile: wasm compile/validate error
-TestBufferTruncateNegative — compile: load: typecheck bytes_test:
-TestBufferTruncateOutOfRange — compile: load: typecheck bytes_test:
 TestCapWithSliceAndWrittenData — compile: wasm compile/validate error
-TestClone — compile: load: typecheck bytes_test:
-TestCompare — compile: load: typecheck bytes_test:
-TestCompareBytes — compile: load: typecheck bytes_test:
-TestCompareIdenticalSlice — compile: load: typecheck bytes_test:
-TestContains — compile: load: typecheck bytes_test:
-TestContainsAny — compile: load: typecheck bytes_test:
-TestContainsFunc — compile: load: typecheck bytes_test:
-TestContainsRune — compile: load: typecheck bytes_test:
-TestCountByte — compile: load: typecheck bytes_test:
-TestCountByteNoMatch — compile: load: typecheck bytes_test:
-TestCut — compile: load: typecheck bytes_test:
-TestCutLast — compile: load: typecheck bytes_test:
-TestCutPrefix — compile: load: typecheck bytes_test:
-TestCutSuffix — compile: load: typecheck bytes_test:
-TestEndianBaseCompare — compile: load: typecheck bytes_test:
-TestEqual — compile: load: typecheck bytes_test:
-TestEqualExhaustive — compile: load: typecheck bytes_test:
-TestEqualFold — compile: load: typecheck bytes_test:
-TestFields — compile: load: typecheck bytes_test:
-TestFieldsFunc — compile: load: typecheck bytes_test:
 TestGrow — compile: wasm compile/validate error
 TestGrowOverflow — compile: wasm compile/validate error
-TestIndex — compile: load: typecheck bytes_test:
-TestIndexAny — compile: load: typecheck bytes_test:
-TestIndexByte — compile: load: typecheck bytes_test:
-TestIndexByteBig — compile: load: typecheck bytes_test:
-TestIndexByteSmall — compile: load: typecheck bytes_test:
-TestIndexFunc — compile: load: typecheck bytes_test:
-TestIndexRune — compile: load: typecheck bytes_test:
-TestLargeByteReads — compile: load: typecheck bytes_test:
-TestLargeByteWrites — compile: load: typecheck bytes_test:
-TestLargeStringReads — compile: load: typecheck bytes_test:
-TestLargeStringWrites — compile: load: typecheck bytes_test:
-TestLastIndex — compile: load: typecheck bytes_test:
-TestLastIndexAny — compile: load: typecheck bytes_test:
-TestLastIndexByte — compile: load: typecheck bytes_test:
-TestLines — compile: load: typecheck bytes_test:
-TestMap — compile: load: typecheck bytes_test:
-TestMixedReadsAndWrites — compile: load: typecheck bytes_test:
-TestNewBuffer — compile: load: typecheck bytes_test:
-TestNewBufferShallow — compile: load: typecheck bytes_test:
-TestNewBufferString — compile: load: typecheck bytes_test:
 TestNext — compile: wasm compile/validate error
 TestNil — compile: wasm compile/validate error
-TestNotEqual — compile: load: typecheck bytes_test:
-TestPeek — compile: load: typecheck bytes_test:
-TestReadBytes — compile: load: typecheck bytes_test:
 TestReadEmptyAtEOF — compile: wasm compile/validate error
-TestReadFrom — compile: load: typecheck bytes_test:
 TestReadFromNegativeReader — compile: wasm compile/validate error
 TestReadFromPanicReader — compile: wasm compile/validate error
-TestReadString — compile: load: typecheck bytes_test:
 TestReaderAt — runtime error
 TestReaderCopyNothing — runtime error
-TestReaderWriteTo — compile: load: typecheck bytes_test:
-TestRepeat — compile: load: typecheck bytes_test:
-TestRepeatCatchesOverflow — compile: load: typecheck bytes_test:
-TestReplace — compile: load: typecheck bytes_test:
 TestRuneIO — compile: wasm compile/validate error
-TestRunes — compile: load: typecheck bytes_test:
-TestSplit — compile: load: typecheck bytes_test:
-TestSplitAfter — compile: load: typecheck bytes_test:
-TestTitle — compile: load: typecheck bytes_test:
-TestToLower — compile: load: typecheck bytes_test:
-TestToTitle — compile: load: typecheck bytes_test:
-TestToUpper — compile: load: typecheck bytes_test:
-TestToValidUTF8 — compile: load: typecheck bytes_test:
-TestTrim — compile: load: typecheck bytes_test:
-TestTrimFunc — compile: load: typecheck bytes_test:
-TestTrimSpace — compile: load: typecheck bytes_test:
 TestUnreadByte — compile: wasm compile/validate error
 TestWriteAppend — compile: wasm compile/validate error
 TestWriteInvalidRune — compile: wasm compile/validate error
-TestWriteTo — compile: load: typecheck bytes_test:
+TestIndexAny — runtime fail after typecheck unlock
+TestLastIndexAny — runtime fail after typecheck unlock
+TestSplit — runtime fail after typecheck unlock
+TestSplitAfter — runtime fail after typecheck unlock
+TestToUpper — runtime fail after typecheck unlock
+TestToLower — runtime fail after typecheck unlock
+TestRepeat — runtime fail after typecheck unlock
+TestRepeatCatchesOverflow — runtime fail after typecheck unlock
