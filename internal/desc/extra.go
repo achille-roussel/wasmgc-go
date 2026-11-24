@@ -952,14 +952,39 @@ func (g *gen) sliceElemIR(tr *typeRec) (ir.Type, string) {
 	default:
 		return nil, ""
 	}
-	elemIR, err := mapTypeApprox(elem)
-	if err != nil {
-		elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
+	// Match lower.ensureArrayType / sliceIRApprox: []byte → $go.bytes / $go.slice.i8.
+	// mapTypeApprox(uint8) is i32 (Go value width), which wrongly picked
+	// $go.slice.i32 and made ReflectCallLen/Index illegal-cast on real []byte.
+	var elemIR ir.Type
+	var arrName, sliceName string
+	var storage ir.Type
+	if b, ok := types.Unalias(elem).Underlying().(*types.Basic); ok {
+		switch b.Kind() {
+		case types.Int8, types.Uint8, types.Bool:
+			// Storage is i8 in $go.bytes; Go value / SliceGet result is i32.
+			elemIR = ir.TypeI32
+			storage = ir.TypeI8
+			arrName = "$go.bytes"
+			sliceName = "$go.slice.i8"
+		case types.Int16, types.Uint16:
+			elemIR = ir.TypeI32
+			storage = ir.TypeI16
+			arrName = "$go.i16s"
+			sliceName = "$go.slice.i16"
+		}
 	}
-	arrName := arrayNameFor(elemIR)
-	sliceName := sliceNameFor(arrName)
+	if sliceName == "" {
+		var err error
+		elemIR, err = mapTypeApprox(elem)
+		if err != nil {
+			elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
+		}
+		arrName = arrayNameFor(elemIR)
+		sliceName = sliceNameFor(arrName)
+		storage = storageElemApprox(elemIR)
+	}
 	// Ensure types exist (may already from lower).
-	g.mod.InternType(&ir.TypeDef{Name: arrName, Kind: ir.TypeArray, Elem: storageElemApprox(elemIR), ElemMut: true})
+	g.mod.InternType(&ir.TypeDef{Name: arrName, Kind: ir.TypeArray, Elem: storage, ElemMut: true})
 	g.mod.InternType(&ir.TypeDef{
 		Name:  sliceName,
 		Kind:  ir.TypeStruct,

@@ -609,8 +609,53 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 	kindEq := func(k int64) ir.Expr {
 		return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: k}}}
 	}
-	// Scalars/string via kind; structs/arrays via $go.dispatchEq (field-wise).
+	// Scalars/string/complex via kind; structs/arrays via $go.dispatchEq.
+	// Complex64/128 live as $go.complex* refs in iface data (not $go.box.*);
+	// falling through to eqref cast traps with "illegal cast". Emit those
+	// arms only when the module actually defines the complex structs so
+	// println/empty_main size budgets stay put.
 	// $go.type stays 4 fields so empty_main size budget holds.
+	afterString := func() ir.Stmt {
+		structThen := &ir.Seq{Stmts: []ir.Stmt{refEq}}
+		if rt.mod.LookupFunc("$go.dispatchEq") != nil {
+			structThen = &ir.Seq{Stmts: []ir.Stmt{
+				assignV(idV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id", Args: []ir.Expr{useV(tyA)}}),
+				assignV(res, &ir.Instr{
+					Op: ir.OpCall, Func: "$go.dispatchEq",
+					Args: []ir.Expr{useV(idV), useV(dA), useV(dB)},
+				}),
+			}}
+		}
+		tail := &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: 12}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.i32", ir.OpI32Eq)}},
+			Else: &ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(25), kindEq(17)}}, // Struct|Array
+				Then: structThen,
+				Else: &ir.Seq{Stmts: []ir.Stmt{refEq}},
+			},
+		}
+		haveC64 := rt.mod.LookupType("$go.complex64") != nil
+		haveC128 := rt.mod.LookupType("$go.complex128") != nil
+		if !haveC64 && !haveC128 {
+			return tail
+		}
+		if haveC128 {
+			tail = &ir.If{
+				Cond: kindEq(16), // Complex128
+				Then: rt.complexDataEq(res, dA, dB, "$go.complex128", ir.OpF64Eq),
+				Else: &ir.Seq{Stmts: []ir.Stmt{tail}},
+			}
+		}
+		if haveC64 {
+			tail = &ir.If{
+				Cond: kindEq(15), // Complex64
+				Then: rt.complexDataEq(res, dA, dB, "$go.complex64", ir.OpF32Eq),
+				Else: &ir.Seq{Stmts: []ir.Stmt{tail}},
+			}
+		}
+		return tail
+	}()
 	dataThen := &ir.If{
 		Cond: kindEq(14), // Float64
 		Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.f64", ir.OpF64Eq)}},
@@ -623,27 +668,7 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 				Else: &ir.If{
 					Cond: kindEq(24), // String
 					Then: rt.stringDataEq(res, dA, dB),
-					Else: &ir.If{
-						Cond: &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: 12}}},
-						Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.i32", ir.OpI32Eq)}},
-						Else: func() *ir.If {
-							structThen := &ir.Seq{Stmts: []ir.Stmt{refEq}}
-							if rt.mod.LookupFunc("$go.dispatchEq") != nil {
-								structThen = &ir.Seq{Stmts: []ir.Stmt{
-									assignV(idV, &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id", Args: []ir.Expr{useV(tyA)}}),
-									assignV(res, &ir.Instr{
-										Op: ir.OpCall, Func: "$go.dispatchEq",
-										Args: []ir.Expr{useV(idV), useV(dA), useV(dB)},
-									}),
-								}}
-							}
-							return &ir.If{
-								Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(25), kindEq(17)}}, // Struct|Array
-								Then: structThen,
-								Else: &ir.Seq{Stmts: []ir.Stmt{refEq}},
-							}
-						}(),
-					},
+					Else: &ir.Seq{Stmts: []ir.Stmt{afterString}},
 				},
 			},
 		},
@@ -675,6 +700,28 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 func isNumType(t ir.Type) bool {
 	_, ok := t.(*ir.NumType)
 	return ok
+}
+
+// complexDataEq compares two iface data words holding $go.complex64/128.
+func (rt *runtimeLower) complexDataEq(res, dA, dB *ir.Var, name string, feq ir.Op) *ir.Seq {
+	ct := &ir.Ref{Named: name}
+	ca := rt.newVar("ca", ct)
+	cb := rt.newVar("cb", ct)
+	return &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: ca}, &ir.VarDef{Var: cb},
+		assignV(ca, &ir.Instr{Op: ir.OpRefCast, Type: ct, Args: []ir.Expr{useV(dA)}}),
+		assignV(cb, &ir.Instr{Op: ir.OpRefCast, Type: ct, Args: []ir.Expr{useV(dB)}}),
+		assignV(res, &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+			&ir.Instr{Op: feq, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStructGet, Type: ct, Field: "real", Args: []ir.Expr{useV(ca)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: ct, Field: "real", Args: []ir.Expr{useV(cb)}},
+			}},
+			&ir.Instr{Op: feq, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStructGet, Type: ct, Field: "imag", Args: []ir.Expr{useV(ca)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: ct, Field: "imag", Args: []ir.Expr{useV(cb)}},
+			}},
+		}}),
+	}}
 }
 
 // stringDataEq compares two iface data words holding $go.string headers.

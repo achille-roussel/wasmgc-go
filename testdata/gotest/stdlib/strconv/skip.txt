@@ -1,2 +1,1 @@
 # strconv — wasmgc-go test skips
-TestParseComplex — complex128 reflect Kind/DeepEqual not implemented

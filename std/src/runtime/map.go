@@ -323,6 +323,12 @@ func mapKeyHash(key any, seed uint32) uint32 {
 	if h, ok := hashFloat64(key, seed); ok {
 		return h
 	}
+	if h, ok := hashComplex64(key, seed); ok {
+		return h
+	}
+	if h, ok := hashComplex128(key, seed); ok {
+		return h
+	}
 	if h, ok := hashString(key, seed); ok {
 		return h
 	}
@@ -414,6 +420,22 @@ func hashString(key any, seed uint32) (uint32, bool) {
 		return 0, false
 	}
 	return strhash(x, seed), true
+}
+
+func hashComplex64(key any, seed uint32) (uint32, bool) {
+	x, ok := key.(complex64)
+	if !ok {
+		return 0, false
+	}
+	return seed ^ f32hash(real(x)) ^ (f32hash(imag(x)) * 0x01000193), true
+}
+
+func hashComplex128(key any, seed uint32) (uint32, bool) {
+	x, ok := key.(complex128)
+	if !ok {
+		return 0, false
+	}
+	return seed ^ f64hash(real(x)) ^ (f64hash(imag(x)) * 0x01000193), true
 }
 
 func f32hash(f float32) uint32 {
