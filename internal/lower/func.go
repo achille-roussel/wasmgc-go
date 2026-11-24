@@ -14,6 +14,13 @@ type labelTargets struct {
 	breakLabel    string
 	continueLabel string // empty if not a loop
 	gotoLabel     string // forward goto target block (docs/design/02)
+	gotoArm       int    // dispatch arm index when gotoDispatch is active; -1 if unused
+}
+
+type gotoDispatchState struct {
+	Loop  string
+	State *ir.Var
+	Arms  map[string]int // label → arm index
 }
 
 type funcLower struct {
@@ -40,6 +47,10 @@ type funcLower struct {
 	breakStack    []string
 	continueStack []string
 	labels        map[string]*labelTargets
+
+	// gotoDispatch is set while lowering a Dispatch region for irreducible
+	// goto (docs/design/02). Goto stores the arm index in State and brs to Loop.
+	gotoDispatch *gotoDispatchState
 
 	// M5: closures, defer, recover.
 	cells     map[types.Object]*ir.Var
@@ -231,14 +242,19 @@ func (fl *funcLower) defineLocal(id *ast.Ident) (*ir.Var, []ir.Stmt, error) {
 	// rejects an uninitialized (ref T) local even if every use is dominated
 	// by an assignment (comma-ok type assert is the usual trigger).
 	// Local [N]T arrays map to nullable array refs with length erased; allocate
-	// array.new_default of Len so buf[:] / indexing is non-null (strconv.ftoa*).
+	// Len elements so buf[:] / indexing is non-null (strconv.ftoa*). Prefer
+	// goZeroValue so [N]string uses array.new of "" (elems are non-defaultable).
 	var init []ir.Stmt
 	if a, ok := types.Unalias(objTy).Underlying().(*types.Array); ok && a.Len() > 0 {
-		init = []ir.Stmt{fl.assignVar(v, &ir.Instr{
-			Op:   ir.OpArrayNewDefault,
-			Type: ty,
-			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: a.Len()}},
-		})}
+		if z, ok := fl.goZeroValue(objTy, ty); ok {
+			init = []ir.Stmt{fl.assignVar(v, z)}
+		} else {
+			init = []ir.Stmt{fl.assignVar(v, &ir.Instr{
+				Op:   ir.OpArrayNewDefault,
+				Type: ty,
+				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: a.Len()}},
+			})}
+		}
 	} else if needsZeroInit(ty) {
 		z, err := fl.zeroValue(ty)
 		if err == nil {

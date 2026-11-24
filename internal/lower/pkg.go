@@ -68,6 +68,12 @@ func (l *pkgLower) lower() error {
 				}
 				for i, name := range vs.Names {
 					if name.Name == "_" {
+						// var _ = f() still runs f for side effects (blank.go).
+						if !multi && vs.Values != nil && i < len(vs.Values) {
+							pending = append(pending, varInit{
+								name: name, val: vs.Values[i],
+							})
+						}
 						continue
 					}
 					obj := l.info.Defs[name]
@@ -123,6 +129,26 @@ func (l *pkgLower) lower() error {
 		var ex ir.Expr
 		var stmts []ir.Stmt
 		var err error
+		if vi.name != nil && vi.name.Name == "_" {
+			// Side-effect-only blank init: evaluate and drop.
+			want := fl.typeOf(vi.val)
+			var irt ir.Type
+			if want != nil {
+				irt, err = fl.mapType(want)
+				if err != nil {
+					return err
+				}
+			}
+			ex, stmts, err = fl.expr(vi.val, irt)
+			if err != nil {
+				return err
+			}
+			initStmts = append(initStmts, stmts...)
+			if ex != nil {
+				initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			}
+			continue
+		}
 		if vi.val != nil {
 			ex, stmts, err = fl.coerceExpr(vi.val, vi.obj.Type(), vi.ty)
 		} else {

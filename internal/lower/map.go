@@ -202,25 +202,64 @@ func (fl *funcLower) mapIndexAssign(lhs *ast.IndexExpr, rhs ir.Expr, rhsGo types
 }
 
 func (fl *funcLower) builtinDelete(e *ast.CallExpr) ([]ir.Stmt, error) {
-	if len(e.Args) != 2 {
+	var mapArg, keyArg ast.Expr
+	var stmts []ir.Stmt
+	switch {
+	case len(e.Args) == 2:
+		mapArg, keyArg = e.Args[0], e.Args[1]
+	case len(e.Args) == 1:
+		// delete(f()) where f returns (map, key) — issue15992.
+		ce, ok := e.Args[0].(*ast.CallExpr)
+		if !ok {
+			return nil, fl.errorf(e, "delete wants 2 args")
+		}
+		temps, st, err := fl.callMaterialize(ce, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(temps) != 2 {
+			return nil, fl.errorf(e, "delete wants 2 args")
+		}
+		stmts = append(stmts, st...)
+		fl.markNeedsMaps()
+		tup := fl.callResultTuple(ce)
+		mTy := tup.At(0).Type()
+		keyGo := tup.At(1).Type()
+		emptyIface := types.NewInterfaceType(nil, nil)
+		key := ir.Expr(&ir.Instr{
+			Op:     ir.OpIfaceMake,
+			Type:   typeIface,
+			Global: desc.ItabGlobal(emptyIface, keyGo),
+			Str:    "type:" + desc.TypeKey(keyGo),
+			Field:  boxKind(keyGo),
+			Args:   []ir.Expr{fl.useTemp(temps[1])},
+		})
+		in := &ir.Instr{Op: ir.OpMapDelete, Args: []ir.Expr{fl.useTemp(temps[0]), key}}
+		if keyT, _ := mapKeyElem(mTy); keyT != nil {
+			in.Str = desc.TypeKey(keyT)
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: in})
+		return stmts, nil
+	default:
 		return nil, fl.errorf(e, "delete wants 2 args")
 	}
 	fl.markNeedsMaps()
-	mTy := fl.typeOf(e.Args[0])
+	mTy := fl.typeOf(mapArg)
 	if !isMap(mTy) {
-		return nil, fl.errorf(e.Args[0], "delete of non-map type %s", mTy)
+		return nil, fl.errorf(mapArg, "delete of non-map type %s", mTy)
 	}
 	mIR, err := fl.mapType(mTy)
 	if err != nil {
-		return nil, fl.errorf(e.Args[0], "%v", err)
+		return nil, fl.errorf(mapArg, "%v", err)
 	}
-	m, stmts, err := fl.expr(e.Args[0], mIR)
+	m, st, err := fl.expr(mapArg, mIR)
 	if err != nil {
 		return nil, err
 	}
+	stmts = append(stmts, st...)
 	keyT, _ := mapKeyElem(mTy)
 	emptyIface := types.NewInterfaceType(nil, nil)
-	key, kstmts, err := fl.convertToIface(e.Args[1], fl.typeOf(e.Args[1]), emptyIface, typeIface)
+	key, kstmts, err := fl.convertToIface(keyArg, fl.typeOf(keyArg), emptyIface, typeIface)
 	if err != nil {
 		return nil, err
 	}

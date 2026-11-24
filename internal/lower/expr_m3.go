@@ -931,16 +931,20 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		if n < 0 {
 			n = 0
 		}
-		// (ref $go.string) elems are non-defaultable.
-		if r.Named == "$go.array.go.string" {
-			return &ir.Instr{
-				Op:   ir.OpArrayNew,
-				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{
-					&ir.Instr{Op: ir.OpStringLit, Str: ""},
-					&ir.Const{Op: ir.OpI32Const, I64: n},
-				},
-			}, true
+		// Non-defaultable elems (e.g. (ref $go.string)) cannot use
+		// array.new_default — seed with a zero element via array.new.
+		elemIR, err := fl.mapType(u.Elem())
+		if err == nil {
+			if er, ok := elemIR.(*ir.Ref); ok && !er.Null {
+				z, zerr := fl.zeroValue(elemIR)
+				if zerr == nil {
+					return &ir.Instr{
+						Op:   ir.OpArrayNew,
+						Type: &ir.Ref{Named: r.Named},
+						Args: []ir.Expr{z, &ir.Const{Op: ir.OpI32Const, I64: n}},
+					}, true
+				}
+			}
 		}
 		return &ir.Instr{
 			Op:   ir.OpArrayNewDefault,

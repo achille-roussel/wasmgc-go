@@ -218,23 +218,13 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			// Known function: capture args only; call directly.
 			target := fl.pkg.funcIRNameOf(fn)
 			fsig := fn.Type().(*types.Signature)
-			for i, a := range call.Args {
-				want, err := fl.mapType(fsig.Params().At(i).Type())
-				if err != nil {
-					return nil, nil, err
-				}
-				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-				if err != nil {
-					return nil, nil, err
-				}
-				stmts = append(stmts, astmts...)
-				t := fl.newTemp(want)
-				stmts = append(stmts, fl.assignTemp(t, ex))
-				addCap("a"+deferItoa(i), want, fl.useTemp(t))
+			nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+			if err != nil {
+				return nil, nil, err
 			}
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 				var args []ir.Expr
-				for i := range call.Args {
+				for i := 0; i < nargs; i++ {
 					args = append(args, fieldOf("a"+deferItoa(i)))
 				}
 				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: target, Args: args}}, &ir.Return{}}, nil
@@ -252,22 +242,13 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			// Capture name must not be "fn" (reserved for the funcref field).
 			addCap("callee", closTy, fl.useTemp(t))
 			fsig, _ := obj.Type().Underlying().(*types.Signature)
-			for i, a := range call.Args {
-				want, err := fl.mapType(fsig.Params().At(i).Type())
-				if err != nil {
-					return nil, nil, err
-				}
-				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-				if err != nil {
-					return nil, nil, err
-				}
-				stmts = append(stmts, astmts...)
-				t := fl.newTemp(want)
-				stmts = append(stmts, fl.assignTemp(t, ex))
-				addCap("a"+deferItoa(i), want, fl.useTemp(t))
+			nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+			if err != nil {
+				return nil, nil, err
 			}
+			nCap := nargs
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
-				return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+				return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, nCap)
 			}
 		} else {
 			return nil, nil, fl.errorf(call, "unsupported defer callee")
@@ -310,27 +291,18 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			rt := fl.newTemp(recvWant)
 			stmts = append(stmts, fl.assignTemp(rt, rex))
 			addCap("recv", recvWant, fl.useTemp(rt))
-			for i, a := range call.Args {
-				want, err := fl.mapType(msig.Params().At(i).Type())
-				if err != nil {
-					return nil, nil, err
-				}
-				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-				if err != nil {
-					return nil, nil, err
-				}
-				stmts = append(stmts, astmts...)
-				t := fl.newTemp(want)
-				stmts = append(stmts, fl.assignTemp(t, ex))
-				addCap("a"+deferItoa(i), want, fl.useTemp(t))
+			nargs, err := fl.deferAddSigArgs(call, msig, addCap, &stmts)
+			if err != nil {
+				return nil, nil, err
 			}
 			ifaceType := recvGo
 			ifaceFn := fn
 			useIface := ifaceRecv
 			target := methodIRName(fn)
+			nCap := nargs
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 				args := []ir.Expr{fieldOf("recv")}
-				for i := range call.Args {
+				for i := 0; i < nCap; i++ {
 					args = append(args, fieldOf("a"+deferItoa(i)))
 				}
 				var call ir.Expr
@@ -348,23 +320,14 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 				return nil, nil, err
 			}
 			fsig := fl.info.TypeOf(call.Fun).Underlying().(*types.Signature)
-			for i, a := range call.Args {
-				want, err := fl.mapType(fsig.Params().At(i).Type())
-				if err != nil {
-					return nil, nil, err
-				}
-				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-				if err != nil {
-					return nil, nil, err
-				}
-				stmts = append(stmts, astmts...)
-				t := fl.newTemp(want)
-				stmts = append(stmts, fl.assignTemp(t, ex))
-				addCap("a"+deferItoa(i), want, fl.useTemp(t))
+			nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+			if err != nil {
+				return nil, nil, err
 			}
+			nCap := nargs
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 				var args []ir.Expr
-				for i := range call.Args {
+				for i := 0; i < nCap; i++ {
 					args = append(args, fieldOf("a"+deferItoa(i)))
 				}
 				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: name, Args: args}}, &ir.Return{}}, nil
@@ -381,22 +344,13 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 		stmts = append(stmts, fl.assignTemp(t, litClos))
 		addCap("callee", &ir.Ref{Null: true, Named: closBaseName}, fl.useTemp(t))
 		fsig := fl.typeOf(fun).Underlying().(*types.Signature)
-		for i, a := range call.Args {
-			want, err := fl.mapType(fsig.Params().At(i).Type())
-			if err != nil {
-				return nil, nil, err
-			}
-			ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-			if err != nil {
-				return nil, nil, err
-			}
-			stmts = append(stmts, astmts...)
-			at := fl.newTemp(want)
-			stmts = append(stmts, fl.assignTemp(at, ex))
-			addCap("a"+deferItoa(i), want, fl.useTemp(at))
+		nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+		if err != nil {
+			return nil, nil, err
 		}
+		nCap := nargs
 		callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
-			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, nCap)
 		}
 	case *ast.CallExpr, *ast.ParenExpr, *ast.TypeAssertExpr:
 		// defer f()() / defer (fn)() / defer x.(func())() — Fun is a func value.
@@ -413,22 +367,13 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 		t := fl.newTemp(closTy)
 		stmts = append(stmts, fl.assignTemp(t, ex))
 		addCap("callee", closTy, fl.useTemp(t))
-		for i, a := range call.Args {
-			want, err := fl.mapType(fsig.Params().At(i).Type())
-			if err != nil {
-				return nil, nil, err
-			}
-			ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-			if err != nil {
-				return nil, nil, err
-			}
-			stmts = append(stmts, astmts...)
-			at := fl.newTemp(want)
-			stmts = append(stmts, fl.assignTemp(at, ex))
-			addCap("a"+deferItoa(i), want, fl.useTemp(at))
+		nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+		if err != nil {
+			return nil, nil, err
 		}
+		nCap := nargs
 		callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
-			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+			return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, nCap)
 		}
 	default:
 		// Other func-value forms (IndexExpr instantiations, etc.).
@@ -442,22 +387,13 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			t := fl.newTemp(closTy)
 			stmts = append(stmts, fl.assignTemp(t, ex))
 			addCap("callee", closTy, fl.useTemp(t))
-			for i, a := range call.Args {
-				want, err := fl.mapType(fsig.Params().At(i).Type())
-				if err != nil {
-					return nil, nil, err
-				}
-				ex, astmts, err := fl.coerceExpr(a, fl.typeOf(a), want)
-				if err != nil {
-					return nil, nil, err
-				}
-				stmts = append(stmts, astmts...)
-				at := fl.newTemp(want)
-				stmts = append(stmts, fl.assignTemp(at, ex))
-				addCap("a"+deferItoa(i), want, fl.useTemp(at))
+			nargs, err := fl.deferAddSigArgs(call, fsig, addCap, &stmts)
+			if err != nil {
+				return nil, nil, err
 			}
+			nCap := nargs
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
-				return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, len(call.Args))
+				return child.emitCallRefStmts(fieldOf("callee"), fsig, func(i int) ir.Expr { return fieldOf("a" + deferItoa(i)) }, nCap)
 			}
 			break
 		}
@@ -550,6 +486,41 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 		return ex2, stmts, nil
 	}
 	return ex, stmts, nil
+}
+
+// deferAddSigArgs lowers call args (including variadic packing) and registers
+// them as defer-thunk captures a0..a{n-1}. Returns the capture count.
+func (fl *funcLower) deferAddSigArgs(
+	call *ast.CallExpr,
+	fsig *types.Signature,
+	addCap func(name string, ty ir.Type, ex ir.Expr),
+	stmts *[]ir.Stmt,
+) (int, error) {
+	args, astmts, err := fl.lowerArgsWithSig(call, fsig)
+	if err != nil {
+		return 0, err
+	}
+	*stmts = append(*stmts, astmts...)
+	nParams := 0
+	if fsig != nil {
+		nParams = fsig.Params().Len()
+	}
+	for i, ex := range args {
+		var want ir.Type
+		if i < nParams {
+			want, err = fl.mapType(fsig.Params().At(i).Type())
+			if err != nil {
+				return 0, err
+			}
+		} else if ex != nil {
+			// Should not happen: lowerArgsWithSig packs variadic into Params.
+			want = typeIface
+		}
+		t := fl.newTemp(want)
+		*stmts = append(*stmts, fl.assignTemp(t, ex))
+		addCap("a"+deferItoa(i), want, fl.useTemp(t))
+	}
+	return len(args), nil
 }
 
 // printArgKind tags deferred print captures (bool and int share i32 IR).
@@ -952,10 +923,37 @@ func (fl *funcLower) resultReturn() *ir.Return {
 // applyDeferPass rewrites a function body that contains defer.
 func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	fl.pkg.ensureDeferTypes()
-	// Initialize defers = null at entry. defersVar is VarDef'd via extraLocals.
-	init := []ir.Stmt{
-		fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}),
+	// Peel leading VarDefs / zero-inits so they stay outside try. Catch handlers
+	// return named results; Wasm requires those locals initialized on entry to
+	// the function, not only on the try body path (abi/defer_recover_results).
+	var peeled []ir.Stmt
+	rest := body.Stmts
+	for len(rest) > 0 {
+		switch rest[0].(type) {
+		case *ir.VarDef:
+			peeled = append(peeled, rest[0])
+			rest = rest[1:]
+			continue
+		}
+		break
 	}
+	// Also peel simple zero-inits of named results / locals (assign of StringLit /
+	// StructNewDefault / RefNull / Const to a var).
+	for len(rest) > 0 {
+		as, ok := rest[0].(*ir.Assign)
+		if !ok || len(as.Lhs) != 1 || as.Lhs[0].Var == nil {
+			break
+		}
+		if !isDeferPeelableInit(as.Rhs) {
+			break
+		}
+		peeled = append(peeled, rest[0])
+		rest = rest[1:]
+	}
+	body = &ir.Seq{Stmts: rest, Pos: body.Pos}
+
+	// Initialize defers = null at entry. defersVar is VarDef'd via extraLocals.
+	init := append(peeled, fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}))
 	if fl.needsRecoverPrologue {
 		init = append(init, fl.recoverPrologue()...)
 	}
@@ -1000,6 +998,30 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 		Handler: handler,
 	}
 	return &ir.Seq{Stmts: append(init, try)}, nil
+}
+
+func isDeferPeelableInit(rhs ir.Expr) bool {
+	switch e := rhs.(type) {
+	case *ir.Const:
+		return true
+	case *ir.Instr:
+		switch e.Op {
+		case ir.OpRefNull, ir.OpStringLit, ir.OpStructNewDefault, ir.OpI32Const, ir.OpI64Const,
+			ir.OpF32Const, ir.OpF64Const:
+			return true
+		case ir.OpStructNew:
+			// zero string: struct.new $go.string (empty bytes), 0, 0
+			if r, ok := e.Type.(*ir.Ref); ok && r.Named == "$go.string" {
+				return true
+			}
+			if r, ok := e.Type.(*ir.Ref); ok && (r.Named == "$go.complex64" || r.Named == "$go.complex128") {
+				return true
+			}
+		case ir.OpArrayNew, ir.OpArrayNewDefault:
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteReturns(r ir.Region, before []ir.Stmt) *ir.Seq {
@@ -1048,6 +1070,15 @@ func rewriteReturnStmt(s ir.Stmt, before []ir.Stmt) []ir.Stmt {
 			Name: s.Name, Body: rewriteReturns(s.Body, before), Tag: s.Tag,
 			Params: s.Params, Handler: rewriteReturns(s.Handler, before), Pos: s.Pos,
 		}}
+	case *ir.Dispatch:
+		ns := *s
+		ns.Arms = make([]ir.Region, len(s.Arms))
+		for i, arm := range s.Arms {
+			if arm != nil {
+				ns.Arms[i] = rewriteReturns(arm, before)
+			}
+		}
+		return []ir.Stmt{&ns}
 	default:
 		return []ir.Stmt{s}
 	}

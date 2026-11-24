@@ -1019,7 +1019,8 @@ func (g *gen) structEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 	var cmp ir.Expr = &ir.Const{Op: ir.OpI32Const, I64: 1}
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
-		if isZeroSizeType(f.Type()) {
+		// Blank fields are ignored by Go == (blank.go T/U via unsafe).
+		if f.Name() == "_" || isZeroSizeType(f.Type()) {
 			continue
 		}
 		fa := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "sa", Var: sa}}}

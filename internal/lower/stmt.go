@@ -92,33 +92,128 @@ func blockHasForwardGoto(b *ast.BlockStmt) bool {
 	return false
 }
 
-// stmtBlockForwardGoto lowers a block that contains forward goto to statement
-// labels (docs/design/02). Backward / irreducible goto is not handled here.
+type gotoSeg struct {
+	label string
+	stmts []ast.Stmt
+}
+
+// stmtBlockForwardGoto lowers a block that contains goto to statement labels
+// (docs/design/02). Forward-only gotos use nested blocks. Any backward goto
+// uses a Dispatch state machine so irreducible CFGs (ken/label) validate.
 func (fl *funcLower) stmtBlockForwardGoto(b *ast.BlockStmt) (ir.Region, error) {
-	type seg struct {
-		label string
-		stmts []ast.Stmt
-	}
-	var segs []seg
-	cur := seg{}
+	var segs []gotoSeg
+	cur := gotoSeg{}
 	for _, s := range b.List {
 		if ls, ok := s.(*ast.LabeledStmt); ok {
 			segs = append(segs, cur)
-			cur = seg{label: ls.Label.Name, stmts: []ast.Stmt{ls.Stmt}}
+			cur = gotoSeg{label: ls.Label.Name, stmts: []ast.Stmt{ls.Stmt}}
 			continue
 		}
 		cur.stmts = append(cur.stmts, s)
 	}
 	segs = append(segs, cur)
 
-	// Register goto targets before lowering so nested gotos resolve.
+	labelSeg := map[string]int{}
+	for i, sg := range segs {
+		if sg.label != "" {
+			labelSeg[sg.label] = i
+		}
+	}
+	hasBackward := false
+	var walkGoto func(ast.Stmt, int)
+	walkGoto = func(s ast.Stmt, segIdx int) {
+		if s == nil {
+			return
+		}
+		switch s := s.(type) {
+		case *ast.BranchStmt:
+			if s.Tok == token.GOTO && s.Label != nil {
+				if li, ok := labelSeg[s.Label.Name]; ok && segIdx >= li {
+					hasBackward = true
+				}
+			}
+		case *ast.BlockStmt:
+			for _, c := range s.List {
+				walkGoto(c, segIdx)
+			}
+		case *ast.IfStmt:
+			walkGoto(s.Body, segIdx)
+			walkGoto(s.Else, segIdx)
+		case *ast.ForStmt:
+			walkGoto(s.Body, segIdx)
+		case *ast.RangeStmt:
+			walkGoto(s.Body, segIdx)
+		case *ast.SwitchStmt:
+			for _, c := range s.Body.List {
+				walkGoto(c, segIdx)
+			}
+		case *ast.TypeSwitchStmt:
+			for _, c := range s.Body.List {
+				walkGoto(c, segIdx)
+			}
+		case *ast.CaseClause:
+			for _, c := range s.Body {
+				walkGoto(c, segIdx)
+			}
+		case *ast.SelectStmt:
+			for _, c := range s.Body.List {
+				walkGoto(c, segIdx)
+			}
+		case *ast.CommClause:
+			for _, c := range s.Body {
+				walkGoto(c, segIdx)
+			}
+		case *ast.LabeledStmt:
+			walkGoto(s.Stmt, segIdx)
+		}
+	}
+	for i, sg := range segs {
+		for _, s := range sg.stmts {
+			walkGoto(s, i)
+		}
+	}
+
+	if hasBackward {
+		return fl.stmtBlockGotoDispatch(segs)
+	}
+	return fl.stmtBlockGotoForward(segs)
+}
+
+func (fl *funcLower) lowerGotoSegBody(sg gotoSeg) ([]ir.Stmt, error) {
+	var body []ir.Stmt
+	for j, s := range sg.stmts {
+		if j == 0 && sg.label != "" {
+			switch s.(type) {
+			case *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt:
+				st, err := fl.labeledStmt(&ast.LabeledStmt{
+					Label: &ast.Ident{Name: sg.label, NamePos: s.Pos()},
+					Stmt:  s,
+				})
+				if err != nil {
+					return nil, err
+				}
+				body = append(body, st...)
+				continue
+			}
+		}
+		st, err := fl.stmt(s)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, st...)
+	}
+	return body, nil
+}
+
+// stmtBlockGotoForward: nested blocks for forward-only goto (docs/design/02 §1).
+func (fl *funcLower) stmtBlockGotoForward(segs []gotoSeg) (ir.Region, error) {
 	var registered []string
 	for _, sg := range segs {
 		if sg.label == "" {
 			continue
 		}
 		lab := "$goto." + sg.label
-		fl.labels[sg.label] = &labelTargets{gotoLabel: lab}
+		fl.labels[sg.label] = &labelTargets{gotoLabel: lab, gotoArm: -1}
 		registered = append(registered, sg.label)
 	}
 	defer func() {
@@ -133,15 +228,78 @@ func (fl *funcLower) stmtBlockForwardGoto(b *ast.BlockStmt) (ir.Region, error) {
 			lab := fl.labels[sg.label].gotoLabel
 			stmts = []ir.Stmt{&ir.Block{Name: lab, Body: &ir.Seq{Stmts: stmts}}}
 		}
-		for _, s := range sg.stmts {
-			st, err := fl.stmt(s)
-			if err != nil {
-				return nil, err
-			}
-			stmts = append(stmts, st...)
+		body, err := fl.lowerGotoSegBody(sg)
+		if err != nil {
+			return nil, err
 		}
+		stmts = append(stmts, body...)
 	}
 	return &ir.Seq{Stmts: stmts}, nil
+}
+
+// stmtBlockGotoDispatch: state-machine for any backward/irreducible goto.
+func (fl *funcLower) stmtBlockGotoDispatch(segs []gotoSeg) (ir.Region, error) {
+	state := fl.newVar("goto.st", ir.TypeI32)
+	loopName := fl.freshLabel("goto.d")
+	arms := map[string]int{}
+	var registered []string
+	for i, sg := range segs {
+		if sg.label != "" {
+			arms[sg.label] = i
+			fl.labels[sg.label] = &labelTargets{
+				gotoLabel: loopName,
+				gotoArm:   i,
+			}
+			registered = append(registered, sg.label)
+		}
+	}
+	defer func() {
+		for _, name := range registered {
+			delete(fl.labels, name)
+		}
+	}()
+
+	prev := fl.gotoDispatch
+	fl.gotoDispatch = &gotoDispatchState{Loop: loopName, State: state, Arms: arms}
+	defer func() { fl.gotoDispatch = prev }()
+
+	irArms := make([]ir.Region, len(segs))
+	for i, sg := range segs {
+		body, err := fl.lowerGotoSegBody(sg)
+		if err != nil {
+			return nil, err
+		}
+		// Fall through to the next arm unless the segment ends in return/goto.
+		if i+1 < len(segs) && !segEndsWithTransfer(sg.stmts) {
+			body = append(body,
+				fl.assignVar(state, fl.i32const(int64(i+1))),
+				&ir.Br{Label: loopName},
+			)
+		}
+		irArms[i] = &ir.Seq{Stmts: body}
+	}
+
+	return &ir.Seq{Stmts: []ir.Stmt{
+		fl.assignVar(state, fl.i32const(0)),
+		&ir.Dispatch{Name: loopName, State: state, Arms: irArms},
+	}}, nil
+}
+
+func segEndsWithTransfer(stmts []ast.Stmt) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	switch s := stmts[len(stmts)-1].(type) {
+	case *ast.ReturnStmt:
+		return true
+	case *ast.BranchStmt:
+		return s.Tok == token.GOTO || s.Tok == token.BREAK || s.Tok == token.CONTINUE
+	case *ast.BlockStmt:
+		return segEndsWithTransfer(s.List)
+	case *ast.LabeledStmt:
+		return segEndsWithTransfer([]ast.Stmt{s.Stmt})
+	}
+	return false
 }
 
 func (fl *funcLower) stmt(s ast.Stmt) ([]ir.Stmt, error) {
@@ -956,15 +1114,25 @@ func (fl *funcLower) forStmt(s *ast.ForStmt, goLabel string) ([]ir.Stmt, error) 
 	fl.continueStack = append(fl.continueStack, contL)
 	prevDeferLoop := fl.deferInLoop
 	fl.deferInLoop = true
+	var savedGoto string
 	if goLabel != "" {
-		fl.labels[goLabel] = &labelTargets{breakLabel: breakL, continueLabel: contL}
+		if lt := fl.labels[goLabel]; lt != nil {
+			savedGoto = lt.gotoLabel
+		}
+		fl.labels[goLabel] = &labelTargets{
+			breakLabel: breakL, continueLabel: contL, gotoLabel: savedGoto,
+		}
 	}
 	defer func() {
 		fl.breakStack = fl.breakStack[:len(fl.breakStack)-1]
 		fl.continueStack = fl.continueStack[:len(fl.continueStack)-1]
 		fl.deferInLoop = prevDeferLoop
 		if goLabel != "" {
-			delete(fl.labels, goLabel)
+			if savedGoto != "" {
+				fl.labels[goLabel] = &labelTargets{gotoLabel: savedGoto}
+			} else {
+				delete(fl.labels, goLabel)
+			}
 		}
 	}()
 
@@ -1649,6 +1817,12 @@ func (fl *funcLower) branchStmt(s *ast.BranchStmt) ([]ir.Stmt, error) {
 		lt, ok := fl.labels[s.Label.Name]
 		if !ok || lt.gotoLabel == "" {
 			return nil, fl.errorf(s, "goto %s: unknown or non-forward label", s.Label.Name)
+		}
+		if fl.gotoDispatch != nil && lt.gotoArm >= 0 {
+			return []ir.Stmt{
+				fl.assignVar(fl.gotoDispatch.State, fl.i32const(int64(lt.gotoArm))),
+				&ir.Br{Label: fl.gotoDispatch.Loop},
+			}, nil
 		}
 		return []ir.Stmt{&ir.Br{Label: lt.gotoLabel}}, nil
 	default:

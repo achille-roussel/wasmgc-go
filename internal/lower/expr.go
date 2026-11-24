@@ -218,7 +218,7 @@ func (fl *funcLower) constVal(v constant.Value, want ir.Type) (ir.Expr, error) {
 			return nil, fmt.Errorf("cannot convert %v to %s", v, name)
 		}
 		return &ir.Instr{
-			Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+			Op: ir.OpStructNew, Type: &ir.Ref{Null: true, Named: name},
 			Args: []ir.Expr{reEx, imEx},
 		}, nil
 	}
@@ -522,6 +522,10 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		// string == / != → runtime.stringeq (not ref.eq / i32.ne).
 		if isString(xt) || isString(yt) {
 			return fl.stringCompare(e, e.Op)
+		}
+		// Struct value == / != → field-wise $go.eq.* (not ref identity).
+		if xt != nil && isStruct(xt) {
+			return fl.structCompare(e, e.Op)
 		}
 		// ref.eq for comparable pointer refs
 		if xt != nil {
@@ -1589,7 +1593,7 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 			zero = fl.f64const(0)
 		}
 		return &ir.Instr{
-			Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+			Op: ir.OpStructNew, Type: &ir.Ref{Null: true, Named: name},
 			Args: []ir.Expr{re, zero},
 		}, stmts, nil
 	}
@@ -1842,7 +1846,7 @@ func (fl *funcLower) complexUnaryNeg(x ir.Expr, ty types.Type, want ir.Type, stm
 	re := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: name}, Field: "real", Args: []ir.Expr{x}}
 	im := &ir.Instr{Op: ir.OpStructGet, Type: &ir.Ref{Named: name}, Field: "imag", Args: []ir.Expr{x}}
 	return &ir.Instr{
-		Op: ir.OpStructNew, Type: &ir.Ref{Named: name},
+		Op: ir.OpStructNew, Type: &ir.Ref{Null: true, Named: name},
 		Args: []ir.Expr{
 			&ir.Instr{Op: neg, Args: []ir.Expr{re}},
 			&ir.Instr{Op: neg, Args: []ir.Expr{im}},
@@ -1870,7 +1874,7 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 		}
 	}
 	fl.ensureComplexType(name, elem)
-	cWant := &ir.Ref{Named: name}
+	cWant := &ir.Ref{Null: true, Named: name}
 	x, xstmts, err := fl.expr(e.X, cWant)
 	if err != nil {
 		return nil, nil, err
