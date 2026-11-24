@@ -1234,7 +1234,7 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 	sl, lo, hi := args[0], args[1], args[2]
 	st := &ir.Ref{Named: sliceName}
 	newLen := &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{hi, lo}}
-	// Bounds: lo > hi → panicSliceB (trap until M5).
+	// Bounds: lo > hi → panicSliceB.
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{lo, hi}},
 		Then: &ir.Seq{Stmts: rt.panicSliceB()},
@@ -1253,12 +1253,29 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 		// Slice headers require non-null data; array fields are refnull.
 		nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{sl}}
 		pre = append(pre, &ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: nn})
+		alen := &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}}}
+		alenT := &ir.Temp{Name: rt.fresh("alen"), Typ: ir.TypeI32}
+		pre = append(pre, &ir.Assign{Lhs: []ir.Dest{{Temp: alenT, Name: alenT.Name}}, Rhs: alen})
+		alenN := &ir.Name{Temp: alenT, Raw: alenT.Name}
 		var newCap ir.Expr
 		if len(args) > 3 {
+			// s[lo:hi:max] on array: 0 <= lo <= hi <= max <= len(array)
+			pre = append(pre, &ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{args[3], alenN}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			})
+			pre = append(pre, &ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{hi, args[3]}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			})
 			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
 		} else {
-			alen := &ir.Instr{Op: ir.OpArrayLen, Type: &ir.Ref{Named: arrName}, Args: []ir.Expr{&ir.Name{Temp: dataT, Raw: dataT.Name}}}
-			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{alen, lo}}
+			// s[lo:hi] on array: 0 <= lo <= hi <= len(array)
+			pre = append(pre, &ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{hi, alenN}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			})
+			newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{alenN, lo}}
 		}
 		pre = append(pre, &ir.Assign{
 			Lhs: s.Lhs,
@@ -1293,25 +1310,41 @@ func (rt *runtimeLower) expandSliceSlice(s *ir.Assign, in *ir.Instr, n *int) ([]
 	)
 	newOff := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(offV), lo}}
 	var newCap ir.Expr
-	if len(args) > 3 {
-		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
-	} else {
-		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{useV(capV), lo}}
-	}
-	nonNullBody := []ir.Stmt{
+	boundChecks := []ir.Stmt{
 		assignV(offV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}),
 		assignV(capV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "cap", Args: []ir.Expr{sl}}),
 		assignV(dataV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}),
-		assignV(resV, &ir.Instr{
-			Op:   ir.OpStructNew,
-			Type: st,
-			// data field is non-null in the header; value comes from a live slice.
-			Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(dataV)}},
-				newOff, newLen, newCap,
-			},
-		}),
 	}
+	if len(args) > 3 {
+		// s[lo:hi:max]: 0 <= lo <= hi <= max <= cap(s)
+		boundChecks = append(boundChecks,
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{args[3], useV(capV)}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{hi, args[3]}},
+				Then: &ir.Seq{Stmts: rt.panicSliceB()},
+			},
+		)
+		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{args[3], lo}}
+	} else {
+		// s[lo:hi]: 0 <= lo <= hi <= cap(s)
+		boundChecks = append(boundChecks, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{hi, useV(capV)}},
+			Then: &ir.Seq{Stmts: rt.panicSliceB()},
+		})
+		newCap = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{useV(capV), lo}}
+	}
+	nonNullBody := append(boundChecks, assignV(resV, &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: st,
+		// data field is non-null in the header; value comes from a live slice.
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(dataV)}},
+			newOff, newLen, newCap,
+		},
+	}))
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{sl}},
 		Then: &ir.Seq{Stmts: []ir.Stmt{

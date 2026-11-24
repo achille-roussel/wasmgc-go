@@ -517,6 +517,20 @@ func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (i
 				// cur < y → cmpstring(cur,y) < 0
 				pickY = &ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{cmp, fl.i32const(0)}}
 			}
+		} else if width == ir.F32 || width == ir.F64 {
+			// Use Wasm fN.min/fN.max: NaN propagates; −0 < +0 (matches Go).
+			op := ir.OpF64Min
+			if width == ir.F32 {
+				if isMin {
+					op = ir.OpF32Min
+				} else {
+					op = ir.OpF32Max
+				}
+			} else if !isMin {
+				op = ir.OpF64Max
+			}
+			cur = &ir.Instr{Op: op, Type: irt, Args: []ir.Expr{cur, y}}
+			continue
 		} else {
 			var lt ir.Op
 			switch width {
@@ -526,10 +540,6 @@ func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (i
 				} else {
 					lt = ir.OpI64LtS
 				}
-			case ir.F32:
-				lt = ir.OpF32Lt
-			case ir.F64:
-				lt = ir.OpF64Lt
 			default:
 				if unsigned {
 					lt = ir.OpI32LtU

@@ -1,3 +1,1 @@
 # math/bits — wasmgc-go test skips
-TestAdd64OverflowPanic — recover path: illegal cast in overflow panic/recover
-TestSub64OverflowPanic — recover path: illegal cast in overflow panic/recover

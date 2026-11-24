@@ -15,7 +15,6 @@ TestScanEmpty — scan/regexp, tables, or reflect gaps
 TestScanInts — scan/regexp, tables, or reflect gaps
 TestScanMultiple — scan/regexp, tables, or reflect gaps
 TestScanNewlinesAreSpaces — scan/regexp, tables, or reflect gaps
-TestScanNotPointer — scan/regexp, tables, or reflect gaps
 TestScanOverflow — scan/regexp, tables, or reflect gaps
 TestScanStateCount — scan/regexp, tables, or reflect gaps
 TestScanf — scan/regexp, tables, or reflect gaps
@@ -24,6 +23,5 @@ TestScanfNewlineMatchFormat — scan/regexp, tables, or reflect gaps
 TestScanln — scan/regexp, tables, or reflect gaps
 TestScanlnNewlinesTerminate — scan/regexp, tables, or reflect gaps
 TestScanlnNoNewline — scan/regexp, tables, or reflect gaps
-TestScanlnWithMiddleNewline — scan/regexp, tables, or reflect gaps
 TestSprintf — scan/regexp, tables, or reflect gaps
 TestStructPrinter — scan/regexp, tables, or reflect gaps

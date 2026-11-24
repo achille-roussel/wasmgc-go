@@ -482,6 +482,22 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 				op = ir.OpArrayGetS
 			}
 		}
+		// Recoverable panic instead of Wasm array OOB trap (issue4353, etc.).
+		arrTy := at
+		if arrName != "" {
+			arrTy = &ir.Ref{Named: arrName}
+		}
+		lenV := fl.newVar("alen", ir.TypeI32)
+		stmts = append(stmts,
+			fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}),
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
+					&ir.Unreachable{},
+				}},
+			},
+		)
 		return &ir.Instr{Op: op, Args: []ir.Expr{base, idx}, Type: at}, stmts, nil
 	}
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)

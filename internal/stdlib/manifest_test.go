@@ -37,7 +37,7 @@ func TestLoadManifestAndPIN(t *testing.T) {
 		t.Fatalf("slices: %+v", e)
 	}
 	e = man.Lookup("errors")
-	if e.Tier != TierVendor || len(e.Overlays) != 0 {
+	if e.Tier != TierOverlay || len(e.Overlays) != 1 || e.Overlays[0] != "wrap.go" {
 		t.Fatalf("errors: %+v", e)
 	}
 	e = man.Lookup("plugin")

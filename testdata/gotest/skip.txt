@@ -9,8 +9,6 @@ abi/convF_criteria.go — output mismatch
 abi/convT64_criteria.go — output mismatch
 abi/idata.go — unsupported: unsafe
 abi/method_wrapper.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*S).M p…
-abi/named_results.go — output mismatch: named results / print spacing
-abi/named_return_stuff.go — output mismatch: named returns / print spacing
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
 append.go — wasm validate/compile error
@@ -119,7 +117,6 @@ fixedbugs/issue27695.go — runtime error: reflect.Value.Interface on zero Value
 fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
 fixedbugs/issue28748.go — compile error: build: load: typecheck
-fixedbugs/issue28797.go — runtime error
 fixedbugs/issue29190.go — runtime error
 fixedbugs/issue29264.go — runtime error
 fixedbugs/issue29312.go — runtime error
@@ -147,7 +144,6 @@ fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3c2b17f60340 stack=[0x3c…
 fixedbugs/issue43292.go — compile error: codegen
-fixedbugs/issue4353.go — runtime error
 fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
 fixedbugs/issue4396a.go — runtime error

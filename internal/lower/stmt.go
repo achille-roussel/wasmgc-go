@@ -2023,6 +2023,7 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
 			if obj := fl.info.Defs[id]; obj != nil {
 				valObj = obj
+				fl.markRangeIterVar(valObj)
 			} else if obj := fl.info.Uses[id]; obj != nil {
 				valObj = obj
 			}

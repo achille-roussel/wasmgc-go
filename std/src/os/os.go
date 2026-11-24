@@ -98,17 +98,8 @@ var (
 	ErrPermission = errPermission()
 )
 
-type PathError struct {
-	Op   string
-	Path string
-	Err  error
-}
-
-func (e *PathError) Error() string {
-	return e.Op + " " + e.Path + ": " + e.Err.Error()
-}
-
-func (e *PathError) Unwrap() error { return e.Err }
+// PathError is the os alias of fs.PathError (matches upstream).
+type PathError = fs.PathError
 
 func errInvalid() error    { return syscall.EINVAL }
 func errClosed() error     { return syscall.EINVAL }

@@ -349,8 +349,10 @@ func (v Value) Elem() Value {
 			// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
 			// Only these kinds use flagRefBox in New; scalars use typed boxes
 			// and structs/arrays use the object ref itself as *T.
+			// Pointer too: ValueOf(&errP).Elem() for var errP *T must load
+			// through the fat pointer (errors.As / TestAs want check).
 			switch elem.Kind() {
-			case Map, Slice, Interface, Chan, Func:
+			case Map, Slice, Interface, Chan, Func, Pointer:
 				fl |= flagFatPtr
 			}
 		}
@@ -443,7 +445,9 @@ func (v Value) dataWord() unsafe.Pointer {
 	if v.flag&flagIndex != 0 && v.baseTyp != nil && v.baseTyp.rt != nil {
 		return runtime.ReflectCallIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot)
 	}
-	if v.flag&flagFatPtr != 0 && v.Kind() != Pointer {
+	if v.flag&flagFatPtr != 0 {
+		// Including Kind Pointer: Elem of &p for var p *T is a fat pointer
+		// to the slot holding the *T data word (errors.As / TestAs).
 		return runtime.ReflectFatPtrGet(v.data)
 	}
 	if v.flag&flagRefBox != 0 && v.Kind() != Pointer {

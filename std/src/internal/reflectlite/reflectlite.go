@@ -172,9 +172,57 @@ func (v Value) Field(i int) Value {
 	return Value{typ: wrap(ft), data: fd}
 }
 
-func (v Value) CanSet() bool { return false }
+func (v Value) CanSet() bool {
+	// reflectlite Values from Elem() of a pointer are treated as settable so
+	// errors.As can write through target. Full RO/addr flags live in reflect.
+	return v.IsValid()
+}
 
-func (v Value) Set(x Value) {}
+func (v Value) Set(x Value) {
+	if !v.IsValid() || !x.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case Struct:
+		// Shallow-copy fields into the existing object (errors.As → errorT).
+		n := v.NumField()
+		if n == 0 || v.typ == nil || v.typ.rt == nil || x.typ == nil {
+			return
+		}
+		extra := runtime.ReflectExtra(v.typ.rt)
+		for i := 0; i < n; i++ {
+			sf := x.Field(i)
+			runtime.ReflectCallSetField(extra, v.data, i, sf.data)
+		}
+	case String:
+		if v.data != nil {
+			runtime.ReflectSetBoxString(v.data, runtime.ReflectString(x.data))
+		}
+	case Bool, Int, Int8, Int16, Int32, Uint, Uint8, Uint16, Uint32, Uintptr:
+		if v.data != nil {
+			runtime.ReflectSetBoxI32(v.data, runtime.ReflectUnboxI32(x.data))
+		}
+	case Int64, Uint64:
+		if v.data != nil {
+			runtime.ReflectSetBoxI64(v.data, runtime.ReflectUnboxI64(x.data))
+		}
+	case Float32:
+		if v.data != nil {
+			runtime.ReflectSetBoxF32(v.data, runtime.ReflectUnboxF32(x.data))
+		}
+	case Float64:
+		if v.data != nil {
+			runtime.ReflectSetBoxF64(v.data, runtime.ReflectUnboxF64(x.data))
+		}
+	case Ptr, Interface, Map, Slice, Chan, Func:
+		// Addressable pointer slots (*T locals via &local) are $go.ptr.ref
+		// fat pointers; store the new data word through them.
+		if v.data == nil {
+			return
+		}
+		runtime.ReflectFatPtrSet(v.data, x.data)
+	}
+}
 
 func (v Value) Swap(w Value) {
 	// Soft: full swap needs settable values; sort Swapper uses typed paths.
@@ -278,10 +326,124 @@ func (t *rtype) Field(i int) StructField {
 	}
 }
 
-func (t *rtype) Implements(u Type) bool { return false }
+func (t *rtype) Implements(u Type) bool {
+	if t == nil || u == nil {
+		return false
+	}
+	if u.Kind() != Interface {
+		return false
+	}
+	// Empty interface (any): every type implements it.
+	if isEmptyIface(u) {
+		return true
+	}
+	// error: descriptors have null names, so identify by pointer to the
+	// TypeOf((*error)(nil)).Elem() descriptor. Approximate method set:
+	// structs / *struct / *iface may implement; basics do not.
+	if isErrorIface(u) {
+		switch t.Kind() {
+		case Struct:
+			return true
+		case Ptr:
+			ek := t.Elem().Kind()
+			return ek == Struct || ek == Ptr || ek == Interface
+		case Interface:
+			return true
+		}
+		return false
+	}
+	// Other interfaces: no method-set data yet (Timeout, etc.). errors.As
+	// uses assignToIface for those shapes; keep false here.
+	return false
+}
+
+var (
+	anyRtype   *runtime.Rtype
+	errorRtype *runtime.Rtype
+)
+
+func ensureIfaceRtypes() {
+	if anyRtype == nil {
+		if a := TypeOf((*any)(nil)); a != nil {
+			if ae := a.Elem(); ae != nil {
+				if ar, ok := ae.(*rtype); ok {
+					anyRtype = ar.rt
+				}
+			}
+		}
+	}
+	if errorRtype == nil {
+		if e := TypeOf((*error)(nil)); e != nil {
+			if ee := e.Elem(); ee != nil {
+				if er, ok := ee.(*rtype); ok {
+					errorRtype = er.rt
+				}
+			}
+		}
+	}
+}
+
+func isEmptyIface(u Type) bool {
+	if u == nil || u.Kind() != Interface {
+		return false
+	}
+	ur, ok := u.(*rtype)
+	if !ok || ur.rt == nil {
+		return false
+	}
+	ensureIfaceRtypes()
+	return anyRtype != nil && ur.rt == anyRtype
+}
+
+func isErrorIface(u Type) bool {
+	if u == nil || u.Kind() != Interface {
+		return false
+	}
+	ur, ok := u.(*rtype)
+	if !ok || ur.rt == nil {
+		return false
+	}
+	ensureIfaceRtypes()
+	return errorRtype != nil && ur.rt == errorRtype
+}
 
 func (t *rtype) AssignableTo(u Type) bool {
-	return t != nil && u != nil && t.Kind() == u.Kind()
+	if t == nil || u == nil {
+		return false
+	}
+	// Identical descriptors (same dynamic type).
+	if tu, ok := u.(*rtype); ok && t.rt != nil && tu.rt != nil && t.rt == tu.rt {
+		return true
+	}
+	// T assignable to interface U iff T implements U.
+	if u.Kind() == Interface {
+		return t.Implements(u)
+	}
+	// Named types: require equal names (and kind). Do not treat all structs
+	// as mutually assignable — errors.As relies on this for Unwrap chains.
+	if t.Kind() != u.Kind() {
+		return false
+	}
+	tn, un := t.Name(), u.Name()
+	if tn != "" || un != "" {
+		return tn == un && t.PkgPath() == u.PkgPath()
+	}
+	// Unnamed: compare structure for pointers/slices.
+	switch t.Kind() {
+	case Ptr, Slice, Array:
+		te, ue := t.Elem(), u.Elem()
+		if te == nil || ue == nil {
+			return false
+		}
+		if ter, ok := te.(*rtype); ok {
+			if uer, ok := ue.(*rtype); ok {
+				return ter.AssignableTo(uer)
+			}
+		}
+		return false
+	}
+	// Unnamed basics of the same kind.
+	return t.Kind() == Bool || t.Kind() <= Complex128
 }
 
 func (t *rtype) Comparable() bool {
