@@ -91,8 +91,19 @@ func (t Time) Equal(u Time) bool { return t.ext == u.ext }
 // Sub returns the duration t-u.
 func (t Time) Sub(u Time) Duration { return Duration(t.ext - u.ext) }
 
+// Add returns the time t+d.
+func (t Time) Add(d Duration) Time { return Time{ext: t.ext + int64(d)} }
+
 // Since returns the time elapsed since t.
 func Since(t Time) Duration { return Now().Sub(t) }
+
+// Until returns the duration until t.
+func Until(t Time) Duration { return t.Sub(Now()) }
+
+// String returns a decimal nanosecond count (enough for logging/debug).
+func (t Time) String() string {
+	return strconv.FormatInt(t.ext, 10)
+}
 
 // Unix returns t as a Unix time (seconds since January 1, 1970 UTC).
 func (t Time) Unix() int64 { return t.ext / 1e9 }
@@ -190,10 +201,63 @@ func Sleep(d Duration) {
 // After waits for the duration to elapse and then sends the current time
 // on the returned channel.
 func After(d Duration) <-chan Time {
+	return NewTimer(d).C
+}
+
+// Timer represents a single event. When the Timer expires, the current
+// time will be sent on C unless the Timer was created by AfterFunc.
+type Timer struct {
+	C <-chan Time
+	c chan Time
+}
+
+// NewTimer creates a new Timer that will send the current time on its
+// channel after at least duration d.
+func NewTimer(d Duration) *Timer {
 	c := make(chan Time, 1)
+	t := &Timer{C: c, c: c}
 	go func() {
 		Sleep(d)
-		c <- Now()
+		select {
+		case c <- Now():
+		default:
+		}
 	}()
-	return c
+	return t
+}
+
+// Stop prevents the Timer from firing. Stub: always reports stopped.
+func (t *Timer) Stop() bool {
+	if t == nil {
+		return false
+	}
+	return true
+}
+
+// Reset changes the timer to expire after duration d. Stub: starts a new sleep.
+func (t *Timer) Reset(d Duration) bool {
+	if t == nil {
+		return false
+	}
+	go func() {
+		Sleep(d)
+		select {
+		case t.c <- Now():
+		default:
+		}
+	}()
+	return true
+}
+
+// AfterFunc waits for the duration to elapse and then calls f in its own
+// goroutine. It returns a Timer that can be used to cancel the call using
+// its Stop method (best-effort under wasmgc).
+func AfterFunc(d Duration, f func()) *Timer {
+	c := make(chan Time, 1)
+	t := &Timer{C: c, c: c}
+	go func() {
+		Sleep(d)
+		f()
+	}()
+	return t
 }

@@ -70,6 +70,18 @@ func MainStart(tests []InternalTest, benchmarks []InternalBenchmark, fuzzTargets
 	return &M{tests: tests}
 }
 
+// Main is the legacy entry point used by some $GOROOT/test programs.
+// It runs the provided tests via MainStart. On success it returns so main can
+// fall through (syscall.Exit is still a stub panic); on failure it calls
+// os.Exit which may panic under wasmgc.
+func Main(matchString func(pat, str string) (bool, error), tests []InternalTest, benchmarks []InternalBenchmark, examples []InternalExample) {
+	_ = matchString
+	m := MainStart(tests, benchmarks, nil, examples)
+	if code := m.Run(); code != 0 {
+		os.Exit(code)
+	}
+}
+
 // Run executes matching tests and returns a process exit code.
 func (m *M) Run() int {
 	matchPat := parseTestFlags()

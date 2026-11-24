@@ -9,11 +9,8 @@ import "unsafe"
 const GOOS = "js"
 const GOARCH = "wasmgc"
 
-func Goexit() { goexit() }
-
-func GOROOT() string { return "" }
-
-func Version() string { return "wasmgc-go" }
+// Goexit, GOROOT, and Version live in public_stubs.go so rtlink.EnsurePublic
+// can link them when PackageHigh skips lowering GOROOT runtime.
 
 // GC, KeepAlive, Caller, Stack, FuncForPC, GOMAXPROCS, SetFinalizer, and
 // Frames live in public_stubs.go so rtlink.EnsurePublic can link them alone
