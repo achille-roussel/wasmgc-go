@@ -1,29 +1,15 @@
 # slices — wasmgc-go test skips
 TestBinarySearchFloats — test assertion failed
 TestChunk — compile: load: typecheck slices_test:
-TestChunkPanics — compile: load: typecheck slices_test:
-TestCompactClearTail — runtime error
-TestCompactFuncClearTail — runtime error
 TestConcat_too_large — runtime error
-TestDelete — compile: load: typecheck slices_test:
-TestDeleteClearTail — compile: load: typecheck slices_test:
 TestDeletePanics — compile: load: typecheck slices_test:
 TestInference — compile: load: typecheck slices_test:
-TestInsert — compile: load: typecheck slices_test:
-TestInsertGrowthRate — compile: load: typecheck slices_test:
-TestInsertOverlap — compile: load: typecheck slices_test:
 TestInsertPanics — compile: load: typecheck slices_test:
 TestMinMax — panic: slices.Min: empty list
 TestMinMaxNaNs — test assertion failed
-TestMinMaxPanics — test assertion failed
 TestNilness — compile: load: typecheck slices_test:
 TestRepeat — runtime error
 TestRepeatPanics — runtime error
-TestReplace — compile: load: typecheck slices_test:
-TestReplaceClearTail — compile: load: typecheck slices_test:
-TestReplaceEndClearTail — compile: load: typecheck slices_test:
-TestReplaceGrow — compile: load: typecheck slices_test:
-TestReplaceGrowthRate — compile: load: typecheck slices_test:
 TestReplaceOverlap — compile: load: typecheck slices_test:
 TestReplacePanics — compile: load: typecheck slices_test:
 TestSortedStableFunc — compile: load: typecheck slices_test:

@@ -12,4 +12,3 @@ TestBuilderAllocs — runtime fail after typecheck unlock
 TestBuilderCopyPanic — runtime fail after typecheck unlock
 TestPickAlgorithm — runtime fail after typecheck unlock
 TestWriteStringError — runtime fail after typecheck unlock
-TestMap — runtime fail after typecheck unlock
