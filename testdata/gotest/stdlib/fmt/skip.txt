@@ -6,7 +6,6 @@ TestCountMallocs — scan/regexp, tables, or reflect gaps
 TestEOF — scan/regexp, tables, or reflect gaps
 TestEOFAllTypes — scan/regexp, tables, or reflect gaps
 TestEOFAtEndOfInput — scan/regexp, tables, or reflect gaps
-TestErrorf — scan/regexp, tables, or reflect gaps
 TestFormatterFlags — scan/regexp, tables, or reflect gaps
 TestHexByte — scan/regexp, tables, or reflect gaps
 TestHexBytes — scan/regexp, tables, or reflect gaps

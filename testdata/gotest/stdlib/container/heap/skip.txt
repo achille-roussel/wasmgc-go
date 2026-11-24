@@ -1,2 +1,1 @@
 # container/heap — wasmgc-go test skips
-TestFix — compile: sync/atomic: lower: param addr: cannot form fat pointer to unsafe.Pointer]

@@ -6,8 +6,8 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~671** pass / **355** skip-listed; stdlib
-per-test **459** (post-#50–#53).
+**Current (this PR):** `$GOROOT/test` **~672** pass / **354** skip-listed; stdlib
+per-test **437** (nil-slice Len + struct-array zero + array reflect).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -31,7 +31,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 355 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 354 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -52,22 +52,22 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **459** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **437** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
-| encoding/json | 170 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
+| encoding/json | 166 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
-| fmt | 32 | scan/regexp + tables/reflect | Fixable |
+| fmt | 31 | scan/regexp + tables/reflect | Fixable |
 | slices | **30** | Insert/Delete/Replace generics; iter+rand/v2 | Was 54 |
-| sort | 26 | Tables / pdqsort / stable | Runtime |
-| math/bits | 25 | `uint64`→`uint` overflow on 32-bit word | Sizes / build tags |
+| sort | 26 | Tables / pdqsort / stable; needs `math/rand/v2` in tests | Runtime |
+| math/bits | **11** | Div/Reverse panic+OOB leftovers | Was 25 |
 | bytes | **9** | Remaining validate + IndexAny/Split/Repeat | Was 80 |
 | strings | **14** | Compare IR; Builder/Map leftovers | Was 61 |
 | errors | 2 | `Is`/`AsType` leftovers | **Fixable** |
-| strconv | 2 | ParseComplex + AllocsPerRun | complex reflect |
+| strconv | 1 | ParseComplex | complex reflect |
 | maps | 1 | `Clone` large keys / `-0` | Overlay |
-| container/heap | 1 | remaining | Fixable |
+| container/heap | **0** | — | **done** |
 | math | **0** | — | **done** |
 | container/ring | 0 | — | **done** |
 | unicode/utf8 | 0 | — | **done** |

@@ -397,6 +397,10 @@ func (v Value) Len() int {
 	case String:
 		return len(runtime.ReflectString(v.dataWord()))
 	case Slice, Array:
+		// Nil slices/maps are a null data word; Len is 0 (matches Go).
+		if v.Kind() == Slice && v.IsNil() {
+			return 0
+		}
 		return runtime.ReflectCallLen(runtime.ReflectExtra(v.typ.rt), v.dataWord())
 	case Map:
 		return runtime.ReflectMapLen(v.dataWord())
@@ -1038,6 +1042,9 @@ func deepValueEqual(v1, v2 Value, depth int) bool {
 	case Slice:
 		if v1.IsNil() != v2.IsNil() {
 			return false
+		}
+		if v1.IsNil() {
+			return true
 		}
 		if v1.Len() != v2.Len() {
 			return false
