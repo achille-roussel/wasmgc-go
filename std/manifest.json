@@ -242,6 +242,10 @@
       "tier": "rewrite",
       "notes": "M10: minimal T/M/MainStart for wasmgc-go test; no testdeps/fuzz"
     },
+    "internal/testenv": {
+      "tier": "rewrite",
+      "notes": "Thin Builder/OptimizationOff/MustHaveExec stubs; avoids os/exec + SysProcAttr"
+    },
     "runtime/debug": {
       "tier": "rewrite",
       "notes": "Thin stubs: Stack/SetGCPercent/SetMaxStack/FreeOSMemory; no internal/poll"

@@ -785,17 +785,74 @@ func containsPanicCall(body *ast.BlockStmt, info *types.Info) bool {
 	return found
 }
 
-// lowerBodyless emits an IR func with an empty body for asm/intrinsic binding.
+// lowerBodyless emits an IR func for asm/intrinsic/linkname binding.
+// Known linkname trampolines get a real body so package tests can call them
+// (math/rand.runtime_rand → runtime.rand).
 func (l *pkgLower) lowerBodyless(fd *ast.FuncDecl, irName string) (*ir.Func, error) {
 	fl, err := l.newFuncLower(fd, irName)
 	if err != nil {
 		return nil, err
 	}
+	body := &ir.Seq{}
+	if fd.Name != nil && fd.Name.Name == "runtime_rand" && len(fl.params) == 0 && len(fl.results) == 1 {
+		// //go:linkname runtime_rand runtime.rand — math/rand does not import
+		// runtime, so PackageHigh never links runtime.rand. Emit a tiny
+		// xorshift trampoline with a package-local state global instead.
+		stateName := irName + ".$state"
+		if l.mod.LookupGlobal(stateName) == nil {
+			l.mod.Globals = append(l.mod.Globals, &ir.Global{
+				Name: stateName,
+				Typ:  ir.TypeI64,
+				Mut:  true,
+				Init: &ir.Const{Op: ir.OpI64Const, I64: 0x4d595df4d0f33173},
+			})
+		}
+		s := &ir.Var{Name: "s", Typ: ir.TypeI64}
+		i64c := func(v int64) ir.Expr { return &ir.Const{Op: ir.OpI64Const, I64: v} }
+		body = &ir.Seq{Stmts: []ir.Stmt{
+			&ir.VarDef{Var: s},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: s}}, Rhs: &ir.Instr{
+				Op: ir.OpGlobalGet, Global: stateName, Type: ir.TypeI64,
+			}},
+			// s ^= s << 13
+			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: s}}, Rhs: &ir.Instr{
+				Op: ir.OpI64Xor, Args: []ir.Expr{
+					&ir.Name{Raw: "s", Var: s},
+					&ir.Instr{Op: ir.OpI64Shl, Args: []ir.Expr{
+						&ir.Name{Raw: "s", Var: s}, i64c(13),
+					}},
+				},
+			}},
+			// s ^= s >> 7
+			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: s}}, Rhs: &ir.Instr{
+				Op: ir.OpI64Xor, Args: []ir.Expr{
+					&ir.Name{Raw: "s", Var: s},
+					&ir.Instr{Op: ir.OpI64ShrU, Args: []ir.Expr{
+						&ir.Name{Raw: "s", Var: s}, i64c(7),
+					}},
+				},
+			}},
+			// s ^= s << 17
+			&ir.Assign{Lhs: []ir.Dest{{Name: "s", Var: s}}, Rhs: &ir.Instr{
+				Op: ir.OpI64Xor, Args: []ir.Expr{
+					&ir.Name{Raw: "s", Var: s},
+					&ir.Instr{Op: ir.OpI64Shl, Args: []ir.Expr{
+						&ir.Name{Raw: "s", Var: s}, i64c(17),
+					}},
+				},
+			}},
+			&ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpGlobalSet, Global: stateName,
+				Args: []ir.Expr{&ir.Name{Raw: "s", Var: s}},
+			}},
+			&ir.Return{Results: []ir.Expr{&ir.Name{Raw: "s", Var: s}}},
+		}}
+	}
 	return &ir.Func{
 		Name:    irName,
 		Params:  fl.params,
 		Results: fl.results,
-		Body:    &ir.Seq{},
+		Body:    body,
 	}, nil
 }
 

@@ -34,10 +34,53 @@ type InternalExample struct {
 }
 
 // B is a stub benchmark harness (not executed in v1).
-type B struct{}
+// Methods exist so leftover helpers typecheck if strip misses them.
+type B struct {
+	N int
+}
+
+func (b *B) Helper()              {}
+func (b *B) Fatal(args ...any)    { _, _ = b, args }
+func (b *B) Fatalf(format string, args ...any) {
+	_, _, _ = b, format, args
+}
+func (b *B) Error(args ...any)                  { _, _ = b, args }
+func (b *B) Errorf(format string, args ...any)  { _, _, _ = b, format, args }
+func (b *B) Log(args ...any)                    { _, _ = b, args }
+func (b *B) Logf(format string, args ...any)    { _, _, _ = b, format, args }
+func (b *B) SetBytes(n int64)                   { _, _ = b, n }
+func (b *B) ReportAllocs()                      {}
+func (b *B) ResetTimer()                        {}
+func (b *B) StartTimer()                        {}
+func (b *B) StopTimer()                         {}
+func (b *B) Run(name string, f func(b *B)) bool {
+	_, _ = name, f
+	return true
+}
 
 // F is a stub fuzz harness (not executed in v1).
 type F struct{}
+
+// TB is the common interface of T and B used by internal/testenv.
+type TB interface {
+	Cleanup(func())
+	Error(args ...any)
+	Errorf(format string, args ...any)
+	Fail()
+	FailNow()
+	Failed() bool
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+	Helper()
+	Log(args ...any)
+	Logf(format string, args ...any)
+	Name() string
+	Setenv(key, value string)
+	Skip(args ...any)
+	SkipNow()
+	Skipf(format string, args ...any)
+	TempDir() string
+}
 
 // T is the test state passed to TestXxx.
 type T struct {
@@ -272,6 +315,10 @@ func Verbose() bool { parseTestFlags(); return verbose }
 
 // CoverMode is always empty in the wasmgc rewrite.
 func CoverMode() string { return "" }
+
+// Testing reports whether the current binary is a test binary.
+// Always true under wasmgc-go test.
+func Testing() bool { return true }
 
 // AllocsPerRun returns 0; allocation accounting is not available.
 func AllocsPerRun(n int, f func()) float64 {

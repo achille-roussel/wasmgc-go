@@ -8,21 +8,10 @@ TestChunkRange — compile: load: typecheck slices_test:
 TestCollect — compile: load: typecheck slices_test:
 TestCompactClearTail — runtime error
 TestCompactFuncClearTail — runtime error
-TestCompare — compile: load: typecheck slices_test:
-TestCompareFunc — compile: load: typecheck slices_test:
-TestConcat — compile: load: typecheck slices_test:
 TestConcat_too_large — runtime error
-TestContains — compile: load: typecheck slices_test:
-TestContainsFunc — compile: load: typecheck slices_test:
 TestDelete — compile: load: typecheck slices_test:
 TestDeleteClearTail — compile: load: typecheck slices_test:
-TestDeleteFunc — compile: load: typecheck slices_test:
 TestDeletePanics — compile: load: typecheck slices_test:
-TestEqual — compile: load: typecheck slices_test:
-TestEqualFunc — compile: load: typecheck slices_test:
-TestGrow — compile: load: typecheck slices_test:
-TestIndex — compile: load: typecheck slices_test:
-TestIndexFunc — compile: load: typecheck slices_test:
 TestInference — compile: load: typecheck slices_test:
 TestInsert — compile: load: typecheck slices_test:
 TestInsertGrowthRate — compile: load: typecheck slices_test:
@@ -41,15 +30,11 @@ TestReplaceGrow — compile: load: typecheck slices_test:
 TestReplaceGrowthRate — compile: load: typecheck slices_test:
 TestReplaceOverlap — compile: load: typecheck slices_test:
 TestReplacePanics — compile: load: typecheck slices_test:
-TestSortFloat64Slice — compile: load: typecheck slices_test:
-TestSortFuncIntSlice — compile: load: typecheck slices_test:
-TestSortIntSlice — compile: load: typecheck slices_test:
-TestSortLarge_Random — compile: load: typecheck slices_test:
-TestSortStringSlice — compile: load: typecheck slices_test:
 TestSorted — compile: load: typecheck slices_test:
 TestSortedFunc — compile: load: typecheck slices_test:
 TestSortedStableFunc — compile: load: typecheck slices_test:
-TestStability — compile: load: typecheck slices_test:
 TestValues — compile: load: typecheck slices_test:
 TestValuesAppendSeq — compile: load: typecheck slices_test:
 TestValuesCollect — compile: load: typecheck slices_test:
+TestGrow — runtime fail after typecheck unlock
+TestStability — runtime fail after typecheck unlock

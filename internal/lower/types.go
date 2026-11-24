@@ -707,6 +707,9 @@ func fatPtrKind(elem types.Type) (string, error) {
 			types.Complex64, types.Complex128, types.UntypedComplex:
 			// Stored as $go.complex{64,128} struct refs (docs/design/03).
 			return "ref", nil
+		case types.UnsafePointer:
+			// *unsafe.Pointer (sync/atomic.LoadPointer) — host ref cell.
+			return "ref", nil
 		}
 	case *types.Slice, *types.Pointer, *types.Map, *types.Chan, *types.Signature, *types.Interface:
 		return "ref", nil
