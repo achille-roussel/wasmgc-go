@@ -6,6 +6,7 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"math"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -371,16 +372,19 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 		if want != nil {
 			irt = want
 		}
+		var ex ir.Expr
 		switch irNumWidth(irt) {
 		case ir.I64:
-			return &ir.Instr{Op: ir.OpI64Sub, Args: []ir.Expr{fl.i64const(0), x}}, stmts, nil
+			ex = &ir.Instr{Op: ir.OpI64Sub, Args: []ir.Expr{fl.i64const(0), x}}
 		case ir.F32:
 			return &ir.Instr{Op: ir.OpF32Neg, Args: []ir.Expr{x}}, stmts, nil
 		case ir.F64:
 			return &ir.Instr{Op: ir.OpF64Neg, Args: []ir.Expr{x}}, stmts, nil
 		default:
-			return &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{fl.i32const(0), x}}, stmts, nil
+			ex = &ir.Instr{Op: ir.OpI32Sub, Args: []ir.Expr{fl.i32const(0), x}}
 		}
+		// Sub-width integers must truncate after negation (issue9604).
+		return fl.truncateInt(ex, ty), stmts, nil
 	case token.NOT:
 		x, stmts, err := fl.boolExpr(e.X)
 		if err != nil {
@@ -394,10 +398,14 @@ func (fl *funcLower) unary(e *ast.UnaryExpr, want ir.Type) (ir.Expr, []ir.Stmt, 
 		}
 		ty := fl.typeOf(e)
 		irt, _ := fl.mapType(ty)
+		var ex ir.Expr
 		if irNumWidth(irt) == ir.I64 {
-			return &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{x, fl.i64const(-1)}}, stmts, nil
+			ex = &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{x, fl.i64const(-1)}}
+		} else {
+			ex = &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{x, fl.i32const(-1)}}
 		}
-		return &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{x, fl.i32const(-1)}}, stmts, nil
+		// Sub-width integers (uint16 etc.) must truncate after ^ (issue9604).
+		return fl.truncateInt(ex, ty), stmts, nil
 	case token.AND:
 		return fl.addrOf(e.X, want)
 	case token.ARROW:
@@ -713,6 +721,58 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 				&ir.Unreachable{},
 			}},
 		})
+	}
+	// Signed MinInt / -1 (and %) is defined in Go as quotient=MinInt, rem=0.
+	// Wasm i32/i64.div_s traps on that case — special-case before the op.
+	if (e.Op == token.QUO || e.Op == token.REM) && isInteger(xt) && !isUnsigned(xt) {
+		xVar := fl.newVar("divx", xWant)
+		yVar := fl.newVar("divy2", yWant)
+		res := fl.newVar("divr", xWant)
+		stmts = append(stmts, fl.assignVar(xVar, x), fl.assignVar(yVar, y))
+		x, y = fl.useVar(xVar), fl.useVar(yVar)
+		var min ir.Expr
+		var neg1 ir.Expr
+		var isMin ir.Expr
+		var isNeg1 ir.Expr
+		if irNumWidth(xWant) == ir.I64 {
+			min = fl.i64const(math.MinInt64)
+			neg1 = fl.i64const(-1)
+			isMin = &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{x, min}}
+			isNeg1 = &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{y, neg1}}
+		} else {
+			// Sub-width signed ints live in i32; MinInt for the Go width.
+			bits := goIntBits(xt)
+			minVal := int64(-1) << (bits - 1)
+			if bits == 0 || bits >= 32 {
+				minVal = math.MinInt32
+			}
+			min = fl.i32const(minVal)
+			neg1 = fl.i32const(-1)
+			isMin = &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{x, min}}
+			isNeg1 = &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{y, neg1}}
+		}
+		overflow := &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{isMin, isNeg1}}
+		var special ir.Expr
+		if e.Op == token.REM {
+			if irNumWidth(xWant) == ir.I64 {
+				special = fl.i64const(0)
+			} else {
+				special = fl.i32const(0)
+			}
+		} else {
+			special = x // MinInt
+		}
+		normal := ir.Expr(&ir.Instr{Op: op, Args: []ir.Expr{x, y}})
+		stmts = append(stmts, &ir.If{
+			Cond: overflow,
+			Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, special)}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, normal)}},
+		})
+		var ex ir.Expr = fl.useVar(res)
+		if isArithmeticOp(e.Op) {
+			ex = fl.truncateInt(ex, xt)
+		}
+		return ex, stmts, nil
 	}
 	ex := ir.Expr(&ir.Instr{Op: op, Args: []ir.Expr{x, y}})
 	// Sub-width integers live in i32/i64 registers; truncate so uint8(255)+1

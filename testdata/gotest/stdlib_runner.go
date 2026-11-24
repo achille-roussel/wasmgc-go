@@ -79,6 +79,11 @@ func RunStdlibPackage(opts StdlibOptions, importPath string) StdlibResult {
 	if opts.SkipRoot != "" {
 		args = append(args, "-skipdir", opts.SkipRoot)
 	}
+	// Forward harness timeout so the driver does not use its 120s default
+	// while the outer runWithTimeout allows longer (e.g. 180s for bytes).
+	if opts.Timeout > 0 {
+		args = append(args, "-timeout", opts.Timeout.String())
+	}
 	args = append(args, importPath)
 
 	cmd := exec.Command(opts.Driver, args...)

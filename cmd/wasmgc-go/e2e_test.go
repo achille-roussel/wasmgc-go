@@ -736,9 +736,10 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is).
-	// #20 shrunk toward 80 KiB; tighten again once assert itabs are pruned.
-	runM8(t, "m8_fmt_hello", "hello\n", 160*1024)
+	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is) and
+	// array/struct value-clone helpers (docs/design/03). Tighten once clone
+	// is shared/pruned across packages.
+	runM8(t, "m8_fmt_hello", "hello\n", 170*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {

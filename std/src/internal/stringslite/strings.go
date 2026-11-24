@@ -74,8 +74,15 @@ func TrimSuffix(s, suffix string) string {
 	return s
 }
 
-// Clone returns a string with the same contents as s. wasmgc strings are
-// immutable GC objects; returning s is sufficient (no shared mutable backing).
+// Clone returns a fresh copy of s (same contract as upstream stringslite.Clone).
+// Empty input returns the zero string so unsafe.StringData matches var s string.
+// Non-empty input copies bytes so the result does not share the input backing.
 func Clone(s string) string {
-	return s
+	if len(s) == 0 {
+		var out string
+		return out
+	}
+	b := make([]byte, len(s))
+	copy(b, s)
+	return string(b)
 }

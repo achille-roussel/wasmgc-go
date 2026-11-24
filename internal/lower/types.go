@@ -545,6 +545,11 @@ func (l *pkgLower) structFields(st *types.Struct) ([]ir.Field, error) {
 			return nil, fmt.Errorf("field %s: %w", f.Name(), err)
 		}
 		fld := ir.Field{Name: f.Name(), Type: ft, Mut: true}
+		// Blank fields all share Go name "_"; uniquify so struct.get/set and
+		// value-clone can address each padding slot (issue21048).
+		if f.Name() == "_" {
+			fld.Name = fmt.Sprintf("_%d", i)
+		}
 		ftGo := types.Unalias(f.Type())
 		if a, ok := ftGo.Underlying().(*types.Array); ok {
 			fld.Len = a.Len()

@@ -1,12 +1,10 @@
 # strings — wasmgc-go test skips
 # strings — wasmgc-go test skips
-TestClone — runtime fail after typecheck unlock
 TestCompare — compile: load: typecheck strings_test:
 TestFinderCreation — runtime error
 TestFinderNext — runtime error
 TestReplacer — runtime fail after typecheck unlock
-TestBuilderAllocs — runtime fail after typecheck unlock
+TestBuilderAllocs — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)
 TestBuilderGrow — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)
-TestBuilderCopyPanic — runtime fail after typecheck unlock
 TestPickAlgorithm — runtime fail after typecheck unlock
 TestWriteStringError — runtime fail after typecheck unlock

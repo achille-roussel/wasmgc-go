@@ -143,7 +143,9 @@ func TestGOROOT(t *testing.T) {
 		Node:       "node",
 		Driver:     driver,
 		Skip:       skipMap,
-		Timeout:    30 * time.Second,
+		// Wasm compile+run of heavy fixedbugs (e.g. issue78081) sits near
+		// 25–35s on modest CI hosts; 30s flakes. 90s matches wasmgc-go test.
+		Timeout: 90 * time.Second,
 	}
 
 	// Materialize once when running more than smoke (imports need GOROOT).

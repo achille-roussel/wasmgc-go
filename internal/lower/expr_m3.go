@@ -212,7 +212,20 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		ty, _ = fl.mapType(fl.typeOf(e))
 	}
 	// *Struct / *[N]T: pointer and value share the same object ref.
+	// Nil-check for value uses (iface convert, append elem, _ = *p). Callers
+	// that only need the type length (len/cap/range) must evaluate the pointer
+	// without going through this path — see builtinLenCap / rangeStmt.
 	if xt != nil && isObjectPointer(xt) {
+		pv := fl.newVar("p", ptrTy)
+		stmts = append(stmts, fl.assignVar(pv, ptr))
+		ptr = fl.useVar(pv)
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+				&ir.Unreachable{},
+			}},
+		})
 		return ptr, stmts, nil
 	}
 	// Materialize pointer into a typed local so RuntimeOps expandDeref sees
@@ -445,9 +458,42 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		ty, _ = fl.mapType(fl.typeOf(e))
 	}
 	if isString(xt) {
+		// Recoverable panic instead of Wasm string/array OOB trap.
+		sv := fl.newVar("s", &ir.Ref{Named: "$go.string", Null: true})
+		stmts = append(stmts, fl.assignVar(sv, base))
+		base = fl.useVar(sv)
+		lenV := fl.newVar("slen", ir.TypeI32)
+		stmts = append(stmts,
+			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
+					&ir.Unreachable{},
+				}},
+			},
+		)
 		return &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{base, idx}}, stmts, nil
 	}
 	if isSlice(xt) {
+		st, err := fl.mapType(xt)
+		if err != nil {
+			return nil, nil, err
+		}
+		sv := fl.newVar("sl", st)
+		stmts = append(stmts, fl.assignVar(sv, base))
+		base = fl.useVar(sv)
+		lenV := fl.newVar("slen", ir.TypeI32)
+		stmts = append(stmts,
+			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
+					&ir.Unreachable{},
+				}},
+			},
+		)
 		return &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{base, idx}, Type: ty}, stmts, nil
 	}
 	if isArray(xt) || isPtrToArray(xt) {
@@ -460,6 +506,18 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 			if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
 				elemT = p.Elem()
 			}
+			// nil *[N]T must Go-panic (nil.go), not Wasm-trap on array.len/get.
+			pt, _ := fl.mapType(xt)
+			pv := fl.newVar("parr", pt)
+			stmts = append(stmts, fl.assignVar(pv, base))
+			base = fl.useVar(pv)
+			stmts = append(stmts, &ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{base}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+					&ir.Unreachable{},
+				}},
+			})
 		}
 		if irt, err := fl.mapType(elemT); err == nil {
 			if r, ok := irt.(*ir.Ref); ok {
@@ -733,6 +791,12 @@ func (fl *funcLower) structLit(e *ast.CompositeLit, st *types.Struct, irt ir.Typ
 					continue
 				}
 			}
+		}
+		// Prefer goZeroValue so [N]T fields get array.new (not null) — null
+		// array fields break indexing and reflect.DeepEqual vs map-stored zeros.
+		if z, ok := fl.goZeroValue(ftGo, ft); ok {
+			vals[i] = z
+			continue
 		}
 		z, err := fl.zeroValue(ft)
 		if err != nil {

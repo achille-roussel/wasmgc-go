@@ -1,5 +1,3 @@
 # sort — wasmgc-go test skips
-TestReverseSortIntSlice — sort tables / pdqsort / exhaustive / stable paths
-TestSlice — sort tables / pdqsort / exhaustive / stable paths
 TestStability — sort tables / pdqsort / exhaustive / stable paths
 TestStructSorts — sort tables / pdqsort / exhaustive / stable paths

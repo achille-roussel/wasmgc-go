@@ -1161,11 +1161,20 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 		case types.String:
 			return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{a, b}}
 		case types.Complex64, types.Complex128, types.UntypedComplex:
-			// complex is a Wasm GC struct ref ($go.complex64/128), not an i32.
-			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
-			return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},
-				&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{b}},
+			// complex is a Wasm GC struct ref — compare real/imag, not object identity.
+			name := "$go.complex128"
+			feq := ir.OpF64Eq
+			if u.Kind() == types.Complex64 {
+				name, feq = "$go.complex64", ir.OpF32Eq
+			}
+			box := &ir.Ref{Named: name}
+			are := &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "real", Args: []ir.Expr{a}}
+			aim := &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "imag", Args: []ir.Expr{a}}
+			bre := &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "real", Args: []ir.Expr{b}}
+			bim := &ir.Instr{Op: ir.OpStructGet, Type: box, Field: "imag", Args: []ir.Expr{b}}
+			return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+				&ir.Instr{Op: feq, Args: []ir.Expr{are, bre}},
+				&ir.Instr{Op: feq, Args: []ir.Expr{aim, bim}},
 			}}
 		case types.UnsafePointer:
 			// anyref — reference identity, not i32.
@@ -1198,8 +1207,11 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{a}},
 			&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{b}},
 		}}
+	case *types.Interface:
+		// Interface values compare by type+data (iface.eq), not iface object identity.
+		return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{a, b}}
 	default:
-		// Pointers, slices, maps, chans, ifaces: reference identity.
+		// Pointers, slices, maps, chans: reference identity.
 		eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
 		return &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
 			&ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{a}},

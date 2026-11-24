@@ -1274,6 +1274,51 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 }
 
 func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
+	// Array/struct values: clone before reseating a slot (docs/design/03).
+	// *p = v for object pointers copies into the existing object — skip here.
+	// Blank `_` only needs drop — cloning a failed type-assert null would
+	// struct.get/array.get on null (errors.TestIs / errorUncomparable.Is).
+	var pre []ir.Stmt
+	if !isBlankIdent(lhs) {
+		if _, isStar := lhs.(*ast.StarExpr); !isStar {
+			if ty := fl.assignLHSGoType(lhs); needsValueClone(ty) && !isFreshValueAlloc(rhs) {
+				cloned, stmts, err := fl.cloneValue(rhs, ty)
+				if err != nil {
+					return nil, err
+				}
+				pre = stmts
+				rhs = cloned
+			}
+		}
+	}
+	stmts, err := fl.assignToCloned(lhs, rhs)
+	if err != nil {
+		return nil, err
+	}
+	return append(pre, stmts...), nil
+}
+
+// assignLHSGoType is typeOf(lhs), falling back to Defs/Uses for := names
+// that may be missing from Types.
+func (fl *funcLower) assignLHSGoType(lhs ast.Expr) types.Type {
+	if ty := fl.typeOf(lhs); ty != nil {
+		return ty
+	}
+	switch e := lhs.(type) {
+	case *ast.Ident:
+		if obj := fl.info.Defs[e]; obj != nil {
+			return obj.Type()
+		}
+		if obj := fl.info.Uses[e]; obj != nil {
+			return obj.Type()
+		}
+	case *ast.ParenExpr:
+		return fl.assignLHSGoType(e.X)
+	}
+	return nil
+}
+
+func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 	switch lhs := lhs.(type) {
 	case *ast.Ident:
 		if lhs.Name == "_" {
@@ -1313,6 +1358,20 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		// fields/elements into the existing object (docs/design/03).
 		// Fat-pointer stores use OpStore.
 		if xt := fl.typeOf(lhs.X); xt != nil && isObjectPointer(xt) {
+			pt, err := fl.mapType(xt)
+			if err != nil {
+				return nil, err
+			}
+			pv := fl.newVar("pstar", pt)
+			stmts = append(stmts, fl.assignVar(pv, ptr))
+			ptr = fl.useVar(pv)
+			stmts = append(stmts, &ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+					&ir.Unreachable{},
+				}},
+			})
 			elem := types.Unalias(xt).Underlying().(*types.Pointer).Elem()
 			// *[N]T: element-wise array.copy into the existing array ref.
 			if arr, ok := types.Unalias(elem).Underlying().(*types.Array); ok {
@@ -1449,6 +1508,20 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 				if p, ok := types.Unalias(xt).Underlying().(*types.Pointer); ok {
 					elemT = p.Elem()
 				}
+				pt, err := fl.mapType(xt)
+				if err != nil {
+					return nil, err
+				}
+				pv := fl.newVar("parr", pt)
+				stmts = append(stmts, fl.assignVar(pv, base))
+				base = fl.useVar(pv)
+				stmts = append(stmts, &ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{base}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+						&ir.Unreachable{},
+					}},
+				})
 			}
 			arrName := ""
 			if irt, err := fl.mapType(elemT); err == nil {
@@ -1460,7 +1533,23 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			if arrName != "" {
 				at = &ir.Ref{Named: arrName}
 			}
-			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: at, Args: []ir.Expr{base, idx, rhs}}})
+			// Recoverable panic instead of Wasm array OOB trap (issue79236).
+			arrTy := at
+			if arrName != "" {
+				arrTy = &ir.Ref{Named: arrName}
+			}
+			lenV := fl.newVar("alen", ir.TypeI32)
+			stmts = append(stmts,
+				fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}),
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
+						&ir.Unreachable{},
+					}},
+				},
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: at, Args: []ir.Expr{base, idx, rhs}}},
+			)
 			return stmts, nil
 		}
 		kind, _ := fatPtrKind(fl.typeOf(lhs))
@@ -1474,7 +1563,7 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Type: addr.Type, Args: []ir.Expr{addr, rhs}}})
 		return stmts, nil
 	case *ast.ParenExpr:
-		return fl.assignTo(lhs.X, rhs)
+		return fl.assignToCloned(lhs.X, rhs)
 	default:
 		return nil, fl.errorf(lhs, "assignment to %T not supported in M3", lhs)
 	}
@@ -1965,7 +2054,30 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	if err != nil {
 		return nil, fl.errorf(s.X, "%v", err)
 	}
-	x, xstmts, err := fl.expr(s.X, xIR)
+	// range (*p) / range p for *[N]T: evaluate the pointer without nil-checking
+	// *p (issue73476, issue72844). Length comes from the type. Value access
+	// nil-checks below when needVal.
+	xExpr := s.X
+	for {
+		if p, ok := xExpr.(*ast.ParenExpr); ok {
+			xExpr = p.X
+			continue
+		}
+		break
+	}
+	var x ir.Expr
+	var xstmts []ir.Stmt
+	rangeViaNilableArrayPtr := isPtrToArray(xType)
+	if star, ok := xExpr.(*ast.StarExpr); ok {
+		if pt := fl.typeOf(star.X); pt != nil && isPtrToArray(pt) {
+			ptrTy, _ := fl.mapType(pt)
+			x, xstmts, err = fl.expr(star.X, ptrTy)
+			rangeViaNilableArrayPtr = true
+		}
+	}
+	if x == nil {
+		x, xstmts, err = fl.expr(s.X, xIR)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2067,6 +2179,16 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	var elem ir.Expr
 	needVal := s.Value != nil && !isBlankIdent(s.Value)
 	needKey := s.Key != nil && !isBlankIdent(s.Key)
+	// Value access over nil *[N]T / (*nil) panics; index-only range does not.
+	if needVal && rangeViaNilableArrayPtr {
+		bodySeq.Stmts = append(bodySeq.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(xv)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+				&ir.Unreachable{},
+			}},
+		})
+	}
 	var elemIR ir.Type
 	if needVal || (needKey && keyVar == nil && s.Tok != token.DEFINE) {
 		elemGo := rangeElemType(xType)
@@ -3105,6 +3227,16 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 				case isString(tagType):
 					// No Type on OpCall: Format omits it and Equal would fail round-trip.
 					return &ir.Instr{Op: ir.OpCall, Func: "runtime.stringeq", Args: []ir.Expr{tag, v}}
+				case isStruct(tagType):
+					if st, ok := types.Unalias(tagType).Underlying().(*types.Struct); ok && !structHasComparableField(st) {
+						return fl.i32const(1)
+					}
+					return fl.valueEqCall(tagType, tag, v)
+				case isArray(tagType):
+					if arr, ok := types.Unalias(tagType).Underlying().(*types.Array); ok && arr.Len() == 0 {
+						return fl.i32const(1)
+					}
+					return fl.valueEqCall(tagType, tag, v)
 				case irNumWidth(want) == ir.I64:
 					return &ir.Instr{Op: ir.OpI64Eq, Args: []ir.Expr{tag, v}}
 				case want != nil && isRefIR(want):
