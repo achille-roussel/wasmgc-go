@@ -638,14 +638,6 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	var stmts []ir.Stmt
 	stmts = append(stmts, xstmts...)
 	stmts = append(stmts, ystmts...)
-	if (e.Op == token.SHL || e.Op == token.SHR) && irNumWidth(xWant) == ir.I64 && irNumWidth(yWant) == ir.I32 {
-		if yt := fl.typeOf(e.Y); yt != nil && isUnsigned(yt) {
-			y = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{y}}
-		} else {
-			y = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{y}}
-		}
-	}
-
 	if e.Op == token.AND_NOT {
 		// x &^ y → x & (^y)
 		width := irNumWidth(xWant)
@@ -663,7 +655,17 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	// count ≥ bit width. Constant ≥width cases are folded above.
 	if e.Op == token.SHL || e.Op == token.SHR {
 		if tv, ok := fl.info.Types[e.Y]; !ok || tv.Value == nil {
-			return fl.shiftBounded(e.Op, x, y, xWant, xt, stmts)
+			return fl.shiftBounded(e.Op, x, y, xWant, yWant, xt, stmts)
+		}
+		// Constant count < width: align count width to value width for IR shifts.
+		if irNumWidth(xWant) == ir.I64 && irNumWidth(yWant) == ir.I32 {
+			if yt := fl.typeOf(e.Y); yt != nil && isUnsigned(yt) {
+				y = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{y}}
+			} else {
+				y = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{y}}
+			}
+		} else if irNumWidth(xWant) == ir.I32 && irNumWidth(yWant) == ir.I64 {
+			y = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{y}}
 		}
 	}
 
@@ -759,9 +761,11 @@ func goIntBits(t types.Type) int {
 
 // shiftBounded emits Go's shift semantics for a non-constant count:
 // if count ≥ bit width → 0 (<< / unsigned >>) or signed fill (signed >>);
-// else the native Wasm shift. y must already match xWant's integer width.
-func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, xt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
+// else the native Wasm shift. Count width (yWant) may differ from x (e.g.
+// int << uint64); compare in the count's width, convert for the Wasm shift.
+func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant, yWant ir.Type, xt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
 	is64 := irNumWidth(xWant) == ir.I64
+	yIs64 := irNumWidth(yWant) == ir.I64
 	bitW := int64(goIntBits(xt))
 	if bitW == 0 {
 		bitW = 32
@@ -778,14 +782,14 @@ func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, x
 	res := fl.newVar("sh", xWant)
 	xv := fl.newVar("shx", xWant)
 	yTy := ir.TypeI32
-	if is64 {
+	if yIs64 {
 		yTy = ir.TypeI64
 	}
 	yv := fl.newVar("shy", yTy)
 	stmts = append(stmts, fl.assignVar(xv, x), fl.assignVar(yv, y))
 
 	var ge ir.Expr
-	if is64 {
+	if yIs64 {
 		ge = &ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{fl.useVar(yv), fl.i64const(bitW)}}
 	} else {
 		ge = &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(yv), fl.i32const(bitW)}}
@@ -807,7 +811,14 @@ func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, x
 			thenVal = &ir.Instr{Op: ir.OpI32ShrS, Args: []ir.Expr{fl.useVar(xv), fl.i32const(sh)}}
 		}
 	}
-	elseVal := &ir.Instr{Op: shiftOp, Args: []ir.Expr{fl.useVar(xv), fl.useVar(yv)}}
+	var shiftCount ir.Expr = fl.useVar(yv)
+	if is64 && !yIs64 {
+		shiftCount = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{shiftCount}}
+	} else if !is64 && yIs64 {
+		// Wasm i32.shl/shr take i32 counts; ≥width already handled above.
+		shiftCount = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{shiftCount}}
+	}
+	elseVal := &ir.Instr{Op: shiftOp, Args: []ir.Expr{fl.useVar(xv), shiftCount}}
 	stmts = append(stmts, &ir.If{
 		Cond: ge,
 		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, thenVal)}},
@@ -1315,6 +1326,7 @@ func (fl *funcLower) unsafeString(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.
 		return nil, nil, true, err
 	}
 	stmts = append(stmts, nstmts...)
+	nEx = fl.ensureI32Len(e.Args[1], nEx)
 	fl.pkg.ensureFatPtrTypes("i32")
 	pt := &ir.Ref{Named: "$go.ptr.i32"}
 	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptrEx}}
@@ -1355,6 +1367,7 @@ func (fl *funcLower) unsafeSlice(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 		return nil, nil, true, err
 	}
 	stmts = append(stmts, nstmts...)
+	nEx = fl.ensureI32Len(e.Args[1], nEx)
 	arrName, _, err := fl.pkg.ensureArrayType(elem)
 	if err != nil {
 		return nil, nil, true, err

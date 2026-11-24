@@ -602,15 +602,8 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 					return nil, err
 				}
 				out = append(out, rs...)
-				if irNumWidth(want) == ir.I64 && irNumWidth(yWant) == ir.I32 {
-					if yGo != nil && isUnsigned(yGo) {
-						rhsEx = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{rhsEx}}
-					} else {
-						rhsEx = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{rhsEx}}
-					}
-				}
 				var sstmts []ir.Stmt
-				rhs, sstmts, err = fl.shiftBounded(tok, lhsEx, rhsEx, want, lhsGo, nil)
+				rhs, sstmts, err = fl.shiftBounded(tok, lhsEx, rhsEx, want, yWant, lhsGo, nil)
 				if err != nil {
 					return nil, fl.errorf(s, "%v", err)
 				}
@@ -939,6 +932,12 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 			return nil, err
 		}
 		stmts = append(stmts, istmts...)
+		// Match indexExpr: Wasm array/slice indices are i32.
+		if it := fl.typeOf(lhs.Index); it != nil {
+			if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+				idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
+			}
+		}
 		if isSlice(xt) {
 			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{base, idx, rhs}}})
 			return stmts, nil

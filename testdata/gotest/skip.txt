@@ -71,9 +71,6 @@ fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
-fixedbugs/bug352.go — runtime error
-fixedbugs/bug356.go — wasm validate/compile error
-fixedbugs/bug401.go — wasm validate/compile error
 fixedbugs/bug434.go — runtime error
 fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
@@ -114,7 +111,6 @@ fixedbugs/issue18725.go — failed: panic: syscall.Exit
 fixedbugs/issue18906.go — failed: panic: runtime error: index out of range [-1] with length 256
 fixedbugs/issue19040.go — compile error: codegen
 fixedbugs/issue19078.go — unsupported: unsafe
-fixedbugs/issue19113.go — wasm validate/compile error
 fixedbugs/issue19246.go — output mismatch
 fixedbugs/issue19799.go — compile error: codegen
 fixedbugs/issue20530.go — output mismatch
@@ -178,7 +174,6 @@ fixedbugs/issue38496.go — runtime error
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
-fixedbugs/issue42703.go — runtime error
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3c2b17f60340 stack=[0x3c…
 fixedbugs/issue43292.go — compile error: codegen
@@ -187,7 +182,6 @@ fixedbugs/issue43570.go — failed: panic: bad: []
 fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
 fixedbugs/issue4396a.go — runtime error
-fixedbugs/issue4448.go — wasm validate/compile error
 fixedbugs/issue44823.go — failed: panic: FAIL
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
@@ -219,7 +213,6 @@ fixedbugs/issue55122b.go — compile error: lower: star assign: unknown type $go
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
 fixedbugs/issue5809.go — output mismatch
-fixedbugs/issue5820.go — wasm validate/compile error
 fixedbugs/issue58300.go — compile error: codegen
 fixedbugs/issue58300b.go — compile error: codegen
 fixedbugs/issue5856.go — compile error: codegen
@@ -231,7 +224,6 @@ fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need
 fixedbugs/issue60601.go — runtime error
 fixedbugs/issue62360.go — unsupported: unsafe
 fixedbugs/issue6269.go — output mismatch (flaky)
-fixedbugs/issue64565.go — wasm validate/compile error: i32.lt_s vs ref after string(rune)
 fixedbugs/issue65417.go — runtime error
 fixedbugs/issue66066b.go — output mismatch
 fixedbugs/issue68227.go — wasm validate/compile error
@@ -306,11 +298,6 @@ ken/cplx2.go — compile error: IR verify: complex64 assign from i32
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
 ken/modconst.go — unsupported: unsafe
-ken/range.go — wasm validate/compile error
-ken/rob2.go — wasm validate/compile error
-ken/shift.go — wasm validate/compile error
-ken/simparray.go — wasm validate/compile error
-ken/slicearray.go — wasm validate/compile error
 literal2.go — runtime error
 mallocfin.go — compile error: codegen
 map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
@@ -351,7 +338,6 @@ string_lit.go — failed: panic: syscall.Exit
 stringrange.go — output mismatch
 switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — output mismatch
-turing.go — runtime error: null deref
 typeparam/absdiff2.go — failed: build: mono: pending main.numericAbs$complex128.Abs missing package/info mono: pending main.numericA…
 typeparam/absdiff3.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method body
@@ -418,7 +404,6 @@ typeparam/typeswitch7.go — output mismatch
 typeswitch1.go — compile error: lower: variable xx has no IR local (in main.whatis)
 uintptrescapes3.go — unsupported: unsafe
 unsafe_slice_data.go — unsupported: unsafe
-unsafe_string.go — wasm validate/compile error
 unsafe_string_data.go — unsupported: unsafe
 unsafebuiltins.go — unsupported: unsafe
 winbatch.go — runtime error: no host FS / syscall.Exit stub

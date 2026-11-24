@@ -488,6 +488,7 @@ func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (i
 	if err != nil {
 		return nil, nil, err
 	}
+	useString := isString(resTy)
 	unsigned := isUnsigned(resTy)
 	width := irNumWidth(irt)
 	for _, arg := range e.Args[1:] {
@@ -496,31 +497,43 @@ func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (i
 			return nil, nil, err
 		}
 		stmts = append(stmts, st...)
-		var lt ir.Op
-		switch width {
-		case ir.I64:
-			if unsigned {
-				lt = ir.OpI64LtU
-			} else {
-				lt = ir.OpI64LtS
-			}
-		case ir.F32:
-			lt = ir.OpF32Lt
-		case ir.F64:
-			lt = ir.OpF64Lt
-		default:
-			if unsigned {
-				lt = ir.OpI32LtU
-			} else {
-				lt = ir.OpI32LtS
-			}
-		}
-		// min: y < cur → y; max: cur < y → y
 		var pickY ir.Expr
-		if isMin {
-			pickY = &ir.Instr{Op: lt, Args: []ir.Expr{y, cur}}
+		if useString {
+			// Lexicographic compare via runtime.cmpstring → i32 (<0 / 0 / >0).
+			cmp := &ir.Instr{Op: ir.OpCall, Func: "runtime.cmpstring", Args: []ir.Expr{cur, y}}
+			if isMin {
+				// y < cur → cmpstring(cur,y) > 0
+				pickY = &ir.Instr{Op: ir.OpI32GtS, Args: []ir.Expr{cmp, fl.i32const(0)}}
+			} else {
+				// cur < y → cmpstring(cur,y) < 0
+				pickY = &ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{cmp, fl.i32const(0)}}
+			}
 		} else {
-			pickY = &ir.Instr{Op: lt, Args: []ir.Expr{cur, y}}
+			var lt ir.Op
+			switch width {
+			case ir.I64:
+				if unsigned {
+					lt = ir.OpI64LtU
+				} else {
+					lt = ir.OpI64LtS
+				}
+			case ir.F32:
+				lt = ir.OpF32Lt
+			case ir.F64:
+				lt = ir.OpF64Lt
+			default:
+				if unsigned {
+					lt = ir.OpI32LtU
+				} else {
+					lt = ir.OpI32LtS
+				}
+			}
+			// min: y < cur → y; max: cur < y → y
+			if isMin {
+				pickY = &ir.Instr{Op: lt, Args: []ir.Expr{y, cur}}
+			} else {
+				pickY = &ir.Instr{Op: lt, Args: []ir.Expr{cur, y}}
+			}
 		}
 		// Var (not Temp): assigned in both outer init and Then branch.
 		// VarDef comes from lowerFunc preamble via extraLocals.
@@ -699,6 +712,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 				return nil, nil, err
 			}
 			stmts = append(stmts, cstmts...)
+			capEx = fl.ensureI32Len(e.Args[1], capEx)
 		}
 		return &ir.Instr{Op: ir.OpChanMake, Type: irt, Args: []ir.Expr{capEx}}, stmts, nil
 	}
@@ -713,6 +727,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 				return nil, nil, err
 			}
 			stmts = append(stmts, hstmts...)
+			hint = fl.ensureI32Len(e.Args[1], hint)
 		}
 		in := &ir.Instr{Op: ir.OpMapMake, Type: irt, Args: []ir.Expr{hint}}
 		if key, _ := mapKeyElem(resTy); key != nil {
