@@ -215,13 +215,15 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 
 	commaOK := strings.Contains(str, "ok") || in.I32 == 1
 	toIface := strings.HasPrefix(str, "iface")
+	// Assignment conversion (iface.conv) allows nil→nil; type asserts do not.
+	nilOK := strings.Contains(str, "conv")
 
 	if toIface {
 		// Interface → interface: match the dynamic concrete type against every
 		// live itab for the destination iface ($go.itab.<Iface>.@.<Concrete>).
 		// Design 03's itable vector is the long-term form; scanning emitted
 		// itab globals is correct for whole-program compiles.
-		return rt.expandIfaceToIfaceAssert(s, pre, ifaceV, typeKey, commaOK)
+		return rt.expandIfaceToIfaceAssert(s, pre, ifaceV, typeKey, commaOK, nilOK)
 	}
 
 	// Concrete assert: compare descriptor refs.
@@ -307,9 +309,10 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	return pre, nil
 }
 
-// expandIfaceToIfaceAssert lowers x.(J) for interface J.
+// expandIfaceToIfaceAssert lowers x.(J) for interface J, or iface→iface
+// assignment conversion when nilOK (Str "iface.conv").
 // It compares the dynamic type to each concrete type that has an itab for J.
-func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, ifaceV *ir.Var, typeKey string, commaOK bool) ([]ir.Stmt, error) {
+func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, ifaceV *ir.Var, typeKey string, commaOK, nilOK bool) ([]ir.Stmt, error) {
 	ifaceTy := typeIface
 	key := strings.TrimPrefix(typeKey, "$go.type.")
 	// x.(any): every dynamic value implements the empty interface. Pass
@@ -342,7 +345,6 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 		assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
 	)
 
-	// nil iface → fail
 	body := &ir.Seq{}
 	itabV := rt.newVar("it", &ir.Ref{Named: "$go.itab"})
 	typV := rt.newVar("ty", &ir.Ref{Named: "$go.type"})
@@ -382,9 +384,14 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 		})
 	}
 
+	// nil iface: conversion → nil dest (ok); type assert → fail (ok stays 0).
+	nilThen := &ir.Seq{}
+	if nilOK {
+		nilThen.Stmts = append(nilThen.Stmts, assignV(okV, &ir.Const{Op: ir.OpI32Const, I64: 1}))
+	}
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
-		Then: &ir.Seq{},
+		Then: nilThen,
 		Else: body,
 	})
 

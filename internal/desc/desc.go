@@ -1178,6 +1178,12 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 
 	concrete := it.concrete
 	if concrete == nil {
+		// rtlink-appended types (e.g. runtime.makeSliceError) are not in
+		// prog.Packages, so concrete is unset. If PackageHigh/AppendFiles
+		// already lowered the method, emit a thin cast+call wrapper.
+		if w, ok := g.ensureWrapperFromIR(it, m, name); ok {
+			return w, nil
+		}
 		return "", fmt.Errorf("desc: no concrete type for %s", it.concKey)
 	}
 	// Find the method implementation (handles promotion).
@@ -1279,6 +1285,73 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 		Body:    &ir.Seq{Stmts: stmts},
 	})
 	return name, nil
+}
+
+// ensureWrapperFromIR builds an itab method wrapper when go/types concrete is
+// unavailable but the method IR already exists (rtlink AppendFiles types).
+func (g *gen) ensureWrapperFromIR(it *itabRec, m *types.Func, wrapName string) (string, bool) {
+	impl := it.concKey + "." + m.Name()
+	if g.mod.LookupFunc(impl) == nil {
+		// Pointer-recv: runtime.makeSliceError → runtime.(*makeSliceError).Error
+		if i := strings.LastIndex(it.concKey, "."); i >= 0 {
+			alt := it.concKey[:i+1] + "(*" + it.concKey[i+1:] + ")." + m.Name()
+			if g.mod.LookupFunc(alt) != nil {
+				impl = alt
+			}
+		}
+		if g.mod.LookupFunc(impl) == nil {
+			return "", false
+		}
+	}
+	sigName := "$go.ifacefn." + sanitize(it.ifaceKey) + "." + m.Name()
+	g.ensureIfaceFnType(sigName, m)
+	msig := m.Type().(*types.Signature)
+	data := &ir.Var{Name: "data", Typ: &ir.Ref{Null: true, Heap: ir.HeapAny}}
+	params := []*ir.Var{data}
+	for i := 0; i < msig.Params().Len(); i++ {
+		pt, _ := mapTypeApprox(msig.Params().At(i).Type())
+		params = append(params, &ir.Var{Name: fmt.Sprintf("a%d", i), Typ: pt})
+	}
+	var results []ir.Type
+	for i := 0; i < msig.Results().Len(); i++ {
+		rt, _ := mapTypeApprox(msig.Results().At(i).Type())
+		results = append(results, rt)
+	}
+	// Value concretes are $go.struct.<concKey>; cast data then call.
+	recvTy := &ir.Ref{Null: true, Named: "$go.struct." + it.concKey}
+	recv := &ir.Instr{Op: ir.OpRefCast, Type: recvTy, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: recvTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+	}}
+	callArgs := []ir.Expr{recv}
+	for i := 0; i < msig.Params().Len(); i++ {
+		callArgs = append(callArgs, &ir.Name{Raw: fmt.Sprintf("a%d", i), Var: params[i+1]})
+	}
+	call := &ir.Instr{Op: ir.OpCall, Func: impl, Args: callArgs}
+	var stmts []ir.Stmt
+	if len(results) == 0 {
+		stmts = []ir.Stmt{&ir.ExprStmt{X: call}, &ir.Return{}}
+	} else {
+		temps := make([]*ir.Temp, len(results))
+		lhs := make([]ir.Dest, len(results))
+		rets := make([]ir.Expr, len(results))
+		for i, rt := range results {
+			temps[i] = &ir.Temp{Name: fmt.Sprintf("%%wr%d", i), Typ: rt}
+			lhs[i] = ir.Dest{Temp: temps[i], Name: temps[i].Name}
+			var ex ir.Expr = &ir.Name{Raw: temps[i].Name, Temp: temps[i]}
+			if _, ok := rt.(*ir.Ref); ok {
+				ex = &ir.Instr{Op: ir.OpRefCast, Type: rt, Args: []ir.Expr{ex}}
+			}
+			rets[i] = ex
+		}
+		stmts = []ir.Stmt{&ir.Assign{Lhs: lhs, Rhs: call}, &ir.Return{Results: rets}}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    wrapName,
+		Params:  params,
+		Results: results,
+		Body:    &ir.Seq{Stmts: stmts},
+	})
+	return wrapName, true
 }
 
 func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wantIR ir.Type, data *ir.Var) ([]ir.Stmt, ir.Expr, error) {

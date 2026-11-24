@@ -245,6 +245,7 @@ const (
 	flagIndex  // Set via setIndex(base, slot, …)
 	flagRefBox // data is $go.box.ref holding a map/slice/iface/chan/func/pointer
 	flagFatPtr // data is $go.ptr.ref; load/store through class get/set (*map, *slice, …)
+	flagMakeFunc // data is *makeFuncImpl (Value.Call invokes fn)
 )
 
 func (v Value) Kind() Kind {
@@ -768,8 +769,38 @@ func (v Value) FieldByIndex(index []int) Value {
 	return v2
 }
 func (v Value) FieldByName(name string) Value { return Value{} }
-func (v Value) Call(in []Value) []Value       { return nil }
-func (v Value) CallSlice(in []Value) []Value  { return nil }
+func (v Value) Call(in []Value) []Value {
+	if v.flag&flagMakeFunc != 0 {
+		impl := (*makeFuncImpl)(v.data)
+		if impl == nil || impl.fn == nil {
+			panic("reflect: Call of nil function")
+		}
+		return impl.fn(in)
+	}
+	return nil
+}
+func (v Value) CallSlice(in []Value) []Value { return v.Call(in) }
+
+// makeFuncImpl is the data word for Values returned by MakeFunc.
+type makeFuncImpl struct {
+	typ *rtype
+	fn  func(args []Value) (results []Value)
+}
+
+// MakeFunc returns a Value of type typ that invokes fn when Call'ed.
+// Converting that Value to a concrete func via Interface is not supported
+// yet (no host trampoline); callers that only use Value.Call work.
+func MakeFunc(typ Type, fn func(args []Value) (results []Value)) Value {
+	if typ == nil {
+		panic("reflect: MakeFunc of nil Type")
+	}
+	if typ.Kind() != Func {
+		panic("reflect: call of MakeFunc with non-Func type")
+	}
+	r := asRtype(typ)
+	impl := &makeFuncImpl{typ: r, fn: fn}
+	return Value{typ: r, data: unsafe.Pointer(impl), flag: flagMakeFunc}
+}
 
 func (v Value) SetMapIndex(key, elem Value) {
 	if v.Kind() != Map {

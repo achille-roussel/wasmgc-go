@@ -243,6 +243,12 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsurePrint(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	// Second EnsurePanic may append throwPanic("…string…") helpers whose
+	// OpIfaceMake needs $go.itab.any.@.string. Re-scan so those itabs exist
+	// before RuntimeOps expands the new boxing (ken/interfun, convert1/2).
+	if err := desc.Populate(mod, prog); err != nil {
+		return nil, err
+	}
 	if err := lower.RuntimeOps(mod); err != nil {
 		return nil, err
 	}

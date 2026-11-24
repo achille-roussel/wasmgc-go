@@ -124,12 +124,13 @@ func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, 
 		if types.Identical(src.Underlying(), dst.Underlying()) {
 			return x, stmts, nil
 		}
-		// iface.assert to interface dst (comma-ok false → panic on fail).
+		// iface→iface conversion (assignment), not a type assertion: a nil
+		// source becomes a nil destination without panicking (convert1/2).
 		return &ir.Instr{
 			Op:     ir.OpIfaceAssert,
 			Type:   typeIface,
 			Global: desc.TypeKey(dst),
-			Str:    "iface",
+			Str:    "iface.conv",
 			Args:   []ir.Expr{x},
 		}, stmts, nil
 	}
