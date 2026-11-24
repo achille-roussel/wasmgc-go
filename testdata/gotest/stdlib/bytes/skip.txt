@@ -1,19 +1,5 @@
 # bytes — wasmgc-go test skips
-TestBufferGrowth — compile: wasm compile/validate error
-TestCapWithSliceAndWrittenData — compile: wasm compile/validate error
 TestGrow — compile: wasm compile/validate error
-TestGrowOverflow — compile: wasm compile/validate error
-TestNext — compile: wasm compile/validate error
-TestNil — compile: wasm compile/validate error
-TestReadEmptyAtEOF — compile: wasm compile/validate error
-TestReadFromNegativeReader — compile: wasm compile/validate error
-TestReadFromPanicReader — compile: wasm compile/validate error
-TestReaderAt — runtime error
-TestReaderCopyNothing — runtime error
-TestRuneIO — compile: wasm compile/validate error
-TestUnreadByte — compile: wasm compile/validate error
-TestWriteAppend — compile: wasm compile/validate error
-TestWriteInvalidRune — compile: wasm compile/validate error
 TestIndexAny — runtime fail after typecheck unlock
 TestLastIndexAny — runtime fail after typecheck unlock
 TestSplit — runtime fail after typecheck unlock

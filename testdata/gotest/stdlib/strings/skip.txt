@@ -1,18 +1,11 @@
 # strings — wasmgc-go test skips
 # strings — wasmgc-go test skips
 TestBuilderGrow — runtime fail after typecheck unlock
-TestCaseConsistency — runtime fail after typecheck unlock
 TestClone — runtime fail after typecheck unlock
 TestCompare — compile: load: typecheck strings_test:
-TestCompareStrings — runtime fail after typecheck unlock
-TestContains — runtime fail after typecheck unlock
 TestFinderCreation — runtime error
 TestFinderNext — runtime error
-TestReadRune — runtime fail after typecheck unlock
-TestReaderAt — runtime error
-TestRepeat — runtime fail after typecheck unlock
 TestRepeatCatchesOverflow — runtime fail after typecheck unlock
-TestReplace — runtime fail after typecheck unlock
 TestReplacer — runtime fail after typecheck unlock
 TestBuilderWrite2/Write — runtime fail after typecheck unlock
 TestBuilderWrite2 — runtime fail after typecheck unlock

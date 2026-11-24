@@ -437,6 +437,11 @@ func methodNeedsMono(origin *types.Func) bool {
 		return true
 	}
 	if r := origSig.Recv(); r != nil {
+		// Parameterized interface methods have no bodies — they dispatch via
+		// itabs (Abs[T].Abs, A2[T].m2). Only concrete generic named types need mono.
+		if isIface(r.Type()) {
+			return false
+		}
 		if on := namedTypeOf(r.Type()); on != nil && on.Origin().TypeParams().Len() > 0 {
 			return true
 		}

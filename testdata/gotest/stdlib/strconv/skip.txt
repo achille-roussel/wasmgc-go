@@ -1,4 +1,3 @@
 # strconv — wasmgc-go test skips
-TestAllocationsFromBytes — quote/unicode or alloc counting
 TestCountMallocs — AllocsPerRun null deref
 TestParseComplex — complex128 reflect Kind/DeepEqual not implemented

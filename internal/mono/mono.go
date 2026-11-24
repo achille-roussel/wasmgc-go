@@ -159,6 +159,10 @@ func methodNeedsMono(origin *types.Func) bool {
 		return true
 	}
 	if r := origSig.Recv(); r != nil {
+		rt := types.Unalias(r.Type())
+		if _, ok := rt.Underlying().(*types.Interface); ok {
+			return false
+		}
 		if on := namedOf(r.Type()); on != nil && on.Origin().TypeParams().Len() > 0 {
 			return true
 		}
