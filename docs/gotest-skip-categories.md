@@ -6,7 +6,7 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~703** pass / **323** skip-listed; stdlib
+**Current (this PR):** `$GOROOT/test` **~704** pass / **322** skip-listed; stdlib
 per-test **425** (range assign-form + parallel assign + int truncate/print +
 named-result defer sync; bytes IndexAny; sort SearchWrappers; bits Reverse/Rotate).
 
@@ -32,7 +32,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 323 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 322 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -92,7 +92,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | #50 bytes/strings/slices | testenv/B/atomic/rand | **done** (−112 →500) |
 | #55 array/reflect Len/Index | **done** (−23 →354; stdlib 437) |
 | #56 array `==` + Div panic | **done** (−16 →344; stdlib 431) |
-| range assign-form + parallel assign | **this PR** | −21 GOROOT + 6 stdlib →323 / 425 |
+| range assign-form + parallel assign | **this PR** | −22 GOROOT + 6 stdlib →322 / 425 |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -118,5 +118,5 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~703** | **323** |
+| `$GOROOT/test` | **~704** | **322** |
 | Stdlib per-test | — | **425** |
