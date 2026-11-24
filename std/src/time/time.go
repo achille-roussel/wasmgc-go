@@ -298,3 +298,236 @@ func AfterFunc(d Duration, f func()) *Timer {
 	}()
 	return t
 }
+
+// Month is a month of the year (January = 1, …).
+type Month int
+
+const (
+	January Month = 1 + iota
+	February
+	March
+	April
+	May
+	June
+	July
+	August
+	September
+	October
+	November
+	December
+)
+
+var monthNames = [...]string{
+	"January", "February", "March", "April", "May", "June",
+	"July", "August", "September", "October", "November", "December",
+}
+
+func (m Month) String() string {
+	if January <= m && m <= December {
+		return monthNames[m-1]
+	}
+	return "Month(" + strconv.Itoa(int(m)) + ")"
+}
+
+// Month returns the month of the year specified by t (UTC stub).
+// Zero Time is January 1, year 1 UTC — matches host Go.
+func (t Time) Month() Month {
+	_, m, _ := t.date()
+	return m
+}
+
+// Weekday is a day of the week (Sunday = 0, …).
+type Weekday int
+
+const (
+	Sunday Weekday = iota
+	Monday
+	Tuesday
+	Wednesday
+	Thursday
+	Friday
+	Saturday
+)
+
+var weekdayNames = [...]string{
+	"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+}
+
+func (d Weekday) String() string {
+	if Sunday <= d && d <= Saturday {
+		return weekdayNames[d]
+	}
+	return "Weekday(" + strconv.Itoa(int(d)) + ")"
+}
+
+// IsZero reports whether t represents the zero time instant.
+func (t Time) IsZero() bool { return t.ext == 0 && t.wall == 0 }
+
+// Year / Day / Weekday / Hour / Minute / Second / Date / Clock are UTC stubs
+// derived from Unix nanoseconds (ext). Zero Time → year 1, Jan 1.
+func (t Time) Year() int {
+	y, _, _ := t.date()
+	return y
+}
+func (t Time) Day() int {
+	_, _, d := t.date()
+	return d
+}
+func (t Time) Weekday() Weekday {
+	// Days since 0001-01-01 (Monday? actually Saturday in Go — abs weekday).
+	// Use absolute days from a Unix epoch anchor.
+	sec := t.ext / 1e9
+	// 1970-01-01 was Thursday.
+	const epochWeekday = Thursday
+	days := sec / 86400
+	if sec%86400 < 0 {
+		days--
+	}
+	w := (int64(epochWeekday) + days) % 7
+	if w < 0 {
+		w += 7
+	}
+	// Special-case zero Time: Go's zero is Monday 0001-01-01.
+	if t.IsZero() {
+		return Monday
+	}
+	return Weekday(w)
+}
+func (t Time) Hour() int {
+	sec := t.ext / 1e9
+	if t.IsZero() {
+		return 0
+	}
+	s := sec % 86400
+	if s < 0 {
+		s += 86400
+	}
+	return int(s / 3600)
+}
+func (t Time) Minute() int {
+	sec := t.ext / 1e9
+	if t.IsZero() {
+		return 0
+	}
+	s := sec % 86400
+	if s < 0 {
+		s += 86400
+	}
+	return int((s % 3600) / 60)
+}
+func (t Time) Second() int {
+	sec := t.ext / 1e9
+	if t.IsZero() {
+		return 0
+	}
+	s := sec % 86400
+	if s < 0 {
+		s += 86400
+	}
+	return int(s % 60)
+}
+func (t Time) Clock() (hour, min, sec int) {
+	return t.Hour(), t.Minute(), t.Second()
+}
+func (t Time) Date() (year int, month Month, day int) {
+	return t.date()
+}
+
+// Location is a stub timezone (UTC only in v1 rewrite).
+type Location struct{ name string }
+
+var (
+	utcLoc   = Location{name: "UTC"}
+	localLoc = Location{name: "Local"}
+	UTC      = &utcLoc
+	Local    = &localLoc
+)
+
+func (t Time) Location() *Location { return UTC }
+func (t Time) Local() Time         { return t }
+func (t Time) In(loc *Location) Time {
+	_ = loc
+	return t
+}
+func (t Time) Zone() (name string, offset int) { return "UTC", 0 }
+
+// Date returns the Time corresponding to the given calendar arguments in loc.
+// Stub: ignores loc; computes Unix nanos via a simple civil→epoch conversion.
+func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) Time {
+	_ = loc
+	ext := civilToUnixNano(year, int(month), day, hour, min, sec, nsec)
+	return Time{ext: ext}
+}
+
+func (t Time) date() (year int, month Month, day int) {
+	if t.IsZero() {
+		return 1, January, 1
+	}
+	return unixNanoToCivil(t.ext)
+}
+
+// --- civil date helpers (proleptic Gregorian, UTC) ---
+
+func civilToUnixNano(year, month, day, hour, min, sec, nsec int) int64 {
+	// Days since 1970-01-01.
+	days := daysFromCivil(year, month, day) - daysFromCivil(1970, 1, 1)
+	return days*86400e9 + int64(hour)*3600e9 + int64(min)*60e9 + int64(sec)*1e9 + int64(nsec)
+}
+
+func unixNanoToCivil(ext int64) (year int, month Month, day int) {
+	sec := ext / 1e9
+	days := sec / 86400
+	if sec%86400 < 0 {
+		days--
+	}
+	// days since 1970-01-01 → absolute day number from civil epoch.
+	abs := days + daysFromCivil(1970, 1, 1)
+	y, m, d := civilFromDays(abs)
+	return y, Month(m), d
+}
+
+// daysFromCivil returns days since 0000-03-01 (Howard Hinnant algorithm).
+func daysFromCivil(y, m, d int) int64 {
+	y0 := int64(y)
+	if m <= 2 {
+		y0--
+	}
+	era := y0 / 400
+	if y0 < 0 && y0%400 != 0 {
+		era--
+	}
+	yoe := y0 - era*400
+	var m0 int64
+	if m > 2 {
+		m0 = int64(m - 3)
+	} else {
+		m0 = int64(m + 9)
+	}
+	doy := (153*m0+2)/5 + int64(d-1)
+	doe := yoe*365 + yoe/4 - yoe/100 + doy
+	return era*146097 + doe - 719468 // shift so 1970-01-01 aligns via civilFromDays
+}
+
+func civilFromDays(z int64) (y, m, d int) {
+	z += 719468
+	era := z / 146097
+	if z < 0 && z%146097 != 0 {
+		era--
+	}
+	doe := z - era*146097
+	yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365
+	y0 := yoe + era*400
+	doy := doe - (365*yoe + yoe/4 - yoe/100)
+	mp := (5*doy + 2) / 153
+	d = int(doy - (153*mp+2)/5 + 1)
+	if mp < 10 {
+		m = int(mp + 3)
+	} else {
+		m = int(mp - 9)
+	}
+	y = int(y0)
+	if m <= 2 {
+		y++
+	}
+	return
+}

@@ -678,7 +678,83 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			op = op2
 		}
 	}
-	return &ir.Instr{Op: op, Args: []ir.Expr{x, y}}, stmts, nil
+	ex := ir.Expr(&ir.Instr{Op: op, Args: []ir.Expr{x, y}})
+	// Sub-width integers live in i32/i64 registers; truncate so uint8(255)+1
+	// wraps to 0 (Wasm add does not).
+	if isArithmeticOp(e.Op) {
+		ex = fl.truncateInt(ex, xt)
+	}
+	return ex, stmts, nil
+}
+
+func isArithmeticOp(op token.Token) bool {
+	switch op {
+	case token.ADD, token.SUB, token.MUL, token.QUO, token.REM,
+		token.AND, token.OR, token.XOR, token.AND_NOT, token.SHL, token.SHR:
+		return true
+	}
+	return false
+}
+
+// truncateInt narrows an i32/i64 arithmetic result to the Go integer type's
+// bit width (sign- or zero-extension). No-op for full-width and non-integers.
+func (fl *funcLower) truncateInt(ex ir.Expr, goType types.Type) ir.Expr {
+	bits := goIntBits(goType)
+	if bits == 0 {
+		return ex
+	}
+	unsigned := isUnsigned(goType)
+	width := irNumWidth(nil)
+	if t, err := fl.mapType(goType); err == nil {
+		width = irNumWidth(t)
+	}
+	if width == ir.I64 {
+		if bits >= 64 {
+			return ex
+		}
+		if unsigned {
+			mask := int64((uint64(1) << bits) - 1)
+			return &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{ex, fl.i64const(mask)}}
+		}
+		sh := int64(64 - bits)
+		return &ir.Instr{Op: ir.OpI64ShrS, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI64Shl, Args: []ir.Expr{ex, fl.i64const(sh)}},
+			fl.i64const(sh),
+		}}
+	}
+	// i32 register
+	if bits >= 32 {
+		return ex
+	}
+	if unsigned {
+		mask := int64((uint64(1) << bits) - 1)
+		return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{ex, fl.i32const(mask)}}
+	}
+	sh := int64(32 - bits)
+	return &ir.Instr{Op: ir.OpI32ShrS, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI32Shl, Args: []ir.Expr{ex, fl.i32const(sh)}},
+		fl.i32const(sh),
+	}}
+}
+
+// goIntBits returns the bit width of a Go integer type, or 0 if not applicable.
+func goIntBits(t types.Type) int {
+	if t == nil {
+		return 0
+	}
+	switch basicKind(t) {
+	case types.Int8, types.Uint8: // Byte == Uint8
+		return 8
+	case types.Int16, types.Uint16:
+		return 16
+	case types.Int32, types.Uint32: // Rune == Int32
+		return 32
+	case types.Int64, types.Uint64:
+		return 64
+	case types.Int, types.Uint, types.Uintptr:
+		return 32 // wasmgc word size
+	}
+	return 0
 }
 
 // shiftBounded emits Go's shift semantics for a non-constant count:
@@ -686,9 +762,12 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 // else the native Wasm shift. y must already match xWant's integer width.
 func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, xt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
 	is64 := irNumWidth(xWant) == ir.I64
-	bitW := int64(32)
-	if is64 {
-		bitW = 64
+	bitW := int64(goIntBits(xt))
+	if bitW == 0 {
+		bitW = 32
+		if is64 {
+			bitW = 64
+		}
 	}
 	unsigned := isUnsigned(xt)
 	shiftOp, err := binOp(op, irNumWidth(xWant), unsigned)
@@ -734,7 +813,8 @@ func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, x
 		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, thenVal)}},
 		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, elseVal)}},
 	})
-	return fl.useVar(res), stmts, nil
+	out := fl.truncateInt(fl.useVar(res), xt)
+	return out, stmts, nil
 }
 
 func (fl *funcLower) stringConcat(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error) {
@@ -2213,8 +2293,13 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 			if len(results) == 0 {
 				st = append(st, &ir.ExprStmt{X: ex})
 			} else {
-				t := fl.newTemp(results[0])
-				st = append(st, fl.assignTemp(t, ex))
+				// Discard every result (WriteString → (int, error), etc.).
+				lhs := make([]ir.Dest, len(results))
+				for i, ty := range results {
+					t := fl.newTemp(ty)
+					lhs[i] = ir.Dest{Temp: t, Name: t.Name}
+				}
+				st = append(st, &ir.Assign{Lhs: lhs, Rhs: ex})
 			}
 			return results, st, nil
 		}
@@ -2230,17 +2315,26 @@ func (fl *funcLower) callExpr(e *ast.CallExpr, asValue bool) (resultTypes []ir.T
 				return nil, nil, err
 			}
 			stmts = append(stmts, st...)
-			in := ex.(*ir.Instr)
+			fn := sel.Obj().(*types.Func)
+			sig := fn.Type().(*types.Signature)
 			var results []ir.Type
-			if in.Type != nil {
-				results = []ir.Type{in.Type}
+			for i := 0; i < sig.Results().Len(); i++ {
+				ty, err := fl.mapType(sig.Results().At(i).Type())
+				if err != nil {
+					return nil, nil, err
+				}
+				results = append(results, ty)
 			}
 			if !asValue {
 				if len(results) == 0 {
-					stmts = append(stmts, &ir.ExprStmt{X: in})
+					stmts = append(stmts, &ir.ExprStmt{X: ex})
 				} else {
-					t := fl.newTemp(results[0])
-					stmts = append(stmts, fl.assignTemp(t, in))
+					lhs := make([]ir.Dest, len(results))
+					for i, ty := range results {
+						t := fl.newTemp(ty)
+						lhs[i] = ir.Dest{Temp: t, Name: t.Name}
+					}
+					stmts = append(stmts, &ir.Assign{Lhs: lhs, Rhs: ex})
 				}
 				return results, stmts, nil
 			}
