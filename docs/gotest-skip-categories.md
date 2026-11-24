@@ -7,10 +7,11 @@ skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
 **Current (this PR):** `$GOROOT/test` **~718** pass / **308** skip-listed; stdlib
-per-test **357** (range value capture-by-value; float min/max NaN; slice
+per-test **358** (range value capture-by-value; float min/max NaN; slice
 hi≤cap bounds; array panicIndex; reflectlite Implements/Set + os.PathError
 alias; errors.As iface targets; slices Insert/Delete/Replace/MinMax/Chunk;
-fmt Scan*; json DuplicateNames/EscapeHTML; errors Is/AsType; bits overflow).
+fmt Scan*; json DuplicateNames/EscapeHTML; errors Is/AsType; bits overflow;
+strings.TestBuilderGrow kept skipped — AllocsPerRun stub).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -55,14 +56,14 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **357** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **358** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
 | encoding/json | 162 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
 | fmt | **26** | scan/regexp + tables/reflect | Fixable |
-| strings | **9** | Compare IR; Finder leftovers | Was 61 |
+| strings | **10** | Compare IR; Finder leftovers; AllocsPerRun | Was 61 |
 | slices | **8** | Overlap/Inference/Grow leftovers | Was 54 |
 | sort | **4** | Interface-wrap wasm validate leftovers | Was 25 |
 | strconv | 1 | ParseComplex | complex reflect |
@@ -97,7 +98,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | #57 range assign-form + parallel assign | **done** (−22 →322; stdlib 425) |
 | #58 named-result defer + rand/v2 | **done** (−4 →318; stdlib 398) |
 | #59 fat-ptr `==` + append overlap + recover cells | **done** | →312 / 379 |
-| range value capture + float NaN + As/Implements | **this PR** | −4 GOROOT + 22 stdlib →308 / 357 |
+| range value capture + float NaN + As/Implements | **this PR** | −4 GOROOT + 21 stdlib →308 / 358 |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -124,4 +125,4 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | Layer | Pass | Skip |
 |---|---:|---:|
 | `$GOROOT/test` | **~718** | **308** |
-| Stdlib per-test | — | **357** |
+| Stdlib per-test | — | **358** |

@@ -6,6 +6,7 @@ TestFinderCreation — runtime error
 TestFinderNext — runtime error
 TestReplacer — runtime fail after typecheck unlock
 TestBuilderAllocs — runtime fail after typecheck unlock
+TestBuilderGrow — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)
 TestBuilderCopyPanic — runtime fail after typecheck unlock
 TestPickAlgorithm — runtime fail after typecheck unlock
 TestWriteStringError — runtime fail after typecheck unlock
