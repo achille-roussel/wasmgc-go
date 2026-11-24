@@ -41,6 +41,8 @@ func (l *pkgLower) lower() error {
 
 	// Pass 1: declare every package var as a global so forward refs
 	// (e.g. unicode.TurkishCase = _TurkishCase) resolve via lookupGlobal.
+	// Collect initializers keyed by RHS so Pass 2 can emit them in
+	// types.Info.InitOrder (blanks participate — issue5244).
 	type varInit struct {
 		name  *ast.Ident
 		obj   types.Object
@@ -52,8 +54,12 @@ func (l *pkgLower) lower() error {
 		names []*ast.Ident
 		val   ast.Expr
 	}
-	var pending []varInit
-	var pendingMulti []multiInit
+	type rhsInit struct {
+		multi  *multiInit
+		single *varInit // named or blank side-effect (obj may be nil)
+	}
+	rhsPending := map[ast.Expr]*rhsInit{}
+	var zeroPending []varInit
 	for _, f := range l.files {
 		for _, d := range f.Decls {
 			gd, ok := d.(*ast.GenDecl)
@@ -64,10 +70,20 @@ func (l *pkgLower) lower() error {
 				vs := sp.(*ast.ValueSpec)
 				multi := len(vs.Names) > 1 && len(vs.Values) == 1
 				if multi {
-					pendingMulti = append(pendingMulti, multiInit{names: vs.Names, val: vs.Values[0]})
+					rhsPending[vs.Values[0]] = &rhsInit{
+						multi: &multiInit{names: vs.Names, val: vs.Values[0]},
+					}
 				}
 				for i, name := range vs.Names {
 					if name.Name == "_" {
+						// var _ = f() still runs f for side effects (blank.go);
+						// scheduled via InitOrder so deps like g in issue5244
+						// are initialized first.
+						if !multi && vs.Values != nil && i < len(vs.Values) {
+							rhsPending[vs.Values[i]] = &rhsInit{
+								single: &varInit{name: name, val: vs.Values[i]},
+							}
+						}
 						continue
 					}
 					obj := l.info.Defs[name]
@@ -92,19 +108,21 @@ func (l *pkgLower) lower() error {
 					l.mod.Globals = append(l.mod.Globals, g)
 					l.globals[obj] = g
 					if multi {
-						// Initialized in pendingMulti (one RHS for all LHS).
+						// Initialized via rhsPending multi entry.
 						continue
 					}
 					if vs.Values != nil && i < len(vs.Values) {
-						pending = append(pending, varInit{
-							name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
-						})
+						rhsPending[vs.Values[i]] = &rhsInit{
+							single: &varInit{
+								name: name, obj: obj, ty: ty, gname: gname, val: vs.Values[i],
+							},
+						}
 					} else if addrTaken[obj] || needsHeapZero(obj.Type(), ty) {
 						// Wasm defaults refnull globals to null, but Go's zero
 						// for a struct value is a usable empty object (e.g.
 						// sync.Map / sync.Mutex package vars). Address-taken
 						// scalars always need a cell allocated in init.
-						pending = append(pending, varInit{
+						zeroPending = append(zeroPending, varInit{
 							name: name, obj: obj, ty: ty, gname: gname,
 						})
 					}
@@ -113,9 +131,9 @@ func (l *pkgLower) lower() error {
 		}
 	}
 
-	// Pass 2: lower initializers with all globals already registered.
+	// Pass 2: zero-init first, then InitOrder (includes blank side-effects).
 	var initStmts []ir.Stmt
-	for _, vi := range pending {
+	emitSingle := func(vi *varInit) error {
 		if l.initLower == nil {
 			l.initLower = l.newInitLower()
 		}
@@ -123,6 +141,25 @@ func (l *pkgLower) lower() error {
 		var ex ir.Expr
 		var stmts []ir.Stmt
 		var err error
+		if vi.name != nil && vi.name.Name == "_" {
+			want := fl.typeOf(vi.val)
+			var irt ir.Type
+			if want != nil {
+				irt, err = fl.mapType(want)
+				if err != nil {
+					return err
+				}
+			}
+			ex, stmts, err = fl.expr(vi.val, irt)
+			if err != nil {
+				return err
+			}
+			initStmts = append(initStmts, stmts...)
+			if ex != nil {
+				initStmts = append(initStmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{ex}}})
+			}
+			return nil
+		}
 		if vi.val != nil {
 			ex, stmts, err = fl.coerceExpr(vi.val, vi.obj.Type(), vi.ty)
 		} else {
@@ -133,16 +170,65 @@ func (l *pkgLower) lower() error {
 		}
 		initStmts = append(initStmts, stmts...)
 		initStmts = append(initStmts, fl.storeGlobalInit(vi.obj, vi.gname, ex))
+		return nil
 	}
-	for _, mi := range pendingMulti {
-		if l.initLower == nil {
-			l.initLower = l.newInitLower()
-		}
-		stmts, err := l.lowerPkgMultiValueSpec(l.initLower, mi.names, mi.val)
-		if err != nil {
+	for i := range zeroPending {
+		if err := emitSingle(&zeroPending[i]); err != nil {
 			return err
 		}
-		initStmts = append(initStmts, stmts...)
+	}
+	emitted := map[ast.Expr]bool{}
+	for _, init := range l.info.InitOrder {
+		if init == nil || init.Rhs == nil {
+			continue
+		}
+		if emitted[init.Rhs] {
+			continue
+		}
+		ri := rhsPending[init.Rhs]
+		if ri == nil {
+			continue
+		}
+		emitted[init.Rhs] = true
+		if ri.multi != nil {
+			if l.initLower == nil {
+				l.initLower = l.newInitLower()
+			}
+			stmts, err := l.lowerPkgMultiValueSpec(l.initLower, ri.multi.names, ri.multi.val)
+			if err != nil {
+				return err
+			}
+			initStmts = append(initStmts, stmts...)
+			continue
+		}
+		if ri.single != nil {
+			if err := emitSingle(ri.single); err != nil {
+				return err
+			}
+		}
+	}
+	// Any initializer not present in InitOrder (should be rare) — keep
+	// declaration-order fallback so we do not drop side effects.
+	for rhs, ri := range rhsPending {
+		if emitted[rhs] {
+			continue
+		}
+		if ri.multi != nil {
+			if l.initLower == nil {
+				l.initLower = l.newInitLower()
+			}
+			stmts, err := l.lowerPkgMultiValueSpec(l.initLower, ri.multi.names, ri.multi.val)
+			if err != nil {
+				return err
+			}
+			initStmts = append(initStmts, stmts...)
+			continue
+		}
+		if ri.single != nil {
+			if err := emitSingle(ri.single); err != nil {
+				return err
+			}
+		}
 	}
 
 	type fnDecl struct {

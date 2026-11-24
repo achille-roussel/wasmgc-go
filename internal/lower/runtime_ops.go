@@ -98,9 +98,17 @@ func forceI32Expr(ex ir.Expr) ir.Expr {
 }
 
 // newVar allocates a mutable local name for values that cross region boundaries.
+// Names are $-prefixed so they cannot collide with Go locals uniquified as
+// h1/h2/… in nested blocks (decl.go).
 func (rt *runtimeLower) newVar(prefix string, typ ir.Type) *ir.Var {
 	rt.tmp++
-	return &ir.Var{Name: fmt.Sprintf("%s%d", prefix, rt.tmp), Typ: typ}
+	// Complex values are always (ref null $go.complex*); non-null temps reject
+	// zero/nil assigns (ken/cplx5, gcgort).
+	if r, ok := typ.(*ir.Ref); ok && !r.Null &&
+		(r.Named == "$go.complex64" || r.Named == "$go.complex128") {
+		typ = &ir.Ref{Null: true, Named: r.Named}
+	}
+	return &ir.Var{Name: fmt.Sprintf("$rt.%s%d", prefix, rt.tmp), Typ: typ}
 }
 
 func assignV(v *ir.Var, rhs ir.Expr) *ir.Assign {
@@ -200,6 +208,20 @@ func (rt *runtimeLower) lowerRegion(r ir.Region, n *int) (ir.Region, error) {
 		rr := *r
 		rr.Body = body
 		rr.Handler = handler
+		return &rr, nil
+	case *ir.Dispatch:
+		rr := *r
+		rr.Arms = make([]ir.Region, len(r.Arms))
+		for i, arm := range r.Arms {
+			if arm == nil {
+				continue
+			}
+			body, err := rt.lowerRegion(arm, n)
+			if err != nil {
+				return nil, err
+			}
+			rr.Arms[i] = body
+		}
 		return &rr, nil
 	default:
 		return r, nil
@@ -592,42 +614,45 @@ func (rt *runtimeLower) panicMakeSliceCap() []ir.Stmt {
 // array.new with a zero init when elements are non-defaultable (e.g.
 // (ref $go.string)); otherwise array.new_default.
 func (rt *runtimeLower) allocArray(arrName string, size ir.Expr) (ir.Expr, []ir.Stmt) {
-	if arrName == "$go.array.go.string" {
-		bytesT := &ir.Temp{Name: rt.fresh("ebytes"), Typ: &ir.Ref{Named: "$go.bytes"}}
-		strT := &ir.Temp{Name: rt.fresh("estr"), Typ: &ir.Ref{Named: "$go.string"}}
-		stmts := []ir.Stmt{
-			&ir.Assign{
-				Lhs: []ir.Dest{{Temp: bytesT, Name: bytesT.Name}},
-				Rhs: &ir.Instr{
-					Op:   ir.OpArrayNewDefault,
-					Type: &ir.Ref{Named: "$go.bytes"},
-					Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}},
-				},
-			},
-			&ir.Assign{
-				Lhs: []ir.Dest{{Temp: strT, Name: strT.Name}},
-				Rhs: &ir.Instr{
-					Op:   ir.OpStructNew,
-					Type: &ir.Ref{Named: "$go.string"},
-					Args: []ir.Expr{
-						&ir.Name{Temp: bytesT, Raw: bytesT.Name},
-						&ir.Const{Op: ir.OpI32Const, I64: 0},
-						&ir.Const{Op: ir.OpI32Const, I64: 0},
-					},
-				},
-			},
-		}
+	if z, ok := rt.arrayElemZero(arrName); ok {
 		return &ir.Instr{
 			Op:   ir.OpArrayNew,
 			Type: &ir.Ref{Named: arrName},
-			Args: []ir.Expr{&ir.Name{Temp: strT, Raw: strT.Name}, size},
-		}, stmts
+			Args: []ir.Expr{z, size},
+		}, nil
 	}
 	return &ir.Instr{
 		Op:   ir.OpArrayNewDefault,
 		Type: &ir.Ref{Named: arrName},
 		Args: []ir.Expr{size},
 	}, nil
+}
+
+// arrayElemZero returns a zero element for non-defaultable array elems.
+func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
+	if arrName == "$go.array.go.string" {
+		return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
+	}
+	td := rt.mod.LookupType(arrName)
+	if td == nil || td.Kind != ir.TypeArray {
+		return nil, false
+	}
+	r, ok := td.Elem.(*ir.Ref)
+	if !ok || r.Null {
+		return nil, false
+	}
+	if r.Named == "$go.string" {
+		return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
+	}
+	if strings.HasPrefix(r.Named, "$go.struct.") {
+		if ntd := rt.mod.LookupType(r.Named); ntd != nil && ntd.Kind == ir.TypeStruct {
+			z, err := rt.structZeroExpr(ntd, r, map[string]bool{})
+			if err == nil {
+				return z, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {

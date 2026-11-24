@@ -55,18 +55,19 @@ func (fl *funcLower) printName(e *ast.CallExpr) string {
 }
 
 // lowerPrint emits runtime.printstring / printint / printnl per 04-runtime-and-abi.md.
+// println separates args with spaces; print concatenates with no separator.
 func (fl *funcLower) lowerPrint(e *ast.CallExpr) ([]ir.Stmt, error) {
 	nl := fl.printName(e) == "println"
 	var out []ir.Stmt
 	for i, arg := range e.Args {
-		if i > 0 {
+		if i > 0 && nl {
 			t := fl.newTemp(typeString)
 			out = append(out, fl.assignTemp(t, &ir.Instr{Op: ir.OpStringLit, Str: " "}))
 			out = append(out, &ir.ExprStmt{
 				X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{fl.useTemp(t)}},
 			})
 		}
-		stmts, err := fl.printArg(arg)
+		stmts, err := fl.printArg(arg, nl)
 		if err != nil {
 			return nil, err
 		}
@@ -80,11 +81,49 @@ func (fl *funcLower) lowerPrint(e *ast.CallExpr) ([]ir.Stmt, error) {
 	return out, nil
 }
 
-func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
+func (fl *funcLower) printArg(arg ast.Expr, spaceSep bool) ([]ir.Stmt, error) {
 	ty := fl.typeOf(arg)
 	if ty == nil {
 		return nil, fl.errorf(arg, "no type for print arg")
 	}
+	ty = types.Unalias(ty)
+	// print/println(f()) where f returns multiple values — print each result.
+	// println separates with spaces; print concatenates (issue35576).
+	if tup, ok := ty.(*types.Tuple); ok {
+		ce, ok := arg.(*ast.CallExpr)
+		if !ok {
+			return nil, fl.errorf(arg, "print of type %s not supported", ty)
+		}
+		temps, st, err := fl.callMaterialize(ce, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(temps) != tup.Len() {
+			return nil, fl.errorf(arg, "print: multi-value arity mismatch")
+		}
+		var out []ir.Stmt
+		out = append(out, st...)
+		for i, t := range temps {
+			if i > 0 && spaceSep {
+				sp := fl.newTemp(typeString)
+				out = append(out, fl.assignTemp(sp, &ir.Instr{Op: ir.OpStringLit, Str: " "}))
+				out = append(out, &ir.ExprStmt{
+					X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{fl.useTemp(sp)}},
+				})
+			}
+			ps, err := fl.printIRValue(fl.useTemp(t), tup.At(i).Type())
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ps...)
+		}
+		return out, nil
+	}
+	return fl.printTypedArg(arg, ty)
+}
+
+// printTypedArg evaluates arg and prints it according to Go type ty.
+func (fl *funcLower) printTypedArg(arg ast.Expr, ty types.Type) ([]ir.Stmt, error) {
 	ty = types.Unalias(ty)
 	if isString(ty) {
 		ex, stmts, err := fl.expr(arg, typeString)
@@ -113,73 +152,104 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
+		ps, err := fl.printIRValue(ex, ty)
+		if err != nil {
+			return nil, err
+		}
+		return append(stmts, ps...), nil
+	}
+	if isSlice(ty) || isPointer(ty) || isMap(ty) || isChan(ty) || isSignature(ty) ||
+		isInteger(ty) || isFloat(ty) || isComplex(ty) {
+		want, err := fl.mapType(ty)
+		if err != nil {
+			return nil, err
+		}
+		if isComplex(ty) {
+			name := "$go.complex128"
+			elem := ir.TypeF64
+			if b, ok := ty.Underlying().(*types.Basic); ok && b.Kind() == types.Complex64 {
+				name = "$go.complex64"
+				elem = ir.TypeF32
+			}
+			fl.ensureComplexType(name, elem)
+			want = &ir.Ref{Null: true, Named: name}
+		}
+		ex, stmts, err := fl.expr(arg, want)
+		if err != nil {
+			return nil, err
+		}
+		ps, err := fl.printIRValue(ex, ty)
+		if err != nil {
+			return nil, err
+		}
+		return append(stmts, ps...), nil
+	}
+	return nil, fl.errorf(arg, "print of type %s not supported in M3 (need string or int)", ty)
+}
+
+// printIRValue emits runtime.print* for an already-lowered value of Go type ty.
+func (fl *funcLower) printIRValue(ex ir.Expr, ty types.Type) ([]ir.Stmt, error) {
+	ty = types.Unalias(ty)
+	if isString(ty) {
+		t := fl.newTemp(typeString)
+		return []ir.Stmt{
+			fl.assignTemp(t, ex),
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printstring", Args: []ir.Expr{fl.useTemp(t)}}},
+		}, nil
+	}
+	if isBoolean(ty) {
+		return []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printbool", Args: []ir.Expr{ex}}},
+		}, nil
+	}
+	if isIface(ty) {
 		t := fl.newTemp(typeIface)
-		stmts = append(stmts, fl.assignTemp(t, ex))
 		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printiface", Args: []ir.Expr{isnull}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			fl.assignTemp(t, ex),
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printiface", Args: []ir.Expr{isnull}}},
+		}, nil
 	}
 	if isSlice(ty) {
 		want, err := fl.mapType(ty)
 		if err != nil {
 			return nil, err
 		}
-		ex, stmts, err := fl.expr(arg, want)
-		if err != nil {
-			return nil, err
-		}
 		t := fl.newTemp(want)
-		stmts = append(stmts, fl.assignTemp(t, ex))
 		lenEx := &ir.Instr{Op: ir.OpLen, Type: ir.TypeI32, Args: []ir.Expr{fl.useTemp(t)}}
 		capEx := &ir.Instr{Op: ir.OpCap, Type: ir.TypeI32, Args: []ir.Expr{fl.useTemp(t)}}
 		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printslice", Args: []ir.Expr{lenEx, capEx, isnull}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			fl.assignTemp(t, ex),
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printslice", Args: []ir.Expr{lenEx, capEx, isnull}}},
+		}, nil
 	}
 	if isPointer(ty) || isMap(ty) || isChan(ty) || isSignature(ty) {
 		want, err := fl.mapType(ty)
 		if err != nil {
 			return nil, err
 		}
-		ex, stmts, err := fl.expr(arg, want)
-		if err != nil {
-			return nil, err
-		}
 		t := fl.newTemp(want)
-		stmts = append(stmts, fl.assignTemp(t, ex))
 		isnull := &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(t)}}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printpointer", Args: []ir.Expr{isnull}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			fl.assignTemp(t, ex),
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printpointer", Args: []ir.Expr{isnull}}},
+		}, nil
 	}
 	if isInteger(ty) {
 		want, err := fl.mapType(ty)
 		if err != nil {
 			return nil, err
 		}
-		ex, stmts, err := fl.expr(arg, want)
-		if err != nil {
-			return nil, err
-		}
 		if irNumWidth(want) == ir.I64 {
 			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
 		}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}}},
+		}, nil
 	}
 	if isFloat(ty) {
 		want, err := fl.mapType(ty)
-		if err != nil {
-			return nil, err
-		}
-		ex, stmts, err := fl.expr(arg, want)
 		if err != nil {
 			return nil, err
 		}
@@ -187,10 +257,9 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 		if irNumWidth(want) == ir.F32 {
 			fn = "runtime.printfloat32"
 		}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}}},
+		}, nil
 	}
 	if isComplex(ty) {
 		name := "$go.complex128"
@@ -202,17 +271,11 @@ func (fl *funcLower) printArg(arg ast.Expr) ([]ir.Stmt, error) {
 			elem = ir.TypeF32
 		}
 		fl.ensureComplexType(name, elem)
-		irt := &ir.Ref{Null: true, Named: name}
-		ex, stmts, err := fl.expr(arg, irt)
-		if err != nil {
-			return nil, err
-		}
-		stmts = append(stmts, &ir.ExprStmt{
-			X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}},
-		})
-		return stmts, nil
+		return []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}}},
+		}, nil
 	}
-	return nil, fl.errorf(arg, "print of type %s not supported in M3 (need string or int)", ty)
+	return nil, fl.errorf(nil, "print of type %s not supported in M3 (need string or int)", ty)
 }
 
 func (fl *funcLower) builtinAsValue(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -270,29 +333,56 @@ func (fl *funcLower) ensureComplexType(name string, elem ir.Type) {
 }
 
 func (fl *funcLower) builtinCopy(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	if len(e.Args) != 2 {
+	var dstArg, srcArg ast.Expr
+	var stmts []ir.Stmt
+	switch {
+	case len(e.Args) == 2:
+		dstArg, srcArg = e.Args[0], e.Args[1]
+	case len(e.Args) == 1:
+		// copy(f()) where f returns (dst, src).
+		ce, ok := e.Args[0].(*ast.CallExpr)
+		if !ok {
+			return nil, nil, fl.errorf(e, "copy wants 2 args")
+		}
+		temps, st, err := fl.callMaterialize(ce, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(temps) != 2 {
+			return nil, nil, fl.errorf(e, "copy wants 2 args")
+		}
+		stmts = append(stmts, st...)
+		dstIR := temps[0].Typ
+		srcIR := temps[1].Typ
+		return fl.builtinCopyIR(e, fl.useTemp(temps[0]), fl.useTemp(temps[1]), dstIR, srcIR, stmts, want)
+	default:
 		return nil, nil, fl.errorf(e, "copy wants 2 args")
 	}
-	dstTy := fl.typeOf(e.Args[0])
-	srcTy := fl.typeOf(e.Args[1])
+	dstTy := fl.typeOf(dstArg)
+	srcTy := fl.typeOf(srcArg)
 	// []T and string→[]byte both lower to slice structs.
 	dstIR, err := fl.mapType(dstTy)
 	if err != nil {
-		return nil, nil, fl.errorf(e.Args[0], "%v", err)
+		return nil, nil, fl.errorf(dstArg, "%v", err)
 	}
 	srcIR, err := fl.mapType(srcTy)
 	if err != nil {
-		return nil, nil, fl.errorf(e.Args[1], "%v", err)
+		return nil, nil, fl.errorf(srcArg, "%v", err)
 	}
-	dst, stmts, err := fl.expr(e.Args[0], dstIR)
-	if err != nil {
-		return nil, nil, err
-	}
-	src, st, err := fl.expr(e.Args[1], srcIR)
+	dst, st, err := fl.expr(dstArg, dstIR)
 	if err != nil {
 		return nil, nil, err
 	}
 	stmts = append(stmts, st...)
+	src, st, err := fl.expr(srcArg, srcIR)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts = append(stmts, st...)
+	return fl.builtinCopyIR(e, dst, src, dstIR, srcIR, stmts, want)
+}
+
+func (fl *funcLower) builtinCopyIR(e *ast.CallExpr, dst, src ir.Expr, dstIR, srcIR ir.Type, stmts []ir.Stmt, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 
 	dstName, dstArr := sliceParts(dstIR)
 	srcName, srcArr := sliceParts(srcIR)
@@ -514,7 +604,7 @@ func (fl *funcLower) builtinComplex(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 	}
 	return &ir.Instr{
 		Op:   ir.OpStructNew,
-		Type: &ir.Ref{Named: name},
+		Type: &ir.Ref{Null: true, Named: name},
 		Args: []ir.Expr{re, im},
 	}, stmts, nil
 }
@@ -531,14 +621,14 @@ func (fl *funcLower) builtinRealImag(e *ast.CallExpr, field string, want ir.Type
 		elem = ir.TypeF32
 	}
 	fl.ensureComplexType(name, elem)
-	x, stmts, err := fl.expr(e.Args[0], &ir.Ref{Named: name})
+	x, stmts, err := fl.expr(e.Args[0], &ir.Ref{Null: true, Named: name})
 	if err != nil {
 		return nil, nil, err
 	}
 	_ = want
 	return &ir.Instr{
 		Op:    ir.OpStructGet,
-		Type:  &ir.Ref{Named: name},
+		Type:  &ir.Ref{Null: true, Named: name},
 		Field: field,
 		Args:  []ir.Expr{x},
 	}, stmts, nil

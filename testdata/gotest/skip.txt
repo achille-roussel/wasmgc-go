@@ -7,17 +7,12 @@
 
 abi/convF_criteria.go — output mismatch
 abi/convT64_criteria.go — output mismatch
-abi/defer_recover_results.go — wasm validate/compile error
 abi/idata.go — unsupported: unsafe
-abi/leaf2.go — output mismatch
 abi/method_wrapper.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*S).M p…
 abi/named_results.go — output mismatch: named results / print spacing
 abi/named_return_stuff.go — output mismatch: named returns / print spacing
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
-abi/reg_not_ssa.go — output mismatch
-abi/spills3.go — output mismatch
-abi/spills4.go — output mismatch
 alias1.go — failed: panic: byte != uint8
 append.go — wasm validate/compile error
 args.go — failed: panic: argc
@@ -42,8 +37,6 @@ convT2X.go — codegen: missing struct field
 convert4.go — runtime error
 convert5.go — failed: build: pipeline: IR verify: duplicate var v_0 in main.main pipeline: IR verify: duplicate var v_0 in…
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
-decl.go — failed: build: pipeline: IR verify: duplicate var h1 in main.main pipeline: IR verify: duplicate var h1 in m…
-defer.go — wasm validate/compile error
 deferfin.go — unsupported: unsafe
 defernil.go — runtime error
 devirtualization_nil_panics.go — compile error: codegen
@@ -52,17 +45,14 @@ divmod.go — output mismatch
 env.go — output mismatch
 escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
-fixedbugs/bug005.go — failed: build: pipeline: IR verify: br target $goto.Foo not in scope pipeline: IR verify: br target $goto.Fo…
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug054.go — failed: build: pipeline: IR verify: temp %str0 redefined in region pipeline: IR verify: temp %str0 redefined…
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug177.go — output mismatch
-fixedbugs/bug178.go — compile error: lower: break label L not in scope
 fixedbugs/bug187.go — wasm validate/compile error
 fixedbugs/bug196.go — wasm validate/compile error
-fixedbugs/bug202.go — wasm validate/compile error
 fixedbugs/bug206.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug207.go — runtime error
 fixedbugs/bug242.go — runtime error
@@ -84,9 +74,7 @@ fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug352.go — runtime error
 fixedbugs/bug356.go — wasm validate/compile error
-fixedbugs/bug364.go — wasm validate/compile error
 fixedbugs/bug401.go — wasm validate/compile error
-fixedbugs/bug433.go — runtime error
 fixedbugs/bug434.go — runtime error
 fixedbugs/bug436.go — runtime error: package init order (var c = b before var a, b = foo())
 fixedbugs/bug440_32.go — output mismatch
@@ -116,7 +104,6 @@ fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
 fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
-fixedbugs/issue15992.go — compile error: lower: copy wants 2 args
 fixedbugs/issue16095.go — runtime error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue16515.go — compile error: codegen
@@ -193,11 +180,9 @@ fixedbugs/issue34123.go — compile error: codegen
 fixedbugs/issue34395.go — timeout
 fixedbugs/issue35027.go — unsupported: unsafe
 fixedbugs/issue35073a.go — unsupported: unsafe
-fixedbugs/issue35576.go — compile error: lower: print of type (int16, float64, string) not supported in M3 (need string or int)
 fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue38496.go — runtime error
 fixedbugs/issue39541.go — compile error: build: load: typecheck
-fixedbugs/issue40367.go — failed: build: pipeline: IR verify: br target $goto.top not in scope pipeline: IR verify: br target $goto.to…
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue42703.go — runtime error
@@ -241,7 +226,6 @@ fixedbugs/issue5493.go — unsupported: unsafe
 fixedbugs/issue55122.go — compile error: lower: star assign: unknown type $go.bytes
 fixedbugs/issue55122b.go — compile error: lower: star assign: unknown type $go.bytes
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
-fixedbugs/issue5753.go — wasm validate/compile error
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
 fixedbugs/issue5809.go — output mismatch
 fixedbugs/issue5820.go — wasm validate/compile error
@@ -331,14 +315,12 @@ ken/chan1.go — output mismatch
 ken/cplx2.go — compile error: IR verify: complex64 assign from i32
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
-ken/label.go — failed: build: pipeline: IR verify: br target $goto.loop not in scope pipeline: IR verify: br target $goto.l…
 ken/modconst.go — unsupported: unsafe
 ken/range.go — wasm validate/compile error
 ken/rob2.go — wasm validate/compile error
 ken/shift.go — wasm validate/compile error
 ken/simparray.go — wasm validate/compile error
 ken/slicearray.go — wasm validate/compile error
-ken/string.go — output mismatch
 literal2.go — runtime error
 mallocfin.go — compile error: codegen
 map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
@@ -386,7 +368,6 @@ typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method b
 typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/dottype.go — compile error: lower: print of type (int, bool) not supported in M3 (need string or int)
-typeparam/equal.go — failed: panic: assertion failed
 typeparam/genembed.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn8014 of type ref $go.ifacefn.main_getter$stri…
 typeparam/graph.go — failed: build: mono: pending main._NodeC$main.mazeEdge.Edges missing package/info mono: pending main._NodeC$…
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …

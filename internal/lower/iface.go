@@ -519,6 +519,55 @@ func (fl *funcLower) ifaceCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, [
 	return eq, stmts, nil
 }
 
+// structCompare lowers struct == / != via $go.eq.* (field-wise, blanks ignored).
+func (fl *funcLower) structCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	xt := fl.typeOf(e.X)
+	if xt == nil {
+		return nil, nil, fl.errorf(e, "struct compare: missing type")
+	}
+	// Structs with no comparable fields (all blank / zero-size) are always equal.
+	if st, ok := types.Unalias(xt).Underlying().(*types.Struct); ok && !structHasComparableField(st) {
+		v := int64(1)
+		if op == token.NEQ {
+			v = 0
+		}
+		return fl.i32const(v), nil, nil
+	}
+	x, xstmts, err := fl.expr(e.X, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	eqName := "$go.eq." + desc.Sanitize(desc.TypeKey(xt))
+	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
+	}}
+	if op == token.NEQ {
+		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
+	}
+	return eq, stmts, nil
+}
+
+func structHasComparableField(st *types.Struct) bool {
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		if f.Name() == "_" {
+			continue
+		}
+		if isZeroSize(f.Type()) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // ifaceCompareOperand lowers one side of an interface ==/!=, boxing concretes.
 func (fl *funcLower) ifaceCompareOperand(e ast.Expr, src types.Type) (ir.Expr, []ir.Stmt, error) {
 	if src == nil || isUntypedNil(src) || isNilIdent(e) {
