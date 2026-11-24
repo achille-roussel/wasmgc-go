@@ -636,11 +636,17 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 						rhs = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}
 					}
 				} else {
-					op, err := fl.binaryOpFromAssign(s.Tok, fl.typeOf(s.Lhs[i]))
+					lhsGo := fl.typeOf(s.Lhs[i])
+					op, err := fl.binaryOpFromAssign(s.Tok, lhsGo)
 					if err != nil {
 						return nil, fl.errorf(s, "%v", err)
 					}
 					rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
+					switch s.Tok {
+					case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
+						token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN:
+						rhs = fl.truncateInt(rhs, lhsGo)
+					}
 				}
 			}
 		} else if call, ok := s.Rhs[i].(*ast.CallExpr); ok && !fl.isConversion(call) && !fl.isBuiltinPrint(call) && !fl.isBuiltinCall(call) {

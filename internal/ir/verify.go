@@ -309,7 +309,11 @@ func (v *verifier) stmt(s Stmt) {
 			return
 		}
 		if len(rts) > 0 && len(rts) != len(s.Lhs) {
-			v.errorf(s.Pos, "assignment has %d destinations but rhs produces %d values", len(s.Lhs), len(rts))
+			fn := ""
+			if v.fn != nil {
+				fn = v.fn.Name
+			}
+			v.errorf(s.Pos, "assignment has %d destinations but rhs produces %d values in %s", len(s.Lhs), len(rts), fn)
 		}
 		for i, d := range s.Lhs {
 			var got Type

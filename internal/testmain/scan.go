@@ -86,12 +86,11 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 		if !fileHasFuncs(af) && !keepExport && !keepImportHelper {
 			continue
 		}
-		// When only a single Test* remains after skips, drop package-level
-		// var/init baggage that often fails wasm codegen (large composite
-		// literals / non-defaultable array.new_fixed) for tables only the
-		// skipped tests needed. Do not strip when multiple tests remain —
-		// they typically still reference shared tables.
-		if countTestFuncs(af) == 1 {
+		// Drop package-level var/init baggage that remaining tests do not
+		// reference. Large composite literals (fmtTests, etc.) often fail
+		// wasm codegen (array.new_fixed) when left in init for skipped-only
+		// tables. used-analysis keeps vars still referenced by live tests.
+		if countTestFuncs(af) >= 1 {
 			stripVarAndInit(af)
 			pruneUnusedImports(af)
 		}
@@ -257,6 +256,9 @@ func countTestFuncs(f *ast.File) int {
 func stripVarAndInit(f *ast.File) {
 	// Names still referenced by remaining funcs/methods/types must be kept
 	// (e.g. poserPathErr used by (*poser).As after TestAs is skipped).
+	// init bodies are handled separately: keep an init when it mutates a
+	// still-used table (strconv NumError wrapping), drop it when it only
+	// touches unused vars (fmtTests-sized baggage for skipped printers).
 	used := map[string]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -266,7 +268,7 @@ func stripVarAndInit(f *ast.File) {
 			}
 		case *ast.FuncDecl:
 			if n.Recv == nil && n.Name != nil && n.Name.Name == "init" {
-				return false // init bodies are stripped; ignore their refs
+				return false // defer init refs until we know which vars stay
 			}
 		case *ast.Ident:
 			used[n.Name] = true
@@ -274,15 +276,111 @@ func stripVarAndInit(f *ast.File) {
 		return true
 	})
 
+	pkgVars := map[string]bool{}
+	type varSpec struct {
+		names []string
+		rhs   []ast.Expr
+		decl  *ast.GenDecl
+		spec  *ast.ValueSpec
+	}
+	var specs []varSpec
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, s := range gd.Specs {
+			vs := s.(*ast.ValueSpec)
+			names := make([]string, len(vs.Names))
+			for i, n := range vs.Names {
+				names[i] = n.Name
+				pkgVars[n.Name] = true
+			}
+			specs = append(specs, varSpec{names: names, rhs: vs.Values, decl: gd, spec: vs})
+		}
+	}
+
+	expandUsedVars := func() {
+		for {
+			added := false
+			for _, vs := range specs {
+				needed := false
+				for _, n := range vs.names {
+					if used[n] {
+						needed = true
+						break
+					}
+				}
+				if !needed {
+					continue
+				}
+				for _, rhs := range vs.rhs {
+					ast.Inspect(rhs, func(n ast.Node) bool {
+						if id, ok := n.(*ast.Ident); ok && !used[id.Name] {
+							used[id.Name] = true
+							added = true
+						}
+						return true
+					})
+				}
+			}
+			if !added {
+				return
+			}
+		}
+	}
+	expandUsedVars()
+
+	// Keep inits that touch any still-used package var; pulling those inits
+	// in also keeps every package var they reference (and their RHS deps).
+	keepInit := map[*ast.FuncDecl]bool{}
+	for {
+		added := false
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Name == nil || fd.Name.Name != "init" || keepInit[fd] {
+				continue
+			}
+			varRefs := map[string]bool{}
+			touchesUsed := false
+			ast.Inspect(fd, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if !ok || !pkgVars[id.Name] {
+					return true
+				}
+				varRefs[id.Name] = true
+				if used[id.Name] {
+					touchesUsed = true
+				}
+				return true
+			})
+			if !touchesUsed {
+				continue
+			}
+			keepInit[fd] = true
+			for name := range varRefs {
+				if !used[name] {
+					used[name] = true
+					added = true
+				}
+			}
+		}
+		if !added {
+			break
+		}
+		expandUsedVars()
+	}
+
 	var keep []ast.Decl
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *ast.GenDecl:
 			if d.Tok == token.VAR {
-				var specs []ast.Spec
+				// Keep the whole var block if any name is used. Specs in one
+				// GenDecl often reference each other (slice = array[:]).
+				needed := false
 				for _, s := range d.Specs {
 					vs := s.(*ast.ValueSpec)
-					needed := false
 					for _, name := range vs.Names {
 						if used[name.Name] {
 							needed = true
@@ -290,19 +388,21 @@ func stripVarAndInit(f *ast.File) {
 						}
 					}
 					if needed {
-						specs = append(specs, vs)
+						break
 					}
 				}
-				if len(specs) == 0 {
+				if !needed {
 					continue
 				}
-				d.Specs = specs
 				keep = append(keep, d)
 				continue
 			}
 			keep = append(keep, d)
 		case *ast.FuncDecl:
 			if d.Recv == nil && d.Name != nil && d.Name.Name == "init" {
+				if keepInit[d] {
+					keep = append(keep, d)
+				}
 				continue
 			}
 			keep = append(keep, d)

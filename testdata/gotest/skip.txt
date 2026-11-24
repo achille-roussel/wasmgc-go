@@ -13,7 +13,6 @@ abi/named_results.go — output mismatch: named results / print spacing
 abi/named_return_stuff.go — output mismatch: named returns / print spacing
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
-alias1.go — failed: panic: byte != uint8
 append.go — wasm validate/compile error
 args.go — failed: panic: argc
 bigalg.go — output mismatch: map/slice print vs expected
@@ -96,7 +95,6 @@ fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue14725.go — runtime error: panic: f1 returned 0, wanted 1
 fixedbugs/issue15039.go — failed: panic: big != bad
-fixedbugs/issue15175.go — output mismatch
 fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
@@ -266,7 +264,6 @@ fixedbugs/issue79197.go — runtime error
 fixedbugs/issue79236.go — runtime error
 fixedbugs/issue79236b.go — runtime error
 fixedbugs/issue79762.go — runtime error: null deref / stub Stack
-fixedbugs/issue79886.go — failed: panic: want -2305843009213693952; got 6917529027641081856
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
 fixedbugs/issue80127.go — runtime error

@@ -1,3 +1,1 @@
-# math — wasmgc-go test skips
-TestMaxUint — sub-i32 wrap: uint8/16 add not truncated to width
-TestMaxInt — sub-i32 wrap: int8/16 add not truncated to width
+# math — wasmgc-go test skips (cleared: MaxUint/MaxInt wrap via truncateInt)

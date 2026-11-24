@@ -1507,6 +1507,14 @@ func TypeKey(t types.Type) string {
 	t = types.Unalias(t)
 	switch t := t.(type) {
 	case *types.Basic:
+		// byte/rune are specified aliases; one descriptor so type switches
+		// and asserts treat them as identical (alias1.go).
+		switch t.Kind() {
+		case types.Byte:
+			return "uint8"
+		case types.Rune:
+			return "int32"
+		}
 		return t.Name()
 	case *types.Named:
 		pkg := ""
