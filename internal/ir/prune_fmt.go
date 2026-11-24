@@ -153,6 +153,11 @@ func markFmtFieldType(m *Module, t Type, boxed map[string]bool, queue *[]string)
 			// ignore
 		case t.Named == "$go.iface":
 			boxed["interface"] = true
+		case t.Named == "$go.hmap" || strings.HasPrefix(t.Named, "$go.hmap."):
+			// Map fields erase to hmap refs; kindsFromBoxed keys on "map[".
+			boxed["map["] = true
+		case t.Named == "$go.chan" || strings.HasPrefix(t.Named, "$go.chan."):
+			boxed["chan "] = true
 		}
 	}
 }

@@ -1161,14 +1161,20 @@ func (fl *funcLower) writeVar(obj types.Object, rhs ir.Expr) ([]ir.Stmt, error) 
 	if fl.cells != nil {
 		if cv, ok := fl.cells[obj]; ok {
 			cellTy := cv.Typ.(*ir.Ref).Named
-			// Cell is authoritative; plain local is stale until a plain write.
 			delete(fl.plainDirty, obj)
-			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+			// Keep the plain local in sync so bare returns / useVar see the
+			// same value as the cell after defer mutations (bug293).
+			v := fl.vars[obj]
+			out := []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 				Op:    ir.OpStructSet,
 				Type:  &ir.Ref{Named: cellTy},
 				Field: "v",
 				Args:  []ir.Expr{fl.useVar(cv), rhs},
-			}}}, nil
+			}}}
+			if v != nil && v != cv {
+				out = append(out, fl.assignVar(v, rhs))
+			}
+			return out, nil
 		}
 	}
 	v, ok := fl.vars[obj]

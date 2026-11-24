@@ -1,6 +1,5 @@
 # strings — wasmgc-go test skips
 # strings — wasmgc-go test skips
-TestBuilderGrow — runtime fail after typecheck unlock
 TestClone — runtime fail after typecheck unlock
 TestCompare — compile: load: typecheck strings_test:
 TestFinderCreation — runtime error

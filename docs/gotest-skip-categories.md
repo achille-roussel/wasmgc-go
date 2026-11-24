@@ -6,9 +6,9 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~704** pass / **322** skip-listed; stdlib
-per-test **425** (range assign-form + parallel assign + int truncate/print +
-named-result defer sync; bytes IndexAny; sort SearchWrappers; bits Reverse/Rotate).
+**Current (this PR):** `$GOROOT/test` **~708** pass / **318** skip-listed; stdlib
+per-test **398** (named-result defer; blank struct fields; printuint64; fmt
+map-field prune; MakeNoZero; math/rand/v2 stub + `/v2` import name fix).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -32,7 +32,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 322 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 318 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -40,7 +40,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 |---:|---:|---|---|
 | Compile gaps (lower/load/IR) | ~119 | **fixable** | IR verify, typecheck, other compile |
 | Runtime panic / trap | ~115 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
-| Output / failed-run mismatch | ~65 | **fixable** | Often panic text, stack traces, print/ABI |
+| Output / failed-run mismatch | ~61 | **fixable** | Often panic text, stack traces, print/ABI |
 | Codegen / Wasm validate | ~38 | **fixable** | `codegen:` + wasm validate/compile |
 | Unsupported: unsafe | 41 | **by design** | `uintptr`↔`Pointer`, rejected ops |
 | Other / mono | ~5 | mixed | |
@@ -53,18 +53,18 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **425** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **398** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
 | encoding/json | 166 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
 | fmt | 31 | scan/regexp + tables/reflect | Fixable |
-| slices | **30** | Insert/Delete/Replace generics; iter+rand/v2 | Was 54 |
-| sort | **25** | Tables / pdqsort / stable; needs `math/rand/v2` in tests | Runtime |
-| strings | **14** | Compare IR; Builder/Map leftovers | Was 61 |
-| bytes | **7** | Remaining validate + Split/Repeat | Was 80 |
+| slices | **30** | Insert/Delete/Replace generics; iter leftovers | Was 54 |
+| strings | **13** | Compare IR; Finder/Map leftovers | Was 61 |
+| sort | **4** | Interface-wrap wasm validate leftovers | Was 25 |
 | errors | 2 | `Is`/`AsType` leftovers | **Fixable** |
+| bytes | **2** | Grow data / overflow message | Was 80 |
 | math/bits | **2** | Add/Sub64 overflow recover illegal cast | Was 11 |
 | strconv | 1 | ParseComplex | complex reflect |
 | maps | 1 | `Clone` large keys / `-0` | Overlay |
@@ -78,8 +78,8 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 1. **json / time** — http stubs, export_test, zoneinfo depth.
 2. **fmt** scan_test / regexp IR; shared `fmtTests`.
-3. **slices** Insert/Delete/Replace unsubstituted type params; `math/rand/v2`.
-4. **errors.TestIs** — Go 1.22 per-iter value capture (by-value range iter) without breaking `TestAs`.
+3. **slices** Insert/Delete/Replace unsubstituted type params.
+4. **errors.TestIs** — Go 1.22 per-iter value capture without breaking `TestAs`.
 5. GOROOT compile / wasm-validate buckets.
 
 ---
@@ -92,7 +92,8 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | #50 bytes/strings/slices | testenv/B/atomic/rand | **done** (−112 →500) |
 | #55 array/reflect Len/Index | **done** (−23 →354; stdlib 437) |
 | #56 array `==` + Div panic | **done** (−16 →344; stdlib 431) |
-| range assign-form + parallel assign | **this PR** | −22 GOROOT + 6 stdlib →322 / 425 |
+| #57 range assign-form + parallel assign | **done** (−22 →322; stdlib 425) |
+| defer/blank/printuint64 + sort rand/v2 | **this PR** | −4 GOROOT + 27 stdlib →318 / 398 |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -118,5 +119,5 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~704** | **322** |
-| Stdlib per-test | — | **425** |
+| `$GOROOT/test` | **~708** | **318** |
+| Stdlib per-test | — | **398** |

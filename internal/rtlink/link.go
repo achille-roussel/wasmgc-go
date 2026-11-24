@@ -143,6 +143,7 @@ func stripPrintFuncs(mod *ir.Module) {
 		"runtime.printint":         true,
 		"runtime.printnl":          true,
 		"runtime.printuint":        true,
+		"runtime.printuint64":      true,
 		"runtime.printfloat32":     true,
 		"runtime.printfloat64":     true,
 		"runtime.printcomplex64":   true,

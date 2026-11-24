@@ -967,8 +967,9 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
 	}
 
-	// Rewrite returns to run defers first.
-	newBody := rewriteReturns(body, runDefers)
+	// Rewrite returns to run defers first. With named results, re-read them
+	// after deferRun so mutations like `defer func(){ a++ }()` apply (bug293).
+	newBody := fl.rewriteReturns(body, runDefers)
 
 	if !needTry {
 		return &ir.Seq{Stmts: append(init, newBody.Stmts...)}, nil
@@ -1024,58 +1025,86 @@ func isDeferPeelableInit(rhs ir.Expr) bool {
 	return false
 }
 
-func rewriteReturns(r ir.Region, before []ir.Stmt) *ir.Seq {
+// resultReturnAfterDefer is like resultReturn but always reads capture cells
+// when present, so values mutated during deferRun are returned.
+func (fl *funcLower) resultReturnAfterDefer() *ir.Return {
+	if len(fl.namedResults) == 0 {
+		return fl.resultReturn()
+	}
+	results := make([]ir.Expr, len(fl.namedResults))
+	for i, v := range fl.namedResults {
+		if fl.sig != nil && i < fl.sig.Results().Len() && fl.cells != nil {
+			obj := fl.sig.Results().At(i)
+			if _, ok := fl.cells[obj]; ok {
+				if rx, err := fl.readVar(obj); err == nil {
+					results[i] = rx
+					continue
+				}
+			}
+		}
+		results[i] = fl.useVar(v)
+	}
+	return &ir.Return{Results: results}
+}
+
+func (fl *funcLower) rewriteReturns(r ir.Region, before []ir.Stmt) *ir.Seq {
 	switch r := r.(type) {
 	case *ir.Seq:
 		var out []ir.Stmt
 		for _, s := range r.Stmts {
-			out = append(out, rewriteReturnStmt(s, before)...)
+			out = append(out, fl.rewriteReturnStmt(s, before)...)
 		}
 		return &ir.Seq{Stmts: out, Pos: r.Pos}
 	default:
-		return &ir.Seq{Stmts: rewriteReturnStmt(r, before)}
+		return &ir.Seq{Stmts: fl.rewriteReturnStmt(r, before)}
 	}
 }
 
-func rewriteReturnStmt(s ir.Stmt, before []ir.Stmt) []ir.Stmt {
+func (fl *funcLower) rewriteReturnStmt(s ir.Stmt, before []ir.Stmt) []ir.Stmt {
 	switch s := s.(type) {
 	case *ir.Return:
 		out := append([]ir.Stmt{}, before...)
+		// After defers run, named results (including cell-boxed ones) are the
+		// source of truth — drop pre-computed Return operands.
+		if fl != nil && len(fl.namedResults) > 0 {
+			out = append(out, fl.resultReturnAfterDefer())
+			return out
+		}
 		out = append(out, s)
 		return out
 	case *ir.Seq:
-		return []ir.Stmt{rewriteReturns(s, before)}
+		return []ir.Stmt{fl.rewriteReturns(s, before)}
 	case *ir.Block:
-		return []ir.Stmt{&ir.Block{Name: s.Name, Params: s.Params, Results: s.Results, Body: rewriteReturns(s.Body, before), Pos: s.Pos}}
+		return []ir.Stmt{&ir.Block{Name: s.Name, Params: s.Params, Results: s.Results, Body: fl.rewriteReturns(s.Body, before), Pos: s.Pos}}
 	case *ir.Loop:
-		return []ir.Stmt{&ir.Loop{Name: s.Name, Params: s.Params, Body: rewriteReturns(s.Body, before), Pos: s.Pos}}
+		return []ir.Stmt{&ir.Loop{Name: s.Name, Params: s.Params, Body: fl.rewriteReturns(s.Body, before), Pos: s.Pos}}
 	case *ir.If:
 		var elseR ir.Region
 		if s.Else != nil {
-			elseR = rewriteReturns(s.Else, before)
+			elseR = fl.rewriteReturns(s.Else, before)
 		}
-		return []ir.Stmt{&ir.If{Cond: s.Cond, Then: rewriteReturns(s.Then, before), Else: elseR, Pos: s.Pos}}
+		return []ir.Stmt{&ir.If{Cond: s.Cond, Then: fl.rewriteReturns(s.Then, before), Else: elseR, Pos: s.Pos}}
 	case *ir.Switch:
 		ns := *s
 		ns.Cases = append([]ir.Case(nil), s.Cases...)
 		for i := range ns.Cases {
-			ns.Cases[i].Body = rewriteReturns(ns.Cases[i].Body, before)
+			ns.Cases[i].Body = fl.rewriteReturns(ns.Cases[i].Body, before)
 		}
 		if s.Default != nil {
-			ns.Default = rewriteReturns(s.Default, before)
+			ns.Default = fl.rewriteReturns(s.Default, before)
 		}
 		return []ir.Stmt{&ns}
 	case *ir.Try:
 		return []ir.Stmt{&ir.Try{
-			Name: s.Name, Body: rewriteReturns(s.Body, before), Tag: s.Tag,
-			Params: s.Params, Handler: rewriteReturns(s.Handler, before), Pos: s.Pos,
+			Name: s.Name, Body: fl.rewriteReturns(s.Body, before), Tag: s.Tag,
+			Params: s.Params, Handler: fl.rewriteReturns(s.Handler, before), Pos: s.Pos,
 		}}
 	case *ir.Dispatch:
 		ns := *s
 		ns.Arms = make([]ir.Region, len(s.Arms))
 		for i, arm := range s.Arms {
 			if arm != nil {
-				ns.Arms[i] = rewriteReturns(arm, before)
+				ns.Arms[i] = fl.rewriteReturns(arm, before)
 			}
 		}
 		return []ir.Stmt{&ns}
