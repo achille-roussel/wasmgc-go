@@ -37,7 +37,6 @@ TestDecoderInputOffset — lower/runtime/reflect gaps in encoding/json tests
 TestDecoderMaxBytesError — lower/runtime/reflect gaps in encoding/json tests
 TestDecoderReset — lower/runtime/reflect gaps in encoding/json tests
 TestDuplicatedFieldDisappears — lower/runtime/reflect gaps in encoding/json tests
-TestDuplicateNames — lower/runtime/reflect gaps in encoding/json tests
 TestEmbeddedBug — lower/runtime/reflect gaps in encoding/json tests
 TestEmptyStructs — lower/runtime/reflect gaps in encoding/json tests
 TestEncodeBytekind — lower/runtime/reflect gaps in encoding/json tests
@@ -52,7 +51,6 @@ TestEncoderSetEscapeHTML — lower/runtime/reflect gaps in encoding/json tests
 TestEncodeString — lower/runtime/reflect gaps in encoding/json tests
 TestEqualFold — lower/runtime/reflect gaps in encoding/json tests
 TestErrorMessageFromMisusedString — lower/runtime/reflect gaps in encoding/json tests
-TestEscapeHTML — lower/runtime/reflect gaps in encoding/json tests
 TestFaultyDecoder — lower/runtime/reflect gaps in encoding/json tests
 TestFaultyEncoder — lower/runtime/reflect gaps in encoding/json tests
 TestFlags — lower/runtime/reflect gaps in encoding/json tests
@@ -75,7 +73,6 @@ TestIssue63379 — lower/runtime/reflect gaps in encoding/json tests
 TestJoin — lower/runtime/reflect gaps in encoding/json tests
 TestLargeByteSlice — lower/runtime/reflect gaps in encoding/json tests
 TestMakeStructFields — lower/runtime/reflect gaps in encoding/json tests
-TestMapDeterminism — lower/runtime/reflect gaps in encoding/json tests
 TestMarshal — lower/runtime/reflect gaps in encoding/json tests
 TestMarshalEmbeds — lower/runtime/reflect gaps in encoding/json tests
 TestMarshalEncodeInvalidNamespaceAtName — lower/runtime/reflect gaps in encoding/json tests
@@ -92,7 +89,6 @@ TestMarshalRawMessageValue — lower/runtime/reflect gaps in encoding/json tests
 TestMarshalTextFloatMap — lower/runtime/reflect gaps in encoding/json tests
 TestMarshalUncommonFieldNames — lower/runtime/reflect gaps in encoding/json tests
 TestMergeComposite — lower/runtime/reflect gaps in encoding/json tests
-TestMergeNull — lower/runtime/reflect gaps in encoding/json tests
 TestNilMarshal — lower/runtime/reflect gaps in encoding/json tests
 TestNilMarshalerTextMapKey — lower/runtime/reflect gaps in encoding/json tests
 TestNilSlicesAndMaps — lower/runtime/reflect gaps in encoding/json tests

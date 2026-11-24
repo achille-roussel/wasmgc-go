@@ -75,8 +75,11 @@
       "notes": "AnyOverlap shared-backing test"
     },
     "errors": {
-      "tier": "vendor",
-      "notes": "Upstream Is/Unwrap/Join; iface\u2192iface assert itabs from desc"
+      "tier": "overlay",
+      "overlays": [
+        "wrap.go"
+      ],
+      "notes": "Upstream Is/Unwrap/Join; wrap.go: iface As targets via type assert (Timeout)"
     },
     "strconv": {
       "tier": "vendor"

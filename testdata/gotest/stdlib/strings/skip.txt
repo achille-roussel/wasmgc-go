@@ -4,10 +4,7 @@ TestClone — runtime fail after typecheck unlock
 TestCompare — compile: load: typecheck strings_test:
 TestFinderCreation — runtime error
 TestFinderNext — runtime error
-TestRepeatCatchesOverflow — runtime fail after typecheck unlock
 TestReplacer — runtime fail after typecheck unlock
-TestBuilderWrite2/Write — runtime fail after typecheck unlock
-TestBuilderWrite2 — runtime fail after typecheck unlock
 TestBuilderAllocs — runtime fail after typecheck unlock
 TestBuilderCopyPanic — runtime fail after typecheck unlock
 TestPickAlgorithm — runtime fail after typecheck unlock

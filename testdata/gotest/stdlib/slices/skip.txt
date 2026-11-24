@@ -1,17 +1,9 @@
 # slices — wasmgc-go test skips
-TestBinarySearchFloats — test assertion failed
-TestChunk — compile: load: typecheck slices_test:
 TestConcat_too_large — runtime error
-TestDeletePanics — compile: load: typecheck slices_test:
 TestInference — compile: load: typecheck slices_test:
-TestInsertPanics — compile: load: typecheck slices_test:
-TestMinMax — panic: slices.Min: empty list
-TestMinMaxNaNs — test assertion failed
 TestNilness — compile: load: typecheck slices_test:
 TestRepeat — runtime error
-TestRepeatPanics — runtime error
 TestReplaceOverlap — compile: load: typecheck slices_test:
-TestReplacePanics — compile: load: typecheck slices_test:
 TestSortedStableFunc — compile: load: typecheck slices_test:
 TestGrow — runtime fail after typecheck unlock
 TestStability — runtime fail after typecheck unlock
