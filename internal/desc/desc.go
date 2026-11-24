@@ -418,6 +418,42 @@ func (g *gen) synthesizeAssertItabs() {
 			}
 		}
 	}
+	// rtlink AppendFiles types (e.g. runtime.plainError) are absent from
+	// prog.Packages, so concretes above lack go/types. If the Error method
+	// IR exists and any-itab was emitted, force error/@ itab; emitItab uses
+	// ensureWrapperFromIR when concrete is nil.
+	g.synthesizeAppendFilesErrorItabs()
+}
+
+// synthesizeAppendFilesErrorItabs registers $go.itab.error.@.<C> for
+// AppendFiles concretes that implement error via IR methods only.
+func (g *gen) synthesizeAppendFilesErrorItabs() {
+	if !g.asserts["error"] {
+		return
+	}
+	iface := g.lookupIface("error")
+	if iface == nil {
+		return
+	}
+	for _, it := range g.itabs {
+		if it.ifaceKey != "any" && it.ifaceKey != "interface{}" {
+			continue
+		}
+		if it.concKey == "" {
+			continue
+		}
+		if g.mod.LookupFunc(it.concKey+".Error") == nil {
+			continue
+		}
+		name := "$go.itab.error.@." + it.concKey
+		g.needItabFromName(name)
+		if dest := g.itabs[name]; dest != nil {
+			if dest.iface == nil {
+				dest.iface = iface
+			}
+			// concrete stays nil → ensureWrapperFromIR
+		}
+	}
 }
 
 // collectNointerface records methods marked //go:nointerface.

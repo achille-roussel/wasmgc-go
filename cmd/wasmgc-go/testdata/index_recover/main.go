@@ -4,7 +4,7 @@ func main() {
 	defer func() {
 		r := recover()
 		if r != nil {
-			println(r.(string))
+			println(r.(error).Error())
 		}
 	}()
 	s := []int{1, 2, 3}

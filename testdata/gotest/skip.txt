@@ -19,7 +19,6 @@ abi/part_live_2.go — unsupported: unsafe
 abi/reg_not_ssa.go — output mismatch
 abi/spills3.go — output mismatch
 abi/spills4.go — output mismatch
-abi/struct_lower_1.go — output mismatch
 alias1.go — failed: panic: byte != uint8
 append.go — wasm validate/compile error
 args.go — failed: panic: argc
@@ -49,7 +48,6 @@ decl.go — failed: build: pipeline: IR verify: duplicate var h1 in main.main pi
 defer.go — wasm validate/compile error
 deferfin.go — unsupported: unsafe
 defernil.go — runtime error
-deferprint.go — output mismatch
 devirtualization_nil_panics.go — compile error: codegen
 divide.go — output mismatch
 divmod.go — output mismatch
@@ -59,7 +57,6 @@ finprofiled.go — output mismatch
 fixedbugs/bug005.go — failed: build: pipeline: IR verify: br target $goto.Foo not in scope pipeline: IR verify: br target $goto.Fo…
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug054.go — failed: build: pipeline: IR verify: temp %str0 redefined in region pipeline: IR verify: temp %str0 redefined…
-fixedbugs/bug058.go — failed: panic: assignment to entry in nil map
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
@@ -69,9 +66,7 @@ fixedbugs/bug177.go — output mismatch
 fixedbugs/bug178.go — compile error: lower: break label L not in scope
 fixedbugs/bug187.go — wasm validate/compile error
 fixedbugs/bug196.go — wasm validate/compile error
-fixedbugs/bug201.go — output mismatch
 fixedbugs/bug202.go — wasm validate/compile error
-fixedbugs/bug204.go — output mismatch
 fixedbugs/bug206.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug207.go — runtime error
 fixedbugs/bug242.go — runtime error
@@ -194,7 +189,6 @@ fixedbugs/issue29504.go — compile error: codegen
 fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
-fixedbugs/issue30709.go — output mismatch
 fixedbugs/issue30977.go — compile error: codegen
 fixedbugs/issue31419.go — wasm validate/compile error
 fixedbugs/issue31546.go — output mismatch
@@ -210,13 +204,11 @@ fixedbugs/issue34395.go — timeout
 fixedbugs/issue35027.go — unsupported: unsafe
 fixedbugs/issue35073a.go — unsupported: unsafe
 fixedbugs/issue35576.go — compile error: lower: print of type (int16, float64, string) not supported in M3 (need string or int)
-fixedbugs/issue37975.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue38496.go — runtime error
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40367.go — failed: build: pipeline: IR verify: br target $goto.top not in scope pipeline: IR verify: br target $goto.to…
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
-fixedbugs/issue4085b.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue42703.go — runtime error
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
@@ -288,12 +280,10 @@ fixedbugs/issue68816.go — runtime error
 fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
 fixedbugs/issue70189.go — runtime error
-fixedbugs/issue7044.go — output mismatch
 fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue71857.go — unsupported: unsafe
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
 fixedbugs/issue72860.go — runtime error
-fixedbugs/issue73476.go — output mismatch
 fixedbugs/issue73748a.go — runtime error: nil deref not recovered as Go panic
 fixedbugs/issue73748b.go — runtime error: nil deref not recovered as Go panic
 fixedbugs/issue73916.go — output mismatch
@@ -377,7 +367,6 @@ ken/slicearray.go — wasm validate/compile error
 ken/sliceslice.go — wasm validate/compile error
 ken/string.go — output mismatch
 literal2.go — runtime error
-makeslice.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 mallocfin.go — compile error: codegen
 map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
 maymorestack.go — compile error: codegen
@@ -423,10 +412,8 @@ typeparam/absdiff2.go — failed: build: mono: pending main.numericAbs$complex12
 typeparam/absdiff3.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method body
 typeparam/chans.go — compile error: codegen finalize method value
-typeparam/combine.go — compile error: lower: unsupported expression *ast.IndexListExpr
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/dottype.go — compile error: lower: print of type (int, bool) not supported in M3 (need string or int)
-typeparam/double.go — failed: panic: got [%!s(int=2) %!s(int=4) %!s(int=6)], want [%!s(int=2) %!s(int=4) %!s(int=6)]
 typeparam/equal.go — failed: panic: assertion failed
 typeparam/fact.go — wasm validate/compile error
 typeparam/genembed.go — failed: build: pipeline: IR verify: cannot assign i32 to var fn8014 of type ref $go.ifacefn.main_getter$stri…
@@ -437,8 +424,6 @@ typeparam/issue47272.go — output mismatch
 typeparam/issue47713.go — wasm validate/compile error: BinaryMarshaler call shape
 typeparam/issue47775b.go — compile error: codegen
 typeparam/issue47925b.go — failed: panic: interface conversion: type assertion failed
-typeparam/issue47925c.go — failed: panic: interface conversion: type assertion failed
-typeparam/issue47925d.go — failed: panic: interface conversion: type assertion failed
 typeparam/issue48042.go — compile error: lower: variable T has no IR local (in main.(*Foo$int).f2)
 typeparam/issue48047.go — wasm validate/compile error
 typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer2$byte desc: no concrete type for main.fooer2$byte
@@ -468,11 +453,8 @@ typeparam/issue51522b.go — wasm validate/compile error
 typeparam/issue52026.go — compile error: codegen
 typeparam/issue54225.go — compile error: codegen
 typeparam/issue54456.go — failed: panic: bad type identity
-typeparam/issue54535.go — compile error: lower: variable int has no IR local (in main.main)
-typeparam/issue54537.go — compile error: lower: variable bool has no IR local (in main.main)
 typeparam/issue58513.go — compile error: lower: variable To has no IR local (in main.Assert$int)
 typeparam/list.go — wasm validate/compile error
-typeparam/map.go — failed: panic: got [1 2 3], want [1 2 3]
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
 typeparam/mdempsky/14.go — wasm validate/compile error: struct.new anyref vs i32
 typeparam/mdempsky/15.go — compile error: codegen
@@ -489,7 +471,6 @@ typeparam/orderedmap.go — compile error: codegen unknown type global
 typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
 typeparam/shape1.go — wasm validate/compile error: mono f$*incrementer recv width
 typeparam/shape_assert.go — wasm validate/compile error
-typeparam/typeswitch1.go — output mismatch
 typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (in main.f$any)
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
 typeparam/typeswitch5.go — output mismatch

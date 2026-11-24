@@ -513,8 +513,39 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 	}
 	lenEx = forceI32Expr(lenEx)
 	capEx = forceI32Expr(capEx)
+
+	// Bound-check before array.new: negative / len>cap / too-large must
+	// panicmakeslice* (recoverable), not Wasm "array too large" RuntimeError.
+	// maxMakeElems is well below engine array limits but above any realistic
+	// passing make; GOROOT makeslice tests use MaxInt32 / ^uint32(0).
+	const maxMakeElems = 1 << 28
+	lenV := rt.newVar("mlen", ir.TypeI32)
+	capV := rt.newVar("mcap", ir.TypeI32)
+	pre = append(pre, &ir.VarDef{Var: lenV}, &ir.VarDef{Var: capV})
+	pre = append(pre, assignV(lenV, lenEx), assignV(capV, capEx))
+	maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
+	// len < 0 || uint(len) > max → makeslice: len out of range
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+			&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{useV(lenV), maxC}},
+		}},
+		Then: &ir.Seq{Stmts: rt.panicMakeSliceLen()},
+	})
+	// cap < len || cap < 0 || uint(cap) > max → makeslice: cap out of range
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), useV(lenV)}},
+			&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+				&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{useV(capV), maxC}},
+			}},
+		}},
+		Then: &ir.Seq{Stmts: rt.panicMakeSliceCap()},
+	})
+
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
-	alloc, allocPre := rt.allocArray(arrName, capEx)
+	alloc, allocPre := rt.allocArray(arrName, useV(capV))
 	pre = append(pre, allocPre...)
 	pre = append(pre, &ir.Assign{
 		Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
@@ -528,12 +559,26 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 			Args: []ir.Expr{
 				&ir.Name{Temp: dataT, Raw: dataT.Name},
 				&ir.Const{Op: ir.OpI32Const, I64: 0},
-				lenEx,
-				capEx,
+				useV(lenV),
+				useV(capV),
 			},
 		},
 	})
 	return pre, nil
+}
+
+func (rt *runtimeLower) panicMakeSliceLen() []ir.Stmt {
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicmakeslicelen"}},
+		&ir.Unreachable{},
+	}
+}
+
+func (rt *runtimeLower) panicMakeSliceCap() []ir.Stmt {
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicmakeslicecap"}},
+		&ir.Unreachable{},
+	}
 }
 
 // allocArray allocates an array of arrName with the given length. Uses

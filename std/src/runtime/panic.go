@@ -7,6 +7,9 @@ package runtime
 //
 // deferRun / unrecoveredPanic take opaque pointers; rtlink rewrites their
 // IR param types to $go.defer / $go.panicObj after linking.
+//
+// Runtime panics use plainError (implements error) so recover().(error) works
+// like gc. Messages already include any "runtime error: " prefix.
 
 func deferRun(d *byte)
 func throwPanic(v interface{})
@@ -14,24 +17,45 @@ func gorecover(allow int32) interface{}
 func goexit()
 func unrecoveredPanic(p *byte)
 
+// plainError is a runtime panic value that implements error (and Error).
+// Struct (not defined-string) so desc ensureWrapperFromIR can cast iface
+// data to $go.struct.runtime.plainError when go/types is unavailable
+// (AppendFiles / -skip-stdlib). Error() returns msg as-is (like upstream
+// runtime.plainError).
+type plainError struct{ msg string }
+
+func (e plainError) RuntimeError() {}
+
+func (e plainError) Error() string { return e.msg }
+
+func panicErr(msg string) plainError { return plainError{msg: msg} }
+
 func panicSliceB() {
-	throwPanic("runtime error: slice bounds out of range")
+	throwPanic(panicErr("runtime error: slice bounds out of range"))
 }
 
 func panicNil() {
-	throwPanic("runtime error: invalid memory address or nil pointer dereference")
+	throwPanic(panicErr("runtime error: invalid memory address or nil pointer dereference"))
 }
 
 func panicDivide() {
-	throwPanic("runtime error: integer divide by zero")
+	throwPanic(panicErr("runtime error: integer divide by zero"))
 }
 
 func panicUncomparable() {
-	throwPanic("runtime error: comparing uncomparable type")
+	throwPanic(panicErr("runtime error: comparing uncomparable type"))
 }
 
 func panicTypeAssert() {
-	throwPanic("interface conversion: type assertion failed")
+	throwPanic(panicErr("interface conversion: type assertion failed"))
+}
+
+func panicmakeslicelen() {
+	throwPanic(panicErr("runtime error: makeslice: len out of range"))
+}
+
+func panicmakeslicecap() {
+	throwPanic(panicErr("runtime error: makeslice: cap out of range"))
 }
 
 // panicrangestate reports iterator misuse for range-over-func (Go 1.22+).
@@ -40,13 +64,13 @@ func panicTypeAssert() {
 func panicrangestate(state int32) {
 	switch state {
 	case 0: // RF_DONE
-		throwPanic("range function continued iteration after function for loop body returned false")
+		throwPanic(panicErr("range function continued iteration after function for loop body returned false"))
 	case 2: // RF_PANIC
-		throwPanic("range function continued iteration after loop body panic")
+		throwPanic(panicErr("range function continued iteration after loop body panic"))
 	case 3: // RF_EXHAUSTED
-		throwPanic("range function continued iteration after whole loop exit")
+		throwPanic(panicErr("range function continued iteration after whole loop exit"))
 	case 4: // RF_MISSING_PANIC
-		throwPanic("range function recovered a loop body panic and did not resume panicking")
+		throwPanic(panicErr("range function recovered a loop body panic and did not resume panicking"))
 	}
-	throwPanic("unexpected state passed to panicrangestate")
+	throwPanic(panicErr("unexpected state passed to panicrangestate"))
 }
