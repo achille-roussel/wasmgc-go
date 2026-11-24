@@ -4,7 +4,7 @@ package runtime
 // the formatted "index out of range [x] with length y" message.
 
 func panicIndex(x, y int) {
-	throwPanic("runtime error: index out of range [" + itoa(x) + "] with length " + itoa(y))
+	throwPanic(panicErr("runtime error: index out of range [" + itoa(x) + "] with length " + itoa(y)))
 }
 
 func itoa(v int) string {

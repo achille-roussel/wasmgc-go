@@ -185,6 +185,8 @@ var panicSyms = []string{
 	"runtime.panicDivide",
 	"runtime.panicUncomparable",
 	"runtime.panicTypeAssert",
+	"runtime.panicmakeslicelen",
+	"runtime.panicmakeslicecap",
 	"runtime.panicrangestate",
 }
 
@@ -202,7 +204,8 @@ func scanPanicNeeds(mod *ir.Module) bool {
 			switch op {
 			case ir.OpPanic, ir.OpRecover, ir.OpDefer,
 				ir.OpSliceGet, ir.OpSliceSet, ir.OpStringGet,
-				ir.OpSliceAppend, ir.OpSliceSlice, ir.OpStringSlice:
+				ir.OpSliceAppend, ir.OpSliceSlice, ir.OpStringSlice,
+				ir.OpMakeSlice:
 				need = true
 			}
 		})
@@ -220,6 +223,11 @@ func stripPanicFuncs(mod *ir.Module) {
 	}
 	names["runtime.itoa"] = true
 	names["runtime.digit"] = true
+	// plainError methods + ctor ship in panic.go; drop before re-AppendFiles
+	// so PackageHigh + EnsurePanic do not duplicate.
+	names["runtime.plainError.Error"] = true
+	names["runtime.plainError.RuntimeError"] = true
+	names["runtime.panicErr"] = true
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
 		if names[f.Name] {
@@ -254,6 +262,8 @@ func stripUnreferencedPanicHelpers(mod *ir.Module) {
 		"runtime.panicDivide",
 		"runtime.panicUncomparable",
 		"runtime.panicTypeAssert",
+		"runtime.panicmakeslicelen",
+		"runtime.panicmakeslicecap",
 		"runtime.panicNil",
 		"runtime.panicrangestate",
 		"runtime.goexit",
