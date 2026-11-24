@@ -567,3 +567,9 @@ func isUntypedNil(t types.Type) bool {
 	b, ok := t.(*types.Basic)
 	return ok && b.Kind() == types.UntypedNil
 }
+
+// isUntypedBasic reports whether t is an untyped basic type (int/float/complex/…).
+func isUntypedBasic(t types.Type) bool {
+	b, ok := t.(*types.Basic)
+	return ok && b.Info()&types.IsUntyped != 0
+}
