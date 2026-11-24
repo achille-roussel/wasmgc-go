@@ -212,17 +212,11 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		ty, _ = fl.mapType(fl.typeOf(e))
 	}
 	// *Struct / *[N]T: pointer and value share the same object ref.
+	// Do not nil-check here: len/cap/range over *[N]T (and over (*p) of that
+	// type) use only the type's length — Go does not panic on a nil pointer
+	// in those positions (issue73476, issue72844). Element access nil-checks
+	// in indexExpr; stores nil-check in assignTo.
 	if xt != nil && isObjectPointer(xt) {
-		pv := fl.newVar("p", ptrTy)
-		stmts = append(stmts, fl.assignVar(pv, ptr))
-		ptr = fl.useVar(pv)
-		stmts = append(stmts, &ir.If{
-			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-				&ir.Unreachable{},
-			}},
-		})
 		return ptr, stmts, nil
 	}
 	// Materialize pointer into a typed local so RuntimeOps expandDeref sees

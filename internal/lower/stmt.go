@@ -1276,15 +1276,19 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 	// Array/struct values: clone before reseating a slot (docs/design/03).
 	// *p = v for object pointers copies into the existing object — skip here.
+	// Blank `_` only needs drop — cloning a failed type-assert null would
+	// struct.get/array.get on null (errors.TestIs / errorUncomparable.Is).
 	var pre []ir.Stmt
-	if _, isStar := lhs.(*ast.StarExpr); !isStar {
-		if ty := fl.assignLHSGoType(lhs); needsValueClone(ty) && !isFreshValueAlloc(rhs) {
-			cloned, stmts, err := fl.cloneValue(rhs, ty)
-			if err != nil {
-				return nil, err
+	if !isBlankIdent(lhs) {
+		if _, isStar := lhs.(*ast.StarExpr); !isStar {
+			if ty := fl.assignLHSGoType(lhs); needsValueClone(ty) && !isFreshValueAlloc(rhs) {
+				cloned, stmts, err := fl.cloneValue(rhs, ty)
+				if err != nil {
+					return nil, err
+				}
+				pre = stmts
+				rhs = cloned
 			}
-			pre = stmts
-			rhs = cloned
 		}
 	}
 	stmts, err := fl.assignToCloned(lhs, rhs)

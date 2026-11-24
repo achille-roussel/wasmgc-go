@@ -1082,8 +1082,19 @@ func (fl *funcLower) cloneStructValue(src ir.Expr, goTy types.Type) (ir.Expr, []
 		return nil, nil, fmt.Errorf("clone: unknown type %s", name)
 	}
 	st, _ := goTy.Underlying().(*types.Struct)
-	srcT := fl.newTemp(irTy)
-	stmts := []ir.Stmt{fl.assignTemp(srcT, src)}
+	// Locals (not temps): dst must be live after the null branch.
+	srcV := fl.newVar("csrc", irTy)
+	dstV := fl.newVar("cdst", irTy)
+	var zero ir.Expr
+	if z, ok := fl.goZeroValue(goTy, irTy); ok {
+		zero = z
+	} else {
+		zero = &ir.Instr{Op: ir.OpRefNull, Type: nullableRef(irTy)}
+	}
+	stmts := []ir.Stmt{
+		fl.assignVar(srcV, src),
+		fl.assignVar(dstV, zero), // null source keeps this zero
+	}
 	// IR fields are Go fields with zero-size skipped (structFields), same order.
 	var goFields []*types.Var
 	if st != nil {
@@ -1098,13 +1109,14 @@ func (fl *funcLower) cloneStructValue(src ir.Expr, goTy types.Type) (ir.Expr, []
 	if len(goFields) != len(td.Fields) {
 		return nil, nil, fmt.Errorf("clone: field count mismatch for %s (go=%d ir=%d)", name, len(goFields), len(td.Fields))
 	}
+	var cloneStmts []ir.Stmt
 	var args []ir.Expr
 	for i, f := range td.Fields {
 		get := &ir.Instr{
 			Op:    ir.OpStructGet,
 			Type:  &ir.Ref{Named: name},
 			Field: f.Name,
-			Args:  []ir.Expr{fl.useTemp(srcT)},
+			Args:  []ir.Expr{fl.useVar(srcV)},
 		}
 		arg := ir.Expr(get)
 		if needsValueClone(goFields[i].Type()) {
@@ -1112,18 +1124,22 @@ func (fl *funcLower) cloneStructValue(src ir.Expr, goTy types.Type) (ir.Expr, []
 			if err != nil {
 				return nil, nil, err
 			}
-			stmts = append(stmts, pre...)
+			cloneStmts = append(cloneStmts, pre...)
 			arg = cloned
 		}
 		args = append(args, arg)
 	}
-	dst := fl.newTemp(irTy)
-	stmts = append(stmts, fl.assignTemp(dst, &ir.Instr{
+	cloneStmts = append(cloneStmts, fl.assignVar(dstV, &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: name},
 		Args: args,
 	}))
-	return fl.useTemp(dst), stmts, nil
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+		Then: &ir.Seq{},
+		Else: &ir.Seq{Stmts: cloneStmts},
+	})
+	return fl.useVar(dstV), stmts, nil
 }
 
 func (fl *funcLower) cloneArrayValue(src ir.Expr, goTy types.Type, arr *types.Array) (ir.Expr, []ir.Stmt, error) {
@@ -1139,48 +1155,67 @@ func (fl *funcLower) cloneArrayValue(src ir.Expr, goTy types.Type, arr *types.Ar
 		return nil, nil, err
 	}
 	n := arr.Len()
-	srcT := fl.newTemp(arrIR)
-	dstT := fl.newTemp(arrIR)
-	stmts := []ir.Stmt{fl.assignTemp(srcT, src)}
+	srcV := fl.newVar("casrc", arrIR)
+	dstV := fl.newVar("cadst", arrIR)
+	var zero ir.Expr
 	if z, ok := fl.goZeroValue(goTy, arrIR); ok {
-		stmts = append(stmts, fl.assignTemp(dstT, z))
+		zero = z
 	} else {
-		stmts = append(stmts, fl.assignTemp(dstT, &ir.Instr{
+		zero = &ir.Instr{
 			Op:   ir.OpArrayNewDefault,
 			Type: &ir.Ref{Named: r.Named},
 			Args: []ir.Expr{fl.i32const(n)},
-		}))
+		}
 	}
+	stmts := []ir.Stmt{
+		fl.assignVar(srcV, src),
+		fl.assignVar(dstV, zero), // null source keeps this; non-null fills it
+	}
+	var cloneStmts []ir.Stmt
 	if needsValueClone(arr.Elem()) {
-		// Element-wise deep clone (array.copy would share nested value refs).
 		for i := int64(0); i < n; i++ {
 			get := &ir.Instr{
 				Op:   ir.OpArrayGet,
 				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{fl.useTemp(srcT), fl.i32const(i)},
+				Args: []ir.Expr{fl.useVar(srcV), fl.i32const(i)},
 			}
 			cloned, pre, err := fl.cloneValue(get, arr.Elem())
 			if err != nil {
 				return nil, nil, err
 			}
-			stmts = append(stmts, pre...)
-			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+			cloneStmts = append(cloneStmts, pre...)
+			cloneStmts = append(cloneStmts, &ir.ExprStmt{X: &ir.Instr{
 				Op:   ir.OpArraySet,
 				Type: &ir.Ref{Named: r.Named},
-				Args: []ir.Expr{fl.useTemp(dstT), fl.i32const(i), cloned},
+				Args: []ir.Expr{fl.useVar(dstV), fl.i32const(i), cloned},
 			}})
 		}
 	} else {
-		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+		cloneStmts = append(cloneStmts, &ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpArrayCopy, Type: arrIR, Type2: arrIR,
 			Args: []ir.Expr{
-				fl.useTemp(dstT), fl.i32const(0),
-				fl.useTemp(srcT), fl.i32const(0),
+				fl.useVar(dstV), fl.i32const(0),
+				fl.useVar(srcV), fl.i32const(0),
 				fl.i32const(n),
 			},
 		}})
 	}
-	return fl.useTemp(dstT), stmts, nil
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+		Then: &ir.Seq{},
+		Else: &ir.Seq{Stmts: cloneStmts},
+	})
+	return fl.useVar(dstV), stmts, nil
+}
+
+// nullableRef returns a null-capable view of t for ref.null immediates.
+func nullableRef(t ir.Type) ir.Type {
+	if r, ok := t.(*ir.Ref); ok {
+		rc := *r
+		rc.Null = true
+		return &rc
+	}
+	return t
 }
 
 func endsWithReturn(s *ir.Seq) bool {

@@ -581,6 +581,14 @@ func (v *verifier) instrTypes(e *Instr) []Type {
 		return []Type{&Ref{Heap: HeapFunc}}
 	case OpRefCast, OpRefAsNonNull:
 		if e.Type != nil {
+			// Cheap check: named cast targets must be declared. Skips heap
+			// builtins (any/eq/…) where Ref.Named is empty and String() is
+			// "refnull any". Catches typos that become RuntimeError: illegal cast.
+			if e.Op == OpRefCast {
+				if r, ok := e.Type.(*Ref); ok && r.Named != "" && v.m.LookupType(r.Named) == nil {
+					v.errorf(e.Pos, "ref.cast to unknown type %s", r.Named)
+				}
+			}
 			return []Type{e.Type}
 		}
 	case OpStructNew, OpStructNewDefault:
