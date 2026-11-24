@@ -1838,15 +1838,18 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		}
 		return call, stmts, nil
 	}
+	// complex64 ↔ complex128: promote/demote real and imag parts.
+	// Must run before the generic ref.cast path: both are Ref IR types but
+	// $go.complex64 and $go.complex128 are not Wasm subtypes, so a bare
+	// ref.cast traps with illegal cast.
+	if isComplex(src) && isComplex(dst) {
+		ex, st, err := fl.complexConvert(x, src, dst, srcIR, dstIR)
+		return ex, append(stmts, st...), err
+	}
 	// *T ↔ *U / named struct refs with convertible underlying types (e.g.
 	// (*marshalersOption)(*Marshalers) in encoding/json/v2).
 	if isRefIR(srcIR) && isRefIR(dstIR) {
 		return &ir.Instr{Op: ir.OpRefCast, Type: dstIR, Args: []ir.Expr{x}}, stmts, nil
-	}
-	// complex64 ↔ complex128: promote/demote real and imag parts.
-	if isComplex(src) && isComplex(dst) {
-		ex, st, err := fl.complexConvert(x, src, dst, srcIR, dstIR)
-		return ex, append(stmts, st...), err
 	}
 	// int/float → complex: real part, imag 0 (and the reverse is unsupported
 	// except via real()/imag() builtins).

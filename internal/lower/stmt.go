@@ -2811,6 +2811,41 @@ func (fl *funcLower) incDecStmt(s *ast.IncDecStmt) ([]ir.Stmt, error) {
 	if err != nil {
 		return nil, fl.errorf(s, "%v", err)
 	}
+	// complex64/128 ++/--: add/sub 1+0i (Ref IR has no numeric width).
+	if isComplex(ty) {
+		name, elem := complexTypeShape(ty, want)
+		fl.ensureComplexType(name, elem)
+		cWant := &ir.Ref{Null: true, Named: name}
+		lhs, stmts, err := fl.expr(s.X, cWant)
+		if err != nil {
+			return nil, err
+		}
+		var oneRe ir.Expr
+		var add, sub ir.Op
+		if elem == ir.TypeF32 {
+			oneRe, add, sub = fl.f32const(1), ir.OpF32Add, ir.OpF32Sub
+		} else {
+			oneRe, add, sub = fl.f64const(1), ir.OpF64Add, ir.OpF64Sub
+		}
+		op := add
+		if s.Tok != token.INC {
+			op = sub
+		}
+		re := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "real", Args: []ir.Expr{lhs}}
+		im := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "imag", Args: []ir.Expr{lhs}}
+		rhs := &ir.Instr{
+			Op: ir.OpStructNew, Type: cWant,
+			Args: []ir.Expr{
+				&ir.Instr{Op: op, Args: []ir.Expr{re, oneRe}},
+				im,
+			},
+		}
+		as, err := fl.assignTo(s.X, rhs)
+		if err != nil {
+			return nil, err
+		}
+		return append(stmts, as...), nil
+	}
 	lhs, stmts, err := fl.expr(s.X, want)
 	if err != nil {
 		return nil, err

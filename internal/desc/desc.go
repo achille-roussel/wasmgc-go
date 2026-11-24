@@ -2084,6 +2084,10 @@ func kindOf(t types.Type) int {
 			return KindFloat32
 		case types.Float64:
 			return KindFloat64
+		case types.Complex64:
+			return KindComplex64
+		case types.Complex128, types.UntypedComplex:
+			return KindComplex128
 		case types.String:
 			return KindString
 		case types.UnsafePointer:
@@ -2143,6 +2147,10 @@ func kindFromKey(key string) (kind int, name string, comparable bool) {
 		return KindFloat32, key, true
 	case "float64":
 		return KindFloat64, key, true
+	case "complex64":
+		return KindComplex64, key, true
+	case "complex128":
+		return KindComplex128, key, true
 	case "string":
 		return KindString, key, true
 	case "error", "any":
@@ -2210,6 +2218,10 @@ func builtinType(key string) types.Type {
 		return types.Typ[types.Float32]
 	case "float64":
 		return types.Typ[types.Float64]
+	case "complex64":
+		return types.Typ[types.Complex64]
+	case "complex128":
+		return types.Typ[types.Complex128]
 	case "string":
 		return types.Typ[types.String]
 	case "error":

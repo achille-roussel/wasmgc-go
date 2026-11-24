@@ -1,27 +1,12 @@
 # fmt — wasmgc-go test skips
 TestCountMallocs — alloc-counting: testing.AllocsPerRun always 0 under host GC
-TestEOF — scan/regexp, tables, or reflect gaps
-TestEOFAllTypes — scan/regexp, tables, or reflect gaps
-TestEOFAtEndOfInput — scan/regexp, tables, or reflect gaps
 TestFormatterFlags — scan/regexp, tables, or reflect gaps
-TestHexByte — scan/regexp, tables, or reflect gaps
-TestHexBytes — scan/regexp, tables, or reflect gaps
-TestLineByLineFscanf — scan/regexp, tables, or reflect gaps
-TestMultiLine — scan/regexp, tables, or reflect gaps
 TestNilDoesNotBecomeTyped — scan/regexp, tables, or reflect gaps
 TestPanics — scan/regexp, tables, or reflect gaps
 TestScan — scan/regexp, tables, or reflect gaps
-TestScanEmpty — scan/regexp, tables, or reflect gaps
 TestScanInts — scan/regexp, tables, or reflect gaps
-TestScanMultiple — scan/regexp, tables, or reflect gaps
-TestScanNewlinesAreSpaces — scan/regexp, tables, or reflect gaps
-TestScanOverflow — scan/regexp, tables, or reflect gaps
-TestScanStateCount — scan/regexp, tables, or reflect gaps
 TestScanf — scan/regexp, tables, or reflect gaps
 TestScanfMulti — scan/regexp, tables, or reflect gaps
-TestScanfNewlineMatchFormat — scan/regexp, tables, or reflect gaps
 TestScanln — scan/regexp, tables, or reflect gaps
-TestScanlnNewlinesTerminate — scan/regexp, tables, or reflect gaps
-TestScanlnNoNewline — scan/regexp, tables, or reflect gaps
 TestSprintf — scan/regexp, tables, or reflect gaps
 TestStructPrinter — scan/regexp, tables, or reflect gaps

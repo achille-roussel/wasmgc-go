@@ -1189,6 +1189,11 @@ func (t *rtype) String() string {
 		if k == Struct {
 			return "struct"
 		}
+		if k == Array {
+			// Len() is still a stub (0); emit kind name until array
+			// length is wired into the type descriptor.
+			return "array"
+		}
 		if k == Slice {
 			return "[]" + t.Elem().String()
 		}
@@ -1197,6 +1202,12 @@ func (t *rtype) String() string {
 		}
 		if k == Map {
 			return "map[" + t.Key().String() + "]" + t.Elem().String()
+		}
+		if k == Func {
+			return "func"
+		}
+		if k == Chan {
+			return "chan"
 		}
 	}
 	return t.Kind().String()

@@ -38,7 +38,6 @@ env.go — output mismatch
 escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
-fixedbugs/bug054.go — failed: build: pipeline: IR verify: temp %str0 redefined in region pipeline: IR verify: temp %str0 redefined…
 fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
@@ -59,7 +58,6 @@ fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 10000000
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug434.go — runtime error
-fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug512.go — unsupported: unsafe
@@ -136,12 +134,10 @@ fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 10000
 fixedbugs/issue43292.go — compile error: codegen
 fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
-fixedbugs/issue4396a.go — runtime error
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue4562.go — compile error: codegen
 fixedbugs/issue4585.go — runtime error
-fixedbugs/issue46304.go — runtime error
 fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
@@ -217,11 +213,7 @@ inline_literal.go — unsupported: reflect.Value.Pointer
 interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
-ken/cplx2.go — compile error: IR verify: complex64 assign from i32
-ken/cplx5.go — wasm validate/compile error
-literal2.go — runtime error
 mallocfin.go — compile error: codegen
-map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
 maymorestack.go — compile error: codegen
 method.go — codegen: unknown heap type i32 in Val itab wrapper
 method3.go — wasm validate/compile error
@@ -259,7 +251,6 @@ typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/dottype.go — compile error: lower: print of type (int, bool) not supported in M3 (need string or int)
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …
-typeparam/issue47258.go — failed: build: pipeline: IR verify: cannot assign i32 to var want2 of type refnull $go.complex64 in main.mai…
 typeparam/issue47713.go — wasm validate/compile error: BinaryMarshaler call shape
 typeparam/issue47925b.go — failed: panic: interface conversion: type assertion failed
 typeparam/issue48042.go — compile error: lower: variable T has no IR local (in main.(*Foo$int).f2)
@@ -271,7 +262,6 @@ typeparam/issue48645a.go — output mismatch
 typeparam/issue49295.go — runtime error
 typeparam/issue49547.go — output mismatch
 typeparam/issue49659b.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h3 of type i32 in main.main pipelin…
-typeparam/issue50193.go — compile error: lower: unsupported conversion int → complex128
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
 typeparam/issue51521.go — compile error: codegen
 typeparam/issue51522b.go — wasm validate/compile error

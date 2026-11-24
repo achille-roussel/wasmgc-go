@@ -105,7 +105,8 @@ var mapSyms = []string{
 	"runtime.mapKeyHash", "runtime.strhash", "runtime.f32hash", "runtime.f64hash",
 	"runtime.f32bits", "runtime.f64bits",
 	"runtime.hashBool", "runtime.hashInt", "runtime.hashInt64", "runtime.hashUint",
-	"runtime.hashUint64", "runtime.hashFloat32", "runtime.hashFloat64", "runtime.hashString",
+	"runtime.hashUint64", "runtime.hashFloat32", "runtime.hashFloat64",
+	"runtime.hashComplex64", "runtime.hashComplex128", "runtime.hashString",
 }
 
 func scanMapNeeds(mod *ir.Module) bool {
@@ -242,6 +243,8 @@ var hashHelperFuncs = []string{
 	"runtime.hashUint64",
 	"runtime.hashFloat32",
 	"runtime.hashFloat64",
+	"runtime.hashComplex64",
+	"runtime.hashComplex128",
 	"runtime.hashString",
 	"runtime.f32hash",
 	"runtime.f64hash",
@@ -331,6 +334,10 @@ func hashHelpersForKey(typeKey string) []string {
 		return []string{"runtime.hashFloat32", "runtime.f32hash", "runtime.f32bits"}
 	case "float64":
 		return []string{"runtime.hashFloat64", "runtime.f64hash", "runtime.f64bits"}
+	case "complex64":
+		return []string{"runtime.hashComplex64", "runtime.f32hash", "runtime.f32bits"}
+	case "complex128":
+		return []string{"runtime.hashComplex128", "runtime.f64hash", "runtime.f64bits"}
 	case "string":
 		return []string{"runtime.hashString", "runtime.strhash"}
 	default:
@@ -387,7 +394,9 @@ func isHashHelperCall(name string) bool {
 	switch name {
 	case "runtime.hashBool", "runtime.hashInt", "runtime.hashInt64",
 		"runtime.hashUint", "runtime.hashUint64",
-		"runtime.hashFloat32", "runtime.hashFloat64", "runtime.hashString":
+		"runtime.hashFloat32", "runtime.hashFloat64",
+		"runtime.hashComplex64", "runtime.hashComplex128",
+		"runtime.hashString":
 		return true
 	}
 	return false
