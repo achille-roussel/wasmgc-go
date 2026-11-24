@@ -167,6 +167,12 @@ func markUses(e ir.Expr, addrs map[string]*addrInfo, escapeContext bool) {
 			for _, a := range e.Args {
 				markUses(a, addrs, true)
 			}
+		case ir.OpRefIsNull, ir.OpRefEq, ir.OpRefCast, ir.OpStructGet, ir.OpStructSet:
+			// Fat-pointer value uses (null check, base/index inspect) need the
+			// addr materialized — not the load/store-through rewrite.
+			for _, a := range e.Args {
+				markUses(a, addrs, true)
+			}
 		default:
 			for _, a := range e.Args {
 				markUses(a, addrs, escapeContext)

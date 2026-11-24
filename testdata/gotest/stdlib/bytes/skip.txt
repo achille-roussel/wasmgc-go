@@ -1,3 +1,2 @@
 # bytes — wasmgc-go test skips
 TestGrow — compile: wasm compile/validate error
-TestRepeatCatchesOverflow — runtime fail after typecheck unlock

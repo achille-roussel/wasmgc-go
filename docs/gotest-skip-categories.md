@@ -6,9 +6,11 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~708** pass / **318** skip-listed; stdlib
-per-test **398** (named-result defer; blank struct fields; printuint64; fmt
-map-field prune; MakeNoZero; math/rand/v2 stub + `/v2` import name fix).
+**Current (this PR):** `$GOROOT/test` **~714** pass / **312** skip-listed; stdlib
+per-test **379** (fat-pointer base+index `==`; append overlap-safe spread;
+recover catch reads cell-boxed named results; slices Insert/Delete/Replace
+cluster + Compact/Chunk/MinMax panics; fmt Append*; strings Map; bytes
+RepeatCatchesOverflow).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -32,7 +34,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 318 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 312 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -53,18 +55,18 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **398** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **379** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
 | encoding/json | 166 | Blanket + StructOf + http | StructOf **by design**; http/v2 depth |
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
-| fmt | 31 | scan/regexp + tables/reflect | Fixable |
-| slices | **30** | Insert/Delete/Replace generics; iter leftovers | Was 54 |
-| strings | **13** | Compare IR; Finder/Map leftovers | Was 61 |
+| fmt | **28** | scan/regexp + tables/reflect | Fixable |
+| slices | **16** | *Panics range-capture; Overlap/Inference leftovers | Was 54 |
+| strings | **12** | Compare IR; Finder leftovers | Was 61 |
 | sort | **4** | Interface-wrap wasm validate leftovers | Was 25 |
 | errors | 2 | `Is`/`AsType` leftovers | **Fixable** |
-| bytes | **2** | Grow data / overflow message | Was 80 |
+| bytes | **1** | Grow data | Was 80 |
 | math/bits | **2** | Add/Sub64 overflow recover illegal cast | Was 11 |
 | strconv | 1 | ParseComplex | complex reflect |
 | maps | 1 | `Clone` large keys / `-0` | Overlay |
@@ -93,7 +95,8 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | #55 array/reflect Len/Index | **done** (−23 →354; stdlib 437) |
 | #56 array `==` + Div panic | **done** (−16 →344; stdlib 431) |
 | #57 range assign-form + parallel assign | **done** (−22 →322; stdlib 425) |
-| defer/blank/printuint64 + sort rand/v2 | **this PR** | −4 GOROOT + 27 stdlib →318 / 398 |
+| #58 named-result defer + rand/v2 | **done** (−4 →318; stdlib 398) |
+| fat-ptr `==` + append overlap + recover cells | **this PR** | −6 GOROOT + 19 stdlib →312 / 379 |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -119,5 +122,5 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~708** | **318** |
-| Stdlib per-test | — | **398** |
+| `$GOROOT/test` | **~714** | **312** |
+| Stdlib per-test | — | **379** |

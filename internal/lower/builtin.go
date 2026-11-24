@@ -876,8 +876,11 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 	return &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: args}, stmts, nil
 }
 
-// appendSliceSpread lowers append(dst, src...) for a slice by appending one
-// element at a time.
+// appendSliceSpread lowers append(dst, src...).
+// Element-wise append that grows mid-loop clobbers shared capacity
+// (append(s[:i], t...) writes t[0] into s[i] before realloc). When need >
+// cap, grow once via make+copy; when it fits, element-wise append is OK and
+// preserves backing (Delete clear-tail).
 func (fl *funcLower) appendSliceSpread(e *ast.CallExpr, srcArg ast.Expr, prefix []ir.Expr, stmts []ir.Stmt, ty ir.Type) (ir.Expr, []ir.Stmt, error) {
 	src, st, err := fl.expr(srcArg, nil)
 	if err != nil {
@@ -887,28 +890,70 @@ func (fl *funcLower) appendSliceSpread(e *ast.CallExpr, srcArg ast.Expr, prefix 
 	srcTy, _ := fl.mapType(fl.typeOf(srcArg))
 	dstV := fl.newVar("apdst", ty)
 	srcV := fl.newVar("apsrc", srcTy)
-	iV := fl.newVar("api", ir.TypeI32)
-	lenV := fl.newVar("aplen", ir.TypeI32)
-	stmts = append(stmts, fl.assignVar(dstV, &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: prefix}))
-	stmts = append(stmts, fl.assignVar(srcV, src))
-	stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(srcV)}}))
-	stmts = append(stmts, fl.assignVar(iV, fl.i32const(0)))
-	elemTy, _ := fl.mapType(fl.typeOf(e).Underlying().(*types.Slice).Elem())
-	breakL := fl.freshLabel("break")
-	loopL := fl.freshLabel("L")
-	body := &ir.Seq{}
-	body.Stmts = append(body.Stmts, &ir.Br{
-		Label: breakL,
-		Cond:  &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{fl.useVar(iV), fl.useVar(lenV)}}}},
+	srcLenV := fl.newVar("apslen", ir.TypeI32)
+	dstLenV := fl.newVar("apdlen", ir.TypeI32)
+	dstCapV := fl.newVar("apdcap", ir.TypeI32)
+	needV := fl.newVar("apneed", ir.TypeI32)
+	ncapV := fl.newVar("apncap", ir.TypeI32)
+	twocapV := fl.newVar("aptwocap", ir.TypeI32)
+	outV := fl.newVar("apout", ty)
+	tailV := fl.newVar("aptail", ty)
+	stmts = append(stmts,
+		fl.assignVar(dstV, &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: prefix}),
+		fl.assignVar(srcV, src),
+		fl.assignVar(srcLenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(srcV)}}),
+		fl.assignVar(dstLenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{fl.useVar(dstV)}}),
+		fl.assignVar(dstCapV, &ir.Instr{Op: ir.OpCap, Args: []ir.Expr{fl.useVar(dstV)}}),
+		fl.assignVar(needV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(dstLenV), fl.useVar(srcLenV)}}),
+		fl.assignVar(outV, fl.useVar(dstV)),
+	)
+
+	growBody := &ir.Seq{Stmts: []ir.Stmt{
+		fl.assignVar(twocapV, &ir.Instr{Op: ir.OpI32Mul, Args: []ir.Expr{fl.useVar(dstCapV), fl.i32const(2)}}),
+		fl.assignVar(ncapV, fl.useVar(needV)),
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{fl.useVar(twocapV), fl.useVar(ncapV)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(ncapV, fl.useVar(twocapV))}},
+		},
+		fl.assignVar(outV, &ir.Instr{Op: ir.OpMakeSlice, Type: ty, Args: []ir.Expr{fl.useVar(needV), fl.useVar(ncapV)}}),
+	}}
+	_, copyDst, err := fl.builtinCopyIR(e, fl.useVar(outV), fl.useVar(dstV), ty, ty, nil, ir.TypeI32)
+	if err != nil {
+		return nil, nil, err
+	}
+	growBody.Stmts = append(growBody.Stmts, copyDst...)
+	growBody.Stmts = append(growBody.Stmts, fl.assignVar(tailV, &ir.Instr{Op: ir.OpSliceSlice, Type: ty, Args: []ir.Expr{
+		fl.useVar(outV), fl.useVar(dstLenV), fl.useVar(needV),
+	}}))
+	_, copySrc, err := fl.builtinCopyIR(e, fl.useVar(tailV), fl.useVar(srcV), ty, srcTy, nil, ir.TypeI32)
+	if err != nil {
+		return nil, nil, err
+	}
+	growBody.Stmts = append(growBody.Stmts, copySrc...)
+
+	// Fit path: extend len then copy (array.copy is overlap-safe). Element-wise
+	// append would clobber a src that aliases dst's unused capacity
+	// (InsertOverlap: append(s, s[x:y]...)).
+	fitBody := &ir.Seq{Stmts: []ir.Stmt{
+		fl.assignVar(outV, &ir.Instr{Op: ir.OpSliceSlice, Type: ty, Args: []ir.Expr{
+			fl.useVar(dstV), fl.i32const(0), fl.useVar(needV),
+		}}),
+		fl.assignVar(tailV, &ir.Instr{Op: ir.OpSliceSlice, Type: ty, Args: []ir.Expr{
+			fl.useVar(outV), fl.useVar(dstLenV), fl.useVar(needV),
+		}}),
+	}}
+	_, copyFit, err := fl.builtinCopyIR(e, fl.useVar(tailV), fl.useVar(srcV), ty, srcTy, nil, ir.TypeI32)
+	if err != nil {
+		return nil, nil, err
+	}
+	fitBody.Stmts = append(fitBody.Stmts, copyFit...)
+
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(dstCapV), fl.useVar(needV)}},
+		Then: growBody,
+		Else: fitBody,
 	})
-	elemEx := &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{fl.useVar(srcV), fl.useVar(iV)}, Type: elemTy}
-	body.Stmts = append(body.Stmts, fl.assignVar(dstV, &ir.Instr{
-		Op: ir.OpSliceAppend, Type: ty, Args: []ir.Expr{fl.useVar(dstV), elemEx},
-	}))
-	body.Stmts = append(body.Stmts, fl.assignVar(iV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{fl.useVar(iV), fl.i32const(1)}}))
-	body.Stmts = append(body.Stmts, &ir.Br{Label: loopL})
-	stmts = append(stmts, &ir.Block{Name: breakL, Body: &ir.Seq{Stmts: []ir.Stmt{&ir.Loop{Name: loopL, Body: body}}}})
-	return fl.useVar(dstV), stmts, nil
+	return fl.useVar(outV), stmts, nil
 }
 
 // appendStringSpread lowers append(dst, s...) for a non-constant string by

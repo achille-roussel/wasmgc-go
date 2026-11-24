@@ -531,7 +531,16 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		if xt != nil && isArray(xt) {
 			return fl.arrayCompare(e, e.Op)
 		}
-		// ref.eq for comparable pointer refs
+		// Fat *T pointers are distinct objects per &expr; compare base+index
+		// (same as runtime.semaPtrSame), not fat-pointer object identity.
+		if xt != nil {
+			if irt, err := fl.mapType(xt); err == nil {
+				if r, ok := irt.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
+					return fl.fatPtrCompare(e, e.Op, r.Named)
+				}
+			}
+		}
+		// ref.eq for comparable pointer refs (object pointers, maps, chans, …)
 		if xt != nil {
 			if irt, err := fl.mapType(xt); err == nil {
 				if r, ok := irt.(*ir.Ref); ok && r.Named != "" && r.Named != "$go.string" {
@@ -2222,6 +2231,57 @@ func (fl *funcLower) refCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []i
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
 	return eq, stmts, nil
+}
+
+// fatPtrCompare lowers *T == / != for fat pointers ($go.ptr.*) as
+// base ref.eq ∧ index i32.eq, with both-null → true and either-null → false.
+// Field gets run only when both sides are non-null (same shape as semaPtrSame).
+func (fl *funcLower) fatPtrCompare(e *ast.BinaryExpr, op token.Token, ptrName string) (ir.Expr, []ir.Stmt, error) {
+	ptrTy := &ir.Ref{Named: ptrName, Null: true}
+	x, xstmts, err := fl.expr(e.X, ptrTy)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, ptrTy)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+
+	xv := fl.newVar("p", ptrTy)
+	yv := fl.newVar("q", ptrTy)
+	res := fl.newVar("peq", ir.TypeI32)
+	stmts = append(stmts, fl.assignVar(xv, x), fl.assignVar(yv, y))
+
+	eqRef := &ir.Ref{Null: true, Heap: ir.HeapEq}
+	fieldsEq := &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefCast, Type: eqRef, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{fl.useVar(xv)}},
+			}},
+			&ir.Instr{Op: ir.OpRefCast, Type: eqRef, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{fl.useVar(yv)}},
+			}},
+		}},
+		&ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{fl.useVar(xv)}},
+			&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{fl.useVar(yv)}},
+		}},
+	}}
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(xv)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(yv)}})}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(yv)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, fl.i32const(0))}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, fieldsEq)}},
+		}}},
+	})
+	out := fl.useVar(res)
+	if op == token.NEQ {
+		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{out}}, stmts, nil
+	}
+	return out, stmts, nil
 }
 
 func (fl *funcLower) refNilCompare(x ast.Expr, typ ir.Type, op token.Token) (ir.Expr, []ir.Stmt, error) {

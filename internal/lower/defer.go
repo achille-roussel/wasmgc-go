@@ -3,6 +3,7 @@ package lower
 import (
 	"go/ast"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -895,6 +896,37 @@ func (fl *funcLower) builtinRecover(e *ast.CallExpr) (ir.Expr, []ir.Stmt, error)
 	}, nil, nil
 }
 
+// syncNamedResultCells copies cell-boxed named results into their plain locals
+// when the cell is non-null. Used on the panic catch path after deferRun.
+func (fl *funcLower) syncNamedResultCells() []ir.Stmt {
+	if fl == nil || len(fl.namedResults) == 0 || fl.cells == nil || fl.sig == nil {
+		return nil
+	}
+	var out []ir.Stmt
+	results := fl.sig.Results()
+	for i, v := range fl.namedResults {
+		if i >= results.Len() {
+			break
+		}
+		obj := results.At(i)
+		cv, ok := fl.cells[obj]
+		if !ok || cv == nil || v == nil || v == cv {
+			continue
+		}
+		cellTy, _ := cv.Typ.(*ir.Ref)
+		if cellTy == nil {
+			continue
+		}
+		out = append(out, fl.assignVar(v, &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: cellTy.Named},
+			Field: "v",
+			Args:  []ir.Expr{fl.useVar(cv)},
+		}))
+	}
+	return out
+}
+
 // resultReturn builds a return of named results, or zeros for result types,
 // or a bare return for void functions.
 func (fl *funcLower) resultReturn() *ir.Return {
@@ -950,10 +982,23 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 		peeled = append(peeled, rest[0])
 		rest = rest[1:]
 	}
-	body = &ir.Seq{Stmts: rest, Pos: body.Pos}
+	// Hoist every $go.cell.* allocation out of the try body so catch can sync
+	// cell→plain after recover (panics named-result helper). Leading peel alone
+	// misses cells allocated after other setup (regexp.syntax.parse).
+	var hoisted []ir.Stmt
+	var kept []ir.Stmt
+	for _, s := range rest {
+		if as, ok := s.(*ir.Assign); ok && isCellAllocAssign(as) {
+			hoisted = append(hoisted, s)
+			continue
+		}
+		kept = append(kept, s)
+	}
+	body = &ir.Seq{Stmts: kept, Pos: body.Pos}
 
 	// Initialize defers = null at entry. defersVar is VarDef'd via extraLocals.
-	init := append(peeled, fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}))
+	init := append(peeled, hoisted...)
+	init = append(init, fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}))
 	if fl.needsRecoverPrologue {
 		init = append(init, fl.recoverPrologue()...)
 	}
@@ -979,12 +1024,16 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	exn := &ir.Var{Name: "exn", Typ: ir.TypeExn}
 	// Try params bind pobj/exn. deferRun walks remaining defers and rethrows
 	// if the final panic is unrecovered; on return the panic was recovered.
+	// Sync cell-boxed named results into plain locals after deferRun so a
+	// recover defer that wrote `b = true` through the cell is visible
+	// (panics() helper). Cell allocs are hoisted outside try above.
 	handler := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(payload)}}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
-		fl.resultReturn(),
 	}}
+	handler.Stmts = append(handler.Stmts, fl.syncNamedResultCells()...)
+	handler.Stmts = append(handler.Stmts, fl.resultReturn())
 
 	// Normal edge: body already runs defers at returns; add fallthrough run+return.
 	if !endsWithReturn(newBody) {
@@ -999,6 +1048,18 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 		Handler: handler,
 	}
 	return &ir.Seq{Stmts: append(init, try)}, nil
+}
+
+func isCellAllocAssign(as *ir.Assign) bool {
+	if as == nil || len(as.Lhs) != 1 || as.Lhs[0].Var == nil {
+		return false
+	}
+	in, ok := as.Rhs.(*ir.Instr)
+	if !ok || in.Op != ir.OpStructNew {
+		return false
+	}
+	r, ok := in.Type.(*ir.Ref)
+	return ok && strings.HasPrefix(r.Named, "$go.cell.")
 }
 
 func isDeferPeelableInit(rhs ir.Expr) bool {

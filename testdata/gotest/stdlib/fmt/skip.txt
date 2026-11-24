@@ -1,7 +1,4 @@
 # fmt — wasmgc-go test skips
-TestAppend — scan/regexp, tables, or reflect gaps
-TestAppendf — scan/regexp, tables, or reflect gaps
-TestAppendln — scan/regexp, tables, or reflect gaps
 TestCountMallocs — scan/regexp, tables, or reflect gaps
 TestEOF — scan/regexp, tables, or reflect gaps
 TestEOFAllTypes — scan/regexp, tables, or reflect gaps

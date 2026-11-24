@@ -538,9 +538,12 @@ func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.St
 		stmts = append(stmts, mstmts...)
 		args = append(args, max)
 	}
-	ty := want
-	if ty == nil {
-		ty, _ = fl.mapType(fl.typeOf(e))
+	// Prefer the slice expression's mapped type over want: blank `_ = s[i:]`
+	// reports want=i32 via lhsType("_") and would corrupt OpSliceSlice typing
+	// (slices.Insert/Delete/Replace bounds checks → $rt.data as refnull any).
+	ty, _ := fl.mapType(fl.typeOf(e))
+	if want != nil && isRefIR(want) {
+		ty = want
 	}
 	if isString(fl.typeOf(e.X)) {
 		return &ir.Instr{Op: ir.OpStringSlice, Args: args, Type: ty}, stmts, nil
