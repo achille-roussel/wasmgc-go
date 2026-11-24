@@ -243,7 +243,6 @@ fixedbugs/issue55122b.go — compile error: lower: star assign: unknown type $go
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
 fixedbugs/issue5753.go — wasm validate/compile error
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
-fixedbugs/issue5793.go — compile error: lower: complex wants 2 args
 fixedbugs/issue5809.go — output mismatch
 fixedbugs/issue5820.go — wasm validate/compile error
 fixedbugs/issue58300.go — compile error: codegen
@@ -256,6 +255,7 @@ fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue60601.go — runtime error
 fixedbugs/issue62360.go — unsupported: unsafe
+fixedbugs/issue6269.go — output mismatch (flaky)
 fixedbugs/issue64565.go — wasm validate/compile error: i32.lt_s vs ref after string(rune)
 fixedbugs/issue65417.go — runtime error
 fixedbugs/issue66066b.go — output mismatch

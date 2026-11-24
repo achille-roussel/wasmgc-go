@@ -446,16 +446,14 @@ func (fl *funcLower) builtinMinMax(e *ast.CallExpr, isMin bool, want ir.Type) (i
 	return cur, stmts, nil
 }
 
-func (fl *funcLower) builtinComplex(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
-	if len(e.Args) != 2 {
-		return nil, nil, fl.errorf(e, "complex wants 2 args")
-	}
-	resTy := fl.typeOf(e)
-	name := "$go.complex128"
-	elem := ir.TypeF64
-	if b, ok := types.Unalias(resTy).(*types.Basic); ok && b.Kind() == types.Complex64 {
-		name = "$go.complex64"
-		elem = ir.TypeF32
+func (fl *funcLower) complexResultType(e *ast.CallExpr, want ir.Type) (name string, elem ir.Type) {
+	name = "$go.complex128"
+	elem = ir.TypeF64
+	if resTy := fl.typeOf(e); resTy != nil {
+		if b, ok := types.Unalias(resTy).(*types.Basic); ok && b.Kind() == types.Complex64 {
+			name = "$go.complex64"
+			elem = ir.TypeF32
+		}
 	}
 	if want != nil {
 		if r, ok := want.(*ir.Ref); ok && r.Named == "$go.complex64" {
@@ -463,16 +461,57 @@ func (fl *funcLower) builtinComplex(e *ast.CallExpr, want ir.Type) (ir.Expr, []i
 			elem = ir.TypeF32
 		}
 	}
+	return name, elem
+}
+
+func (fl *funcLower) builtinComplex(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
+	name, elem := fl.complexResultType(e, want)
 	fl.ensureComplexType(name, elem)
-	re, stmts, err := fl.expr(e.Args[0], elem)
-	if err != nil {
-		return nil, nil, err
+	var stmts []ir.Stmt
+	var re, im ir.Expr
+	switch {
+	case len(e.Args) == 2:
+		var err error
+		var st []ir.Stmt
+		re, st, err = fl.expr(e.Args[0], elem)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+		im, st, err = fl.expr(e.Args[1], elem)
+		if err != nil {
+			return nil, nil, err
+		}
+		stmts = append(stmts, st...)
+	case len(e.Args) == 1:
+		// complex(f()) where f returns (float, float) — spread multi-value call.
+		ce, ok := e.Args[0].(*ast.CallExpr)
+		if !ok {
+			return nil, nil, fl.errorf(e, "complex wants 2 args")
+		}
+		temps, st, err := fl.callMaterialize(ce, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(temps) != 2 {
+			return nil, nil, fl.errorf(e, "complex wants 2 args")
+		}
+		stmts = append(stmts, st...)
+		re = fl.useTemp(temps[0])
+		im = fl.useTemp(temps[1])
+		if temps[0].Typ != nil && !ir.TypesEqual(temps[0].Typ, elem) {
+			nt := fl.newTemp(elem)
+			stmts = append(stmts, fl.assignTemp(nt, re))
+			re = fl.useTemp(nt)
+		}
+		if temps[1].Typ != nil && !ir.TypesEqual(temps[1].Typ, elem) {
+			nt := fl.newTemp(elem)
+			stmts = append(stmts, fl.assignTemp(nt, im))
+			im = fl.useTemp(nt)
+		}
+	default:
+		return nil, nil, fl.errorf(e, "complex wants 2 args")
 	}
-	im, stmts2, err := fl.expr(e.Args[1], elem)
-	if err != nil {
-		return nil, nil, err
-	}
-	stmts = append(stmts, stmts2...)
 	return &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: name},
@@ -653,6 +692,29 @@ func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	if len(e.Args) < 1 {
 		return nil, nil, fl.errorf(e, "append needs a slice")
+	}
+	// append(f()) where f returns (slice, elems...) — spread multi-value call.
+	if len(e.Args) == 1 && !e.Ellipsis.IsValid() {
+		if ce, ok := e.Args[0].(*ast.CallExpr); ok {
+			if tup := fl.callResultTuple(ce); tup != nil && tup.Len() >= 2 {
+				temps, st, err := fl.callMaterialize(ce, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				ty, _ := fl.mapType(fl.typeOf(e))
+				if want != nil && isRefIR(want) {
+					ty = want
+				}
+				if ty == nil {
+					return nil, nil, fl.errorf(e, "append: unknown slice type")
+				}
+				args := make([]ir.Expr, 0, len(temps))
+				for _, t := range temps {
+					args = append(args, fl.useTemp(t))
+				}
+				return &ir.Instr{Op: ir.OpSliceAppend, Type: ty, Args: args}, st, nil
+			}
+		}
 	}
 	ty, _ := fl.mapType(fl.typeOf(e))
 	// Prefer append's result type over want: blank `_` reports i32 via lhsType
