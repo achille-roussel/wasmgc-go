@@ -1704,6 +1704,10 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 			return ir.TypeF64, nil
 		case types.String:
 			return &ir.Ref{Named: "$go.string"}, nil
+		case types.Complex64:
+			return &ir.Ref{Null: true, Named: "$go.complex64"}, nil
+		case types.Complex128, types.UntypedComplex:
+			return &ir.Ref{Null: true, Named: "$go.complex128"}, nil
 		}
 	case *types.Interface:
 		return &ir.Ref{Null: true, Named: "$go.iface"}, nil
@@ -1742,8 +1746,12 @@ func mapTypeApprox(t types.Type) (ir.Type, error) {
 		return sliceIRApprox(t.Elem()), nil
 	case *types.Array:
 		return mapArrayApprox(t)
-	case *types.Map, *types.Chan:
-		return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	case *types.Map:
+		// Match lower.mapMap — itab wrappers must pass $go.hmap, not anyref.
+		return &ir.Ref{Null: true, Named: "$go.hmap"}, nil
+	case *types.Chan:
+		// Match lower.mapChan — itab wrappers must pass $go.chan, not anyref.
+		return &ir.Ref{Null: true, Named: "$go.chan"}, nil
 	case *types.Signature:
 		// Func values are (ref null $go.clos) — see design 03 / M5.
 		return &ir.Ref{Null: true, Named: "$go.clos"}, nil

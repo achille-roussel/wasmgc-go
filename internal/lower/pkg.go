@@ -162,6 +162,8 @@ func (l *pkgLower) lower() error {
 		}
 		if vi.val != nil {
 			ex, stmts, err = fl.coerceExpr(vi.val, vi.obj.Type(), vi.ty)
+		} else if z, ok := fl.goZeroValue(vi.obj.Type(), vi.ty); ok {
+			ex = z
 		} else {
 			ex, err = fl.zeroValue(vi.ty)
 		}
@@ -526,6 +528,9 @@ func needsHeapZero(goTy types.Type, irTy ir.Type) bool {
 	switch goTy.Underlying().(type) {
 	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
 		return false
+	case *types.Array:
+		// Wasm leaves array-typed globals as null; Go zero is array.new_default.
+		return true
 	}
 	switch t := irTy.(type) {
 	case *ir.Ref:
@@ -535,9 +540,16 @@ func needsHeapZero(goTy types.Type, irTy ir.Type) bool {
 		if strings.HasPrefix(t.Named, "$go.struct.") {
 			return true
 		}
+		// Array IR names ($go.array.*, $go.bytes, $go.i32s, …).
+		if strings.HasPrefix(t.Named, "$go.array.") || t.Named == "$go.bytes" ||
+			t.Named == "$go.i16s" || t.Named == "$go.i32s" || t.Named == "$go.i64s" ||
+			t.Named == "$go.f32s" || t.Named == "$go.f64s" {
+			return true
+		}
 	}
 	return false
 }
+
 
 func (l *pkgLower) initName() string {
 	// Continue past any inits already in the module (AppendFiles / Ensure*

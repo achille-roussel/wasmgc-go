@@ -6,8 +6,8 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~607** pass / **419** skip-listed; stdlib
-per-test **500** (was 612 after #49).
+**Current (this PR):** `$GOROOT/test` **~622** pass / **404** skip-listed; stdlib
+per-test **500** (post-#50).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -31,7 +31,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 419 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 404 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -40,7 +40,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | Compile gaps (lower/load/IR) | ~119 | **fixable** | IR verify, typecheck, other compile |
 | Runtime panic / trap | ~119 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
 | Output / failed-run mismatch | ~78 | **fixable** | Often panic text, stack traces, print/ABI |
-| Codegen / Wasm validate | ~53 | **fixable** | `codegen:` + wasm validate/compile |
+| Codegen / Wasm validate | ~38 | **fixable** | `codegen:` + wasm validate/compile; −15 this PR |
 | Unsupported: unsafe | 41 | **by design** | `uintptr`↔`Pointer`, rejected ops |
 | Other / mono | ~5 | mixed | |
 | Missing stdlib import | 4 | **fixable** (overlays) | |
@@ -88,9 +88,10 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | PR | Category | Status |
 |---|---|---|
 | Through #49 | GOROOT + fmt/math/TypeKey | **done** (~607/419; stdlib 612) |
-| bytes/strings/slices typecheck unlock | stdlib | **this PR** (−112) |
-| json/time + fmt scan | stdlib | next |
-| GOROOT compile/validate buckets | GOROOT | −15+ each batch |
+| #50 bytes/strings/slices | testenv/B/atomic/rand | **done** (−112 →500) |
+| GOROOT validate i64/array/mapType | **this PR** | −15 (~622/404) |
+| fmt scan/regexp + json/time | stdlib | next |
+| GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
 ---
 
@@ -103,21 +104,18 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | `$GOROOT/test` | 380 | 646 |
 | Stdlib per-test | — | ~1038 |
 
-### After PR #49
+### After PR #50
 
 | Layer | Pass | Skip |
 |---|---:|---:|
 | `$GOROOT/test` | ~607 | 419 |
-| Stdlib per-test | — | 612 |
+| Stdlib per-test | — | 500 |
 
 ### After this PR
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~607** | **419** |
-| bytes | 57 more | **23** (was 80) |
-| strings | 40 more | **21** (was 61) |
-| slices | 15 more | **39** (was 54) |
-| Stdlib per-test | — | **500** |
+| `$GOROOT/test` | **~622** | **404** |
+| Stdlib per-test | — | **500** (unchanged) |
 
 Update this section when a burn-down PR lands.
