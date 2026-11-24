@@ -247,6 +247,12 @@ func (g *gen) scanModule() {
 					g.ifaces[in.Global] = true
 					g.needTypeKey(in.Global)
 				}
+			case ir.OpCall:
+				// structCompare / arrayCompare stash TypeKey in Global so
+				// $go.eq.* is emitted for local T == T never boxed via iface.
+				if in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
+					g.needTypeKey(in.Global)
+				}
 			}
 		})
 	}
@@ -878,8 +884,10 @@ func (g *gen) emitEqualFunc(tr *typeRec) error {
 			body = g.stringEqualBody(a, b)
 		case KindStruct:
 			body = g.structEqualBody(tr, a, b)
+		case KindArray:
+			body = g.arrayEqualBody(tr, a, b)
 		default:
-			// Pointers, chans, interfaces, arrays: identity on the data word.
+			// Pointers, chans, interfaces: identity on the data word.
 			eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
 			ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
 			cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
@@ -1042,6 +1050,90 @@ func (g *gen) structEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 	return seq
 }
 
+// arrayEqualBody compares [N]T element-wise (Go ==). Zero-length arrays are equal.
+func (g *gen) arrayEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
+	arrName := g.arrayIRName(tr)
+	var arr *types.Array
+	if tr.goType != nil {
+		arr, _ = tr.goType.Underlying().(*types.Array)
+	}
+	if arr == nil || arrName == "" {
+		eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}
+		ca := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}
+		cb := &ir.Instr{Op: ir.OpRefCast, Type: eqT, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}
+		return &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Return{Results: []ir.Expr{&ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{ca, cb}}}},
+		}}
+	}
+	if arr.Len() == 0 {
+		return &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 1}}},
+		}}
+	}
+	aty := &ir.Ref{Named: arrName}
+	sa := &ir.Var{Name: "sa", Typ: aty}
+	sb := &ir.Var{Name: "sb", Typ: aty}
+	iv := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	getOp := ir.OpArrayGet
+	switch arrName {
+	case "$go.bytes", "$go.i16s":
+		getOp = ir.OpArrayGetU
+	}
+	suf := sanitize(tr.key)
+	doneL := "eqarr_" + suf + "_done"
+	contL := "eqarr_" + suf + "_cont"
+	n := arr.Len()
+	elem := arr.Elem()
+	ea := &ir.Instr{Op: getOp, Type: aty, Args: []ir.Expr{
+		&ir.Name{Raw: "sa", Var: sa}, &ir.Name{Raw: "i", Var: iv},
+	}}
+	eb := &ir.Instr{Op: getOp, Type: aty, Args: []ir.Expr{
+		&ir.Name{Raw: "sb", Var: sb}, &ir.Name{Raw: "i", Var: iv},
+	}}
+	elemEq := g.fieldEqExpr(elem, ea, eb)
+	return &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: sa}, &ir.VarDef{Var: sb}, &ir.VarDef{Var: iv},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "sa", Var: sa}}, Rhs: &ir.Instr{
+			Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}},
+		}},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "sb", Var: sb}}, Rhs: &ir.Instr{
+			Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
+		}},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iv}}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 0}},
+		&ir.Block{
+			Name: doneL,
+			Body: &ir.Loop{
+				Name: contL,
+				Body: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.If{
+						Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{
+							&ir.Name{Raw: "i", Var: iv},
+							&ir.Const{Op: ir.OpI32Const, I64: n},
+						}},
+						Then: &ir.Seq{Stmts: []ir.Stmt{
+							&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 1}}},
+						}},
+					},
+					&ir.If{
+						Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{elemEq}},
+						Then: &ir.Seq{Stmts: []ir.Stmt{
+							&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+						}},
+					},
+					&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iv}}, Rhs: &ir.Instr{
+						Op: ir.OpI32Add, Args: []ir.Expr{
+							&ir.Name{Raw: "i", Var: iv},
+							&ir.Const{Op: ir.OpI32Const, I64: 1},
+						},
+					}},
+					&ir.Br{Label: contL},
+				}},
+			},
+		},
+		&ir.Unreachable{},
+	}}
+}
+
 func anonStructWasmName(t *types.Struct) string {
 	var b strings.Builder
 	b.WriteString("$go.struct.anon")
@@ -1086,8 +1178,10 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{a, b}}
 		}
 	case *types.Named:
-		if _, ok := u.Underlying().(*types.Struct); ok {
-			// Nested struct values are refs; field-wise via that type's equal.
+		switch u.Underlying().(type) {
+		case *types.Struct, *types.Array:
+			// Nested named struct/array values: field-/element-wise via that
+			// type's equal (TypeKey of the Named, not the underlying).
 			eqName := "$go.eq." + sanitize(TypeKey(u))
 			anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 			return &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
@@ -1096,6 +1190,14 @@ func (g *gen) fieldEqExpr(ft types.Type, a, b ir.Expr) ir.Expr {
 			}}
 		}
 		return g.fieldEqExpr(u.Underlying(), a, b)
+	case *types.Array:
+		// Nested [N]T: element-wise via that array type's equal.
+		eqName := "$go.eq." + sanitize(TypeKey(u))
+		anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+		return &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{a}},
+			&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{b}},
+		}}
 	default:
 		// Pointers, slices, maps, chans, ifaces: reference identity.
 		eqT := &ir.Ref{Null: true, Heap: ir.HeapEq}

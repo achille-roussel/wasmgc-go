@@ -16,7 +16,6 @@ abi/part_live_2.go — unsupported: unsafe
 append.go — wasm validate/compile error
 args.go — failed: panic: argc
 bigalg.go — output mismatch: map/slice print vs expected
-bigmap.go — runtime error
 blank.go — wasm validate/compile error
 chan/doubleselect.go — failed: panic: runtime error: slice bounds out of range
 chan/powser1.go — compile error: lower: copy: unsupported dst type
@@ -93,7 +92,6 @@ fixedbugs/issue15528.go — unsupported: unsafe
 fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue16095.go — runtime error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
-fixedbugs/issue16515.go — compile error: codegen
 fixedbugs/issue16760.go — runtime error
 fixedbugs/issue16870.go — compile error: IR verify i32 assigned to iface ok
 fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3df8cf8e0380 stack=[0x3d…
@@ -170,14 +168,11 @@ fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion 
 fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3c2b17f60340 stack=[0x3c…
 fixedbugs/issue43292.go — compile error: codegen
 fixedbugs/issue4353.go — runtime error
-fixedbugs/issue43570.go — failed: panic: bad: []
 fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
 fixedbugs/issue4396a.go — runtime error
-fixedbugs/issue44823.go — failed: panic: FAIL
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
-fixedbugs/issue45242.go — failed: panic: got [], want []
 fixedbugs/issue4562.go — compile error: codegen
 fixedbugs/issue4585.go — runtime error
 fixedbugs/issue4620.go — output mismatch
@@ -198,11 +193,8 @@ fixedbugs/issue54220.go — unsupported: unsafe
 fixedbugs/issue54343.go — compile error: codegen
 fixedbugs/issue54467.go — runtime error
 fixedbugs/issue5493.go — unsupported: unsafe
-fixedbugs/issue55122.go — compile error: lower: star assign: unknown type $go.bytes
-fixedbugs/issue55122b.go — compile error: lower: star assign: unknown type $go.bytes
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
-fixedbugs/issue5809.go — output mismatch
 fixedbugs/issue58300.go — compile error: codegen
 fixedbugs/issue58300b.go — compile error: codegen
 fixedbugs/issue5856.go — compile error: codegen
@@ -245,8 +237,6 @@ fixedbugs/issue79762.go — runtime error: null deref / stub Stack
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
 fixedbugs/issue80127.go — runtime error
-fixedbugs/issue80188.go — compile error: codegen
-fixedbugs/issue80196.go — output mismatch: non-nil pointer print
 fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T

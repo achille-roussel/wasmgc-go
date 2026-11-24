@@ -119,7 +119,11 @@
       "tier": "vendor"
     },
     "math/bits": {
-      "tier": "vendor"
+      "tier": "overlay",
+      "overlays": [
+        "bits_errors.go"
+      ],
+      "notes": "bits_errors.go: local divideError/overflowError (no var linkname)"
     },
     "encoding": {
       "tier": "vendor",

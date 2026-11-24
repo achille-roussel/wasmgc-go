@@ -694,8 +694,44 @@ func (fl *funcLower) structCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, 
 	}
 	stmts := append(xstmts, ystmts...)
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
-	eqName := "$go.eq." + desc.Sanitize(desc.TypeKey(xt))
-	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Args: []ir.Expr{
+	typeKey := desc.TypeKey(xt)
+	eqName := "$go.eq." + desc.Sanitize(typeKey)
+	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Global: typeKey, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
+	}}
+	if op == token.NEQ {
+		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
+	}
+	return eq, stmts, nil
+}
+
+// arrayCompare lowers [N]T == / != via $go.eq.* (element-wise, not ref identity).
+func (fl *funcLower) arrayCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {
+	xt := fl.typeOf(e.X)
+	if xt == nil {
+		return nil, nil, fl.errorf(e, "array compare: missing type")
+	}
+	if arr, ok := types.Unalias(xt).Underlying().(*types.Array); ok && arr.Len() == 0 {
+		v := int64(1)
+		if op == token.NEQ {
+			v = 0
+		}
+		return fl.i32const(v), nil, nil
+	}
+	x, xstmts, err := fl.expr(e.X, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	y, ystmts, err := fl.expr(e.Y, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	stmts := append(xstmts, ystmts...)
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	typeKey := desc.TypeKey(xt)
+	eqName := "$go.eq." + desc.Sanitize(typeKey)
+	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Global: typeKey, Args: []ir.Expr{
 		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
 		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
 	}}
