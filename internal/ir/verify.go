@@ -180,15 +180,17 @@ func (v *verifier) region(r Region) {
 		v.temps = saved
 	case *Block:
 		v.pushLabel(r.Name, labelBlock, r.Results)
+		// Outer temps lower to function locals — readable inside nested regions.
+		// Temps defined inside do not escape (restored on exit).
 		saved := v.temps
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		v.region(r.Body)
 		v.temps = saved
 		v.popLabel()
 	case *Loop:
 		v.pushLabel(r.Name, labelLoop, nil)
 		saved := v.temps
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		v.region(r.Body)
 		v.temps = saved
 		v.popLabel()
@@ -216,11 +218,11 @@ func (v *verifier) region(r Region) {
 		_ = v.exprType(r.Tag)
 		saved := v.temps
 		for _, c := range r.Cases {
-			v.temps = map[string]*Temp{}
+			v.temps = cloneTempMap(saved)
 			v.region(c.Body)
 		}
 		if r.Default != nil {
-			v.temps = map[string]*Temp{}
+			v.temps = cloneTempMap(saved)
 			v.region(r.Default)
 		}
 		v.temps = saved
@@ -230,7 +232,7 @@ func (v *verifier) region(r Region) {
 			v.pushLabel(r.Name, labelTry, nil)
 		}
 		saved := v.temps
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		v.region(r.Body)
 		hvars := cloneVarMap(v.vars)
 		for _, p := range r.Params {
@@ -238,7 +240,7 @@ func (v *verifier) region(r Region) {
 		}
 		oldVars := v.vars
 		v.vars = hvars
-		v.temps = map[string]*Temp{}
+		v.temps = cloneTempMap(saved)
 		v.region(r.Handler)
 		v.vars = oldVars
 		v.temps = saved
@@ -253,7 +255,7 @@ func (v *verifier) region(r Region) {
 		}
 		saved := v.temps
 		for _, a := range r.Arms {
-			v.temps = map[string]*Temp{}
+			v.temps = cloneTempMap(saved)
 			if a != nil {
 				v.region(a)
 			}

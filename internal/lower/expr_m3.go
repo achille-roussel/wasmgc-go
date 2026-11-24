@@ -149,10 +149,18 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 					leaf = st.Field(fi).Name()
 				}
 			}
+			// Str names the struct that owns Field (after embedding walk). Escape
+			// rewrite uses it for struct.get/set — Args[0]'s Instr.Type is the
+			// outer struct when Args[0] is itself a struct.get of an embed.
+			owner := ""
+			if irt, err := fl.mapType(ty); err == nil {
+				owner = refTypeName(irt)
+			}
 			return &ir.Instr{
 				Op:    ir.OpAddr,
 				Args:  []ir.Expr{cur},
 				Field: leaf,
+				Str:   owner,
 				Type:  ptrTy,
 			}, stmts, nil
 		}
@@ -648,7 +656,8 @@ func (fl *funcLower) arrayLit(e *ast.CompositeLit, at *types.Array, irt ir.Type)
 		} else if next >= n {
 			return nil, nil, fl.errorf(el, "array literal has too many elements")
 		}
-		ex, st, err := fl.expr(val, elemWant)
+		// coerceExpr boxes into interface elements (e.g. [4]any{1, "x", 2.5, nil}).
+		ex, st, err := fl.coerceExpr(val, at.Elem(), elemWant)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -888,13 +897,11 @@ func (fl *funcLower) zeroValue(t ir.Type) (ir.Expr, error) {
 			return &ir.Instr{Op: ir.OpStringLit, Str: ""}, nil
 		}
 		if t.Named == "$go.complex64" || t.Named == "$go.complex128" {
-			fl.pkg.mod.InternType(&ir.TypeDef{
-				Name: t.Named, Kind: ir.TypeStruct, Super: "$go.object",
-				Fields: []ir.Field{
-					{Name: "real", Type: ir.TypeF64, Mut: true},
-					{Name: "imag", Type: ir.TypeF64, Mut: true},
-				},
-			})
+			elem := ir.TypeF64
+			if t.Named == "$go.complex64" {
+				elem = ir.TypeF32
+			}
+			fl.ensureComplexType(t.Named, elem)
 			return &ir.Instr{Op: ir.OpStructNewDefault, Type: t}, nil
 		}
 		// Named structs ($go.struct.*): T and *T share the same IR ref

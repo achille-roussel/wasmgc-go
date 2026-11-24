@@ -82,7 +82,7 @@ func FuncIRName(origin *types.Func, args []types.Type) string {
 		named, _ := types.Unalias(rt).(*types.Named)
 		tname := "T"
 		if named != nil {
-			tname = named.Obj().Name() + suffix
+			tname = named.Obj().Name() + suffix + LocalTypeSuffix(named.Obj())
 		} else {
 			tname = tname + suffix
 		}
@@ -106,11 +106,31 @@ func NamedIRSuffix(t *types.Named) string {
 	return "$" + typeArgsKey(args)
 }
 
+// LocalTypeSuffix disambiguates function-/block-local named types that would
+// otherwise collide with a package-level type of the same name (e.g. fmt_test's
+// package B vs TestNilDoesNotBecomeTyped's local empty B).
+func LocalTypeSuffix(obj *types.TypeName) string {
+	if obj == nil || obj.Pkg() == nil {
+		return ""
+	}
+	parent := obj.Parent()
+	if parent == nil || parent == obj.Pkg().Scope() {
+		return ""
+	}
+	pos := obj.Pos()
+	if !pos.IsValid() {
+		return "_local"
+	}
+	// Use _pN (not $pN): '$' starts a new IR/Wasm name token, so
+	// main.T$p1 would lex as main.T + $p1 and break eq/itab lookup.
+	return fmt.Sprintf("_p%d", pos)
+}
+
 // NamedTypeKey returns a descriptor/Wasm type key distinguishing instantiations.
 func NamedTypeKey(t *types.Named) string {
 	pkg := ""
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name() + "."
 	}
-	return pkg + t.Obj().Name() + NamedIRSuffix(t)
+	return pkg + t.Obj().Name() + NamedIRSuffix(t) + LocalTypeSuffix(t.Obj())
 }

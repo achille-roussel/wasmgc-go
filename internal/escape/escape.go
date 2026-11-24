@@ -366,7 +366,7 @@ func loadThrough(addr *ir.Instr, resultTy ir.Type) ir.Expr {
 	if addr.Field != "" && addr.Field != "elem" {
 		return &ir.Instr{
 			Op:    ir.OpStructGet,
-			Type:  structTypeOfBase(addr.Args[0]),
+			Type:  structTypeForFieldAddr(addr),
 			Field: addr.Field,
 			Args:  []ir.Expr{addr.Args[0]},
 		}
@@ -381,7 +381,7 @@ func storeThrough(addr *ir.Instr, val ir.Expr) []ir.Stmt {
 	if addr.Field != "" && addr.Field != "elem" {
 		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
 			Op:    ir.OpStructSet,
-			Type:  structTypeOfBase(addr.Args[0]),
+			Type:  structTypeForFieldAddr(addr),
 			Field: addr.Field,
 			Args:  []ir.Expr{addr.Args[0], val},
 		}}}
@@ -395,6 +395,17 @@ func storeThrough(addr *ir.Instr, val ir.Expr) []ir.Stmt {
 		}
 	}
 	return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{addr, val}}}}
+}
+
+// structTypeForFieldAddr returns the struct type that owns addr.Field.
+// Prefer Addr.Str (set by lower for promoted/embedded fields). Falling back
+// to Args[0].Type is wrong when Args[0] is struct.get of an embed: that
+// Type names the outer struct, not the embedded field's type.
+func structTypeForFieldAddr(addr *ir.Instr) ir.Type {
+	if addr.Str != "" && addr.Str != "elem" {
+		return &ir.Ref{Named: addr.Str}
+	}
+	return structTypeOfBase(addr.Args[0])
 }
 
 func structTypeOfBase(base ir.Expr) ir.Type {

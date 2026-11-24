@@ -6,8 +6,8 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~622** pass / **404** skip-listed; stdlib
-per-test **500** (post-#50).
+**Current (this PR):** `$GOROOT/test` **~638** pass / **388** skip-listed; stdlib
+per-test **493** (post-#50/#51).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
