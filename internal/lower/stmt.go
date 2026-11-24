@@ -770,10 +770,17 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 		return nil, err
 	}
 	out = append(out, stmts...)
-	// Materialize two results: value and ok.
-	valTy, err := fl.lhsType(s.Lhs[0])
-	if err != nil {
-		return nil, err
+	// Prefer the asserted type over lhsType: blank `_` reports i32 and would
+	// mis-type the value temp (e.g. `_, ok := x.(string)` → drop a string
+	// through an i32 local).
+	var valTy ir.Type
+	if in, ok := ex.(*ir.Instr); ok && in.Type != nil {
+		valTy = in.Type
+	} else {
+		valTy, err = fl.lhsType(s.Lhs[0])
+		if err != nil {
+			return nil, err
+		}
 	}
 	okTy := ir.TypeI32
 	vt := fl.newTemp(valTy)
@@ -2152,24 +2159,33 @@ func (fl *funcLower) emitDenseSwitch(tag ir.Expr, arms []caseArm, breakL string)
 	allTerm := len(arms) > 0
 	hasDefault := false
 	for _, a := range arms {
-		body, err := fl.stmtBlock(a.body)
-		if err != nil {
-			return nil, false, err
-		}
-		// End each case with br break (no fallthrough), unless the body
-		// already returns or is unreachable.
-		beforeBr := body
-		body = appendBr(body, breakL)
-		// Terminates only if we did not append a break (still returns/unreach).
-		if !regionTerminates(beforeBr) {
-			allTerm = false
-		}
 		if a.def {
+			body, err := fl.stmtBlock(a.body)
+			if err != nil {
+				return nil, false, err
+			}
+			beforeBr := body
+			body = appendBr(body, breakL)
+			if !regionTerminates(beforeBr) {
+				allTerm = false
+			}
 			hasDefault = true
 			sw.Default = body
 			continue
 		}
+		// Multi-value cases (case A, B:) need a freshly lowered body per value.
+		// Sharing one Region leaves temps defined in the first arm invisible to
+		// later arms (IR verify: temp used outside its defining region).
 		for _, v := range a.values {
+			body, err := fl.stmtBlock(a.body)
+			if err != nil {
+				return nil, false, err
+			}
+			beforeBr := body
+			body = appendBr(body, breakL)
+			if !regionTerminates(beforeBr) {
+				allTerm = false
+			}
 			c := v.(*ir.Const)
 			sw.Cases = append(sw.Cases, ir.Case{Value: c.I64, Body: body})
 		}

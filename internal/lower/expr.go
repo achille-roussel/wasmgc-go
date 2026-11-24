@@ -2612,7 +2612,7 @@ func methodIRName(fn *types.Func) string {
 	named, _ := types.Unalias(rt).(*types.Named)
 	tname := "T"
 	if named != nil {
-		tname = named.Obj().Name() + mono.NamedIRSuffix(named)
+		tname = named.Obj().Name() + mono.NamedIRSuffix(named) + mono.LocalTypeSuffix(named.Obj())
 	}
 	if ptr {
 		return pkg + ".(*" + tname + ")." + fn.Name()

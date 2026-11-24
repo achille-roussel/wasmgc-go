@@ -50,9 +50,7 @@ fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug177.go — output mismatch
-fixedbugs/bug187.go — wasm validate/compile error
 fixedbugs/bug196.go — wasm validate/compile error
-fixedbugs/bug206.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug207.go — runtime error
 fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
@@ -79,7 +77,6 @@ fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
-fixedbugs/gcc65755.go — compile error: codegen
 fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue10486.go — compile error: codegen
 fixedbugs/issue11256.go — unsupported: unsafe
@@ -101,8 +98,6 @@ fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue16515.go — compile error: codegen
 fixedbugs/issue16760.go — runtime error
 fixedbugs/issue16870.go — compile error: IR verify i32 assigned to iface ok
-fixedbugs/issue16948.go — unsupported: unsafe
-fixedbugs/issue16985.go — unsupported: unsafe
 fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3df8cf8e0380 stack=[0x3d…
 fixedbugs/issue17381.go — unsupported: unsafe
 fixedbugs/issue18149.go — compile error: codegen
@@ -129,7 +124,6 @@ fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue23522.go — runtime error
 fixedbugs/issue23545.go — failed: panic: FAIL
 fixedbugs/issue23837.go — compile error: codegen
-fixedbugs/issue24449.go — unsupported: unsafe
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
@@ -195,7 +189,6 @@ fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign re
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
-fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1 destinations but rhs produces 2 values pipeline: IR ver…
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
@@ -222,8 +215,6 @@ fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubs
 fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue60601.go — runtime error
-fixedbugs/issue62360.go — unsupported: unsafe
-fixedbugs/issue6269.go — output mismatch (flaky)
 fixedbugs/issue65417.go — runtime error
 fixedbugs/issue66066b.go — output mismatch
 fixedbugs/issue68227.go — wasm validate/compile error
@@ -234,7 +225,6 @@ fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
 fixedbugs/issue70189.go — runtime error
 fixedbugs/issue71675.go — output mismatch
-fixedbugs/issue71857.go — unsupported: unsafe
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
 fixedbugs/issue72860.go — runtime error
 fixedbugs/issue73748a.go — runtime error: nil deref not recovered as Go panic
@@ -290,14 +280,11 @@ inline_caller.go — compile error: codegen
 inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
 intcvt.go — output mismatch
-interface/convert.go — wasm validate/compile error
 interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
 ken/cplx2.go — compile error: IR verify: complex64 assign from i32
 ken/cplx5.go — wasm validate/compile error
-ken/divconst.go — unsupported: unsafe
-ken/modconst.go — unsupported: unsafe
 literal2.go — runtime error
 mallocfin.go — compile error: codegen
 map.go — failed: build: pipeline: IR verify: cannot assign i32 to var pz2 of type refnull $go.complex64 in main.testf…
@@ -339,7 +326,6 @@ stringrange.go — output mismatch
 switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — output mismatch
 typeparam/absdiff2.go — failed: build: mono: pending main.numericAbs$complex128.Abs missing package/info mono: pending main.numericA…
-typeparam/absdiff3.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method body
 typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
@@ -367,7 +353,6 @@ typeparam/issue49295.go — runtime error
 typeparam/issue49421.go — failed: build: mono: pending main.lesser$main.foo.less missing package/info mono: pending main.lesser$main.f…
 typeparam/issue49547.go — output mismatch
 typeparam/issue49659b.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h3 of type i32 in main.main pipelin…
-typeparam/issue50002.go — wasm validate/compile error
 typeparam/issue50109.go — failed: build: mono: pending main.AnyCacher$any.Set missing package/info mono: pending main.AnyCacher$any.Se…
 typeparam/issue50109b.go — compile error: codegen
 typeparam/issue50193.go — compile error: lower: unsupported conversion int → complex128
@@ -396,7 +381,6 @@ typeparam/ordered.go — failed: build: desc: no concrete type for main.orderedS
 typeparam/orderedmap.go — compile error: codegen unknown type global
 typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
 typeparam/shape1.go — wasm validate/compile error: mono f$*incrementer recv width
-typeparam/shape_assert.go — wasm validate/compile error
 typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (in main.f$any)
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
 typeparam/typeswitch5.go — output mismatch

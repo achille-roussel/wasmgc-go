@@ -14,6 +14,7 @@ import (
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
+	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
 
 // Kind constants match reflect.Kind / abi.Kind for descriptor field $kind.
@@ -322,6 +323,8 @@ func (g *gen) collectFromProgram() {
 		}
 		// Anonymous structs/slices/maps appear in TypesInfo but not in the
 		// package scope — attach them so struct extras (NumField/getField) work.
+		// Function-local named types also live only in Defs (not package Scope);
+		// register them so $go.eq.* / descriptors exist for local T == T.
 		if pkg.Info != nil {
 			for _, tv := range pkg.Info.Types {
 				if tv.Type == nil {
@@ -332,6 +335,13 @@ func (g *gen) collectFromProgram() {
 			for _, obj := range pkg.Info.Defs {
 				if obj == nil {
 					continue
+				}
+				if tn, ok := obj.(*types.TypeName); ok {
+					key := TypeKey(tn.Type())
+					g.needTypeKey(key)
+					if tr := g.types[key]; tr != nil && tr.goType == nil {
+						tr.goType = tn.Type()
+					}
 				}
 				g.attachGoType(obj.Type())
 			}
@@ -1540,7 +1550,7 @@ func TypeKey(t types.Type) string {
 				suffix = "$" + b.String()
 			}
 		}
-		return pkg + t.Obj().Name() + suffix
+		return pkg + t.Obj().Name() + suffix + mono.LocalTypeSuffix(t.Obj())
 	case *types.Pointer:
 		return "*" + TypeKey(t.Elem())
 	case *types.Interface:
@@ -1681,6 +1691,7 @@ func methodIRName(fn *types.Func) string {
 				tname += "$" + b.String()
 			}
 		}
+		tname += mono.LocalTypeSuffix(named.Obj())
 	}
 	if ptr {
 		return pkg + ".(*" + tname + ")." + fn.Name()
@@ -1858,7 +1869,7 @@ func structName(t *types.Named) string {
 			suffix = "$" + b.String()
 		}
 	}
-	return "$go.struct." + pkg + "." + t.Obj().Name() + suffix
+	return "$go.struct." + pkg + "." + t.Obj().Name() + suffix + mono.LocalTypeSuffix(t.Obj())
 }
 
 // runtimeStructAliasName mirrors lower.runtimeStructAlias for eq bodies.

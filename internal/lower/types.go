@@ -590,7 +590,7 @@ func structTypeName(t *types.Named) string {
 		return name
 	}
 	pkg := pkgIRPrefix(t.Obj().Pkg())
-	return "$go.struct." + pkg + "." + t.Obj().Name() + mono.NamedIRSuffix(t)
+	return "$go.struct." + pkg + "." + t.Obj().Name() + mono.NamedIRSuffix(t) + mono.LocalTypeSuffix(t.Obj())
 }
 
 // runtimeStructAlias maps runtime named structs onto the shared $go.* layouts
