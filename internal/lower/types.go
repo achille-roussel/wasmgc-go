@@ -638,8 +638,14 @@ func (l *pkgLower) ensureArrayType(elem types.Type) (string, ir.Type, error) {
 	if b, ok := elem.Underlying().(*types.Basic); ok {
 		switch b.Kind() {
 		case types.Int8, types.Uint8, types.Bool:
+			l.mod.InternType(&ir.TypeDef{
+				Name: "$go.bytes", Kind: ir.TypeArray, Elem: ir.TypeI8, ElemMut: true,
+			})
 			return "$go.bytes", ir.TypeI8, nil
 		case types.Int16, types.Uint16:
+			l.mod.InternType(&ir.TypeDef{
+				Name: "$go.i16s", Kind: ir.TypeArray, Elem: ir.TypeI16, ElemMut: true,
+			})
 			return "$go.i16s", ir.TypeI16, nil
 		}
 	}

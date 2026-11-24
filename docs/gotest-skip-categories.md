@@ -6,7 +6,8 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~672** pass / **354** skip-listed; stdlib
+**Current (this PR):** `$GOROOT/test` **~682** pass / **344** skip-listed; stdlib
+per-test **431** (array `==`, `*[N]byte` star-assign copy, int `/` panic, bits Div panics).
 per-test **437** (nil-slice Len + struct-array zero + array reflect).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
@@ -31,7 +32,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 354 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 344 skips (was 646 at M10)
 
 ### By major category (current)
 
@@ -52,7 +53,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **437** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **431** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
@@ -61,7 +62,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | fmt | 31 | scan/regexp + tables/reflect | Fixable |
 | slices | **30** | Insert/Delete/Replace generics; iter+rand/v2 | Was 54 |
 | sort | 26 | Tables / pdqsort / stable; needs `math/rand/v2` in tests | Runtime |
-| math/bits | **11** | Div/Reverse panic+OOB leftovers | Was 25 |
+| math/bits | **5** | Reverse/RotateLeft + Add/Sub64 overflow recover | Was 11 |
 | bytes | **9** | Remaining validate + IndexAny/Split/Repeat | Was 80 |
 | strings | **14** | Compare IR; Builder/Map leftovers | Was 61 |
 | errors | 2 | `Is`/`AsType` leftovers | **Fixable** |
@@ -89,7 +90,8 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 |---|---|---|
 | Through #49 | GOROOT + fmt/math/TypeKey | **done** (~607/419; stdlib 612) |
 | #50 bytes/strings/slices | testenv/B/atomic/rand | **done** (−112 →500) |
-| GOROOT validate i64/array/mapType | **this PR** | −15 (~622/404) |
+| #55 array/reflect Len/Index | **done** (−23 →354; stdlib 437) |
+| array `==` + Div panic + bits Div | **this PR** | −16 (~682/344; stdlib 431) |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -115,7 +117,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~622** | **404** |
-| Stdlib per-test | — | **500** (unchanged) |
+| `$GOROOT/test` | **~682** | **344** |
+| Stdlib per-test | — | **431** |
 
 Update this section when a burn-down PR lands.

@@ -851,10 +851,36 @@ func (fl *funcLower) assignTo(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Object pointer (*Struct): *p and p share the same ref; copy fields
-		// into the existing object (docs/design/03). Fat-pointer stores use OpStore.
+		// Object pointer (*Struct / *[N]T): *p and p share the same ref; copy
+		// fields/elements into the existing object (docs/design/03).
+		// Fat-pointer stores use OpStore.
 		if xt := fl.typeOf(lhs.X); xt != nil && isObjectPointer(xt) {
 			elem := types.Unalias(xt).Underlying().(*types.Pointer).Elem()
+			// *[N]T: element-wise array.copy into the existing array ref.
+			if arr, ok := types.Unalias(elem).Underlying().(*types.Array); ok {
+				arrIR, err := fl.mapType(elem)
+				if err != nil {
+					return nil, err
+				}
+				r, ok := arrIR.(*ir.Ref)
+				if !ok || r.Named == "" {
+					return nil, fl.errorf(lhs, "star assign: bad array type")
+				}
+				if _, _, err := fl.pkg.ensureArrayType(arr.Elem()); err != nil {
+					return nil, err
+				}
+				rhsT := fl.newTemp(arrIR)
+				stmts = append(stmts, fl.assignTemp(rhsT, rhs))
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpArrayCopy, Type: arrIR, Type2: arrIR,
+					Args: []ir.Expr{
+						ptr, fl.i32const(0),
+						fl.useTemp(rhsT), fl.i32const(0),
+						fl.i32const(arr.Len()),
+					},
+				}})
+				return stmts, nil
+			}
 			name, err := fl.mapType(elem)
 			if err != nil {
 				return nil, err

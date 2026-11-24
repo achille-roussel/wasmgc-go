@@ -1,12 +1,6 @@
 # math/bits — wasmgc-go test skips
-TestAdd64OverflowPanic — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDiv32PanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDiv32PanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDiv64PanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDiv64PanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDivPanicOverflow — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestDivPanicZero — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestReverse — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestReverseBytes — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestRotateLeft — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
-TestSub64OverflowPanic — compile: /tmp/wasmgc-test-1218905036/src/external/bits_test.go:454:17: conversion from uint64 to uint may overflow; uint is 32 bits
+TestAdd64OverflowPanic — recover path: illegal cast in overflow panic/recover
+TestReverse — RuntimeError: array element access out of bounds in Reverse8
+TestReverseBytes — ReverseBytes16 wrong result (byte-swap width)
+TestRotateLeft — RotateLeft8/16 ignore full-width rotate; wrong want
+TestSub64OverflowPanic — recover path: illegal cast in overflow panic/recover
