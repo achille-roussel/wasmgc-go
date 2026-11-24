@@ -156,6 +156,43 @@ func (d Duration) String() string {
 	return strconv.FormatInt(int64(d), 10) + "ns"
 }
 
+func (d Duration) Nanoseconds() int64 { return int64(d) }
+func (d Duration) Microseconds() int64 { return int64(d) / 1e3 }
+func (d Duration) Milliseconds() int64 { return int64(d) / 1e6 }
+func (d Duration) Seconds() float64    { return float64(d) / float64(Second) }
+func (d Duration) Minutes() float64    { return float64(d) / float64(Minute) }
+func (d Duration) Hours() float64      { return float64(d) / float64(Hour) }
+
+// Tick is a convenience wrapper for NewTicker(d).C. Stub ticker.
+func Tick(d Duration) <-chan Time {
+	return NewTicker(d).C
+}
+
+// Ticker holds a channel that delivers "ticks" of a clock at intervals.
+type Ticker struct {
+	C <-chan Time
+	c chan Time
+}
+
+func NewTicker(d Duration) *Ticker {
+	c := make(chan Time, 1)
+	t := &Ticker{C: c, c: c}
+	go func() {
+		for {
+			Sleep(d)
+			select {
+			case c <- Now():
+			default:
+			}
+		}
+	}()
+	return t
+}
+
+func (t *Ticker) Stop() {
+	// stub: goroutine keeps running (language tests rarely require stop)
+}
+
 // ParseDuration parses a duration string.
 // Stub: accepts an integer with optional "ns"/"us"/"µs"/"ms"/"s"/"m"/"h" suffix.
 func ParseDuration(s string) (Duration, error) {
