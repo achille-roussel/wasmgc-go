@@ -322,6 +322,9 @@ func (v Value) Interface() any {
 		return float32(v.Float())
 	case Float64:
 		return v.Float()
+	case Interface:
+		// data already holds the $go.iface; do not re-wrap with ReflectIface.
+		return runtime.ReflectIfaceFromData(v.dataWord())
 	}
 	return runtime.ReflectIface(v.typ.rt, v.dataWord())
 }
@@ -353,10 +356,13 @@ func (v Value) Elem() Value {
 		}
 		return Value{typ: elem, data: v.data, flag: fl}
 	case Interface:
-		if v.data == nil {
+		if v.dataWord() == nil {
 			return Value{}
 		}
-		return ValueOf(runtime.ReflectIface(v.typ.rt, v.data))
+		// data is the $go.iface itself (struct fields / slice elems). ValueOf
+		// reads the dynamic concrete type from the itab — ReflectIface would
+		// nest iface-in-iface and leave Kind Interface forever.
+		return ValueOf(runtime.ReflectIfaceFromData(v.dataWord()))
 	}
 	return Value{}
 }

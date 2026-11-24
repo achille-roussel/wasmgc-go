@@ -6,8 +6,8 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (post-[#46](https://github.com/achille-roussel/wasmgc-go/pull/46) + this PR):**
-`$GOROOT/test` **~604** pass / **422** skip-listed; stdlib per-test **~1000**.
+**Current (this PR):** `$GOROOT/test` **~604** pass / **422** skip-listed; stdlib
+per-test **626** (was ~1000 after #47).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -37,12 +37,12 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Category | Count | Fixability | Notes |
 |---:|---:|---|---|
-| Compile gaps (lower/load/IR) | 123 | **fixable** | IR verify 32, typecheck 16, lower other 16, multi-value 3, println 1, other compile ~55 |
-| Runtime panic / trap | 118 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
-| Output mismatch | 60 | **fixable** | Often panic text, stack traces, print/ABI |
-| Codegen / Wasm validate | 53 | **fixable** | 5 `codegen:` + 48 wasm validate/compile (many former `codegen:` reasons rewritten) |
+| Compile gaps (lower/load/IR) | ~119 | **fixable** | IR verify 32, typecheck 16, other compile |
+| Runtime panic / trap | ~119 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
+| Output / failed-run mismatch | ~81 | **fixable** | Often panic text, stack traces, print/ABI |
+| Codegen / Wasm validate | 53 | **fixable** | 5 `codegen:` + 48 wasm validate/compile |
 | Unsupported: unsafe | 41 | **by design** | `uintptr`↔`Pointer`, rejected ops (`05-unsafe-and-reflect.md`) |
-| Other / mono / stack overflow | 23 | mixed | Host Go stack overflow, mono pending methods, reflect stubs |
+| Other / mono / stack overflow | ~8 | mixed | Host Go stack overflow, mono pending methods, reflect stubs |
 | Missing stdlib import | 4 | **fixable** (overlays) | `os/exec`, `unique`, `runtime/pprof`, `encoding/xml`, … |
 
 M10 had codegen/validate **193** and compile gaps **185** as the largest buckets;
@@ -54,8 +54,7 @@ burn-down since then moved the lead to **compile gaps** and **runtime**.
 |---|---:|---|
 | IR verify / type mismatches | 32 | Complex nullability, assign shapes |
 | Typecheck / load failures | 16 | Package load before lower |
-| Remaining multi-value / tuple | 3 | Lower of multi-result calls |
-| `println` type coverage | 1 | Nearly cleared |
+| Remaining multi-value / tuple | few | Lower of multi-result calls |
 
 ### Missing stdlib imports (4)
 
@@ -77,11 +76,10 @@ burn-down since then moved the lead to **compile gaps** and **runtime**.
 
 ---
 
-## 2. Stdlib per-test skips — ~1000 (was ~1038 at M10)
+## 2. Stdlib per-test skips — **626** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
-| math | 365 | Blanket lower/runtime gaps | Large; refine after math runtime |
 | encoding/json | 171 | Blanket + 2× StructOf | StructOf **by design**; rest fixable |
 | time | 145 | Thin `time` rewrite vs upstream tests | Overlay/rewrite depth |
 | bytes | 80 | Test file typecheck/load (65), validate (13) | Compile gaps |
@@ -90,23 +88,24 @@ burn-down since then moved the lead to **compile gaps** and **runtime**.
 | fmt | 51 | Blanket lower/runtime (typecheck of `_test`) | Depends on reflect/print |
 | sort | 27 | Tables / pdqsort / stable | Runtime/algorithm parity |
 | math/bits | 25 | `uint64`→`uint` overflow on 32-bit word | Sizes / build tags |
-| strconv | **13** | ParseInt/Atoi/Atof/CountMallocs | Was 26; quote/unicode cleared |
-| errors | 5 | `As`/`Is`/`Join` reflectlite / DeepEqual | **Fixable** |
+| errors | **4** | `As`/`Is`/`AsType` reflectlite | **Fixable**; Join cleared |
+| strconv | **3** | ParseComplex + AllocsPerRun | ParseInt/Atof cleared |
+| math | **2** | Sub-width int wrap (`MaxUint`/`MaxInt`) | Truncate i32 adds to Go width |
 | maps | 1 | `Clone` large keys / `-0` | Overlay/freeze semantics |
 | container/heap | 1 | `sync/atomic` fat pointer | unsafe/atomic subset |
 | encoding/gob | 1 | StructOf/ArrayOf | **by design** |
-| container/ring | **0** | ~~pointer equality / circular links~~ — cleared | **done** |
-| unicode/utf8 | **0** | ~~Package-init / UTF-8 range~~ — [PR #24](https://github.com/achille-roussel/wasmgc-go/pull/24) | **done** |
+| container/ring | **0** | — | **done** |
+| unicode/utf8 | **0** | — | **done** ([PR #24](https://github.com/achille-roussel/wasmgc-go/pull/24)) |
 | container/list | 0 | — | Passing |
 
 ### Highest-ROI stdlib unlocks (next)
 
-1. **strconv** remaining ParseInt/Atoi/Atof (12) + AllocsPerRun (1) — numeric parse + mallocs helper.
-2. **errors** (5) — `As`/`Is`/`Join` reflectlite / DeepEqual descriptors.
-3. **maps.CloneLarge** (1) — Clone overlay edge cases.
+1. **math** `TestMaxUint`/`TestMaxInt` (2) — truncate sub-i32 arithmetic to Go width.
+2. **strconv** `TestParseComplex` (1) — complex128 reflect Kind + DeepEqual; AllocsPerRun (2).
+3. **errors** `As`/`Is` (4) — reflectlite Set / Implements / Go 1.22 range vars.
 4. Unlock **bytes/strings/slices** typecheck failures once lower/load gaps clear.
 5. **math/bits** (25) — accept 32-bit `uint` or gate tests.
-6. Only then un-blanket **fmt / json / time / math**.
+6. Un-blanket **fmt / json / time** after compile/reflect/overlay depth.
 
 ### By design (stdlib)
 
@@ -123,12 +122,12 @@ burn-down since then moved the lead to **compile gaps** and **runtime**.
 | PR | Category | Status / expected delta |
 |---|---|---|
 | utf8 package-init | stdlib unicode/utf8 | **done** (−15, [PR #24](https://github.com/achille-roussel/wasmgc-go/pull/24)) |
-| Micro → batch burn-down | GOROOT clusters | **done through #46** (597/429) |
-| strconv quote + ring | stdlib | **this PR** (−21 stdlib; +7 GOROOT accidental) |
-| strconv ParseInt/Atof | stdlib | −12…13 |
-| errors As/Is/Join | stdlib | −5 |
+| Micro → batch burn-down | GOROOT clusters | **done through #47** (~604/422) |
+| strconv Parse* + math blanket + errors.Join | stdlib | **this PR** (−~376 stdlib skips) |
+| math MaxUint wrap + complex reflect | stdlib | −3… |
+| errors As/Is | stdlib | −4 |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
-| Un-blanket fmt/json/time/math | stdlib | after compile/reflect depth |
+| Un-blanket fmt/json/time | stdlib | after compile/reflect depth |
 
 Each PR description should report before/after pass and skip counts for
 `$GOROOT/test` and affected stdlib packages vs M10 (**380** / **646**).
@@ -159,13 +158,21 @@ Each PR description should report before/after pass and skip counts for
 | `$GOROOT/test` | **597** | 0 | **429** |
 | Stdlib per-test total | — | — | ~1021 |
 
-### After this PR (strconv quote/unicode + container/ring + 7 GOROOT)
+### After PR #47 (strconv quote/unicode + container/ring)
 
 | Layer | Pass | Fail | Skip |
 |---|---:|---:|---:|
 | `$GOROOT/test` | **~604** | 0 | **422** |
-| strconv | — | — | **13** (was 26) |
-| container/ring | — | — | **0** (was 8) |
 | Stdlib per-test total | — | — | **~1000** |
+
+### After this PR (bounded shifts + iface DeepEqual + math/strconv/errors)
+
+| Layer | Pass | Fail | Skip |
+|---|---:|---:|---:|
+| `$GOROOT/test` | **~604** | 0 | **422** |
+| math | **~74** package tests | 0 | **2** (was 365) |
+| strconv | — | 0 | **3** (was 13) |
+| errors | — | 0 | **4** (was 5) |
+| Stdlib per-test total | — | — | **626** |
 
 Update this section when a burn-down PR lands.

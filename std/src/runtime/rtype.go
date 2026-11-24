@@ -115,6 +115,12 @@ func ReflectMapPairs(data unsafe.Pointer) (keys, vals []any) {
 // Body-less: desc builds $go.iface{itab-for-any, data}.
 func ReflectIface(typ *Rtype, data unsafe.Pointer) any
 
+// ReflectIfaceFromData reinterprets a data word that already holds a $go.iface
+// as an any. Struct interface fields store the iface ref itself; Elem/Interface
+// must not re-wrap it with ReflectIface (that nests iface-in-iface).
+// Body-less: desc fills (ref.cast any → $go.iface).
+func ReflectIfaceFromData(data unsafe.Pointer) any
+
 // ReflectStructNumField reads $go.extra.struct.numField.
 func ReflectStructNumField(extra unsafe.Pointer) int
 
