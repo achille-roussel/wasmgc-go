@@ -15,6 +15,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectExtra()
 	g.fillReflectString()
 	g.fillReflectIface()
+	g.fillReflectIfaceFromData()
 	g.fillReflectCallGetField()
 	g.fillReflectCallSetField()
 	g.fillReflectCallIndex()
@@ -266,6 +267,26 @@ func (g *gen) fillReflectIface() {
 		&ir.Unreachable{},
 	}}
 	g.replaceBody(name, []*ir.Var{typ, data}, []ir.Type{ifaceTy}, body)
+}
+
+func (g *gen) fillReflectIfaceFromData() {
+	name := "runtime.ReflectIfaceFromData"
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	ifaceTy := &ir.Ref{Null: true, Named: "$go.iface"}
+	data := &ir.Var{Name: "data", Typ: anyT}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefNull, Type: ifaceTy},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefCast, Type: ifaceTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			}}}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{data}, []ir.Type{ifaceTy}, body)
 }
 
 func (g *gen) fillReflectCallGetField() {

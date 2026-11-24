@@ -658,6 +658,15 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{x, ynot}}, stmts, nil
 	}
 
+	// Variable shift counts: Wasm masks to width bits (x<<64 ≡ x<<0 on i64).
+	// Go yields 0 for << / unsigned >>, and signed fill for signed >>, when
+	// count ≥ bit width. Constant ≥width cases are folded above.
+	if e.Op == token.SHL || e.Op == token.SHR {
+		if tv, ok := fl.info.Types[e.Y]; !ok || tv.Value == nil {
+			return fl.shiftBounded(e.Op, x, y, xWant, xt, stmts)
+		}
+	}
+
 	op, err := fl.binaryOp(e.Op, xt)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
@@ -670,6 +679,62 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 		}
 	}
 	return &ir.Instr{Op: op, Args: []ir.Expr{x, y}}, stmts, nil
+}
+
+// shiftBounded emits Go's shift semantics for a non-constant count:
+// if count ≥ bit width → 0 (<< / unsigned >>) or signed fill (signed >>);
+// else the native Wasm shift. y must already match xWant's integer width.
+func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant ir.Type, xt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
+	is64 := irNumWidth(xWant) == ir.I64
+	bitW := int64(32)
+	if is64 {
+		bitW = 64
+	}
+	unsigned := isUnsigned(xt)
+	shiftOp, err := binOp(op, irNumWidth(xWant), unsigned)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	res := fl.newVar("sh", xWant)
+	xv := fl.newVar("shx", xWant)
+	yTy := ir.TypeI32
+	if is64 {
+		yTy = ir.TypeI64
+	}
+	yv := fl.newVar("shy", yTy)
+	stmts = append(stmts, fl.assignVar(xv, x), fl.assignVar(yv, y))
+
+	var ge ir.Expr
+	if is64 {
+		ge = &ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{fl.useVar(yv), fl.i64const(bitW)}}
+	} else {
+		ge = &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(yv), fl.i32const(bitW)}}
+	}
+
+	var thenVal ir.Expr
+	if op == token.SHL || unsigned {
+		if is64 {
+			thenVal = fl.i64const(0)
+		} else {
+			thenVal = fl.i32const(0)
+		}
+	} else {
+		// Signed >> with huge count ≡ x >> (width-1).
+		sh := bitW - 1
+		if is64 {
+			thenVal = &ir.Instr{Op: ir.OpI64ShrS, Args: []ir.Expr{fl.useVar(xv), fl.i64const(sh)}}
+		} else {
+			thenVal = &ir.Instr{Op: ir.OpI32ShrS, Args: []ir.Expr{fl.useVar(xv), fl.i32const(sh)}}
+		}
+	}
+	elseVal := &ir.Instr{Op: shiftOp, Args: []ir.Expr{fl.useVar(xv), fl.useVar(yv)}}
+	stmts = append(stmts, &ir.If{
+		Cond: ge,
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, thenVal)}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, elseVal)}},
+	})
+	return fl.useVar(res), stmts, nil
 }
 
 func (fl *funcLower) stringConcat(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error) {

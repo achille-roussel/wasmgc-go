@@ -117,7 +117,7 @@ func (v Value) Elem() Value {
 		if v.data == nil {
 			return Value{}
 		}
-		return ValueOf(runtime.ReflectIface(v.typ.rt, v.data))
+		return ValueOf(runtime.ReflectIfaceFromData(v.data))
 	}
 	return Value{}
 }
@@ -125,6 +125,9 @@ func (v Value) Elem() Value {
 func (v Value) Interface() any {
 	if !v.IsValid() {
 		return nil
+	}
+	if v.Kind() == Interface {
+		return runtime.ReflectIfaceFromData(v.data)
 	}
 	return runtime.ReflectIface(v.typ.rt, v.data)
 }
