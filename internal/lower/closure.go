@@ -862,7 +862,28 @@ func (l *pkgLower) emitMethodValueWrapper(wrapper string, fn *types.Func, closNa
 		}
 		call = makeIfaceCall(fn, recvGo, callArgs, res)
 	} else {
-		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+		target := methodIRName(fn)
+		if l.mono != nil {
+			origin := fn.Origin()
+			if origin == nil {
+				origin = fn
+			}
+			if methodNeedsMono(origin) {
+				recv := msig.Recv().Type()
+				if len(l.subst) > 0 {
+					recv = l.subst.Apply(recv)
+				}
+				if namedTypeOf(recvGo) != nil {
+					recv = recvGo
+				}
+				if inst, err := l.mono.EnsureMethod(origin, recv); err != nil {
+					return err
+				} else if inst != nil {
+					target = inst.IRName
+				}
+			}
+		}
+		call = &ir.Instr{Op: ir.OpCall, Func: target, Args: callArgs}
 	}
 	body := wrapperCallBody(call, results)
 	l.mod.Funcs = append(l.mod.Funcs, &ir.Func{
@@ -915,6 +936,28 @@ func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error
 	}
 	if m := concreteMethod(recvTy, fn); m != nil {
 		fn = m
+	}
+	if fl.pkg != nil && fl.pkg.mono != nil {
+		origin := fn.Origin()
+		if origin == nil {
+			origin = fn
+		}
+		if methodNeedsMono(origin) {
+			recv := fn.Type().(*types.Signature).Recv().Type()
+			if len(fl.pkg.subst) > 0 {
+				recv = fl.pkg.subst.Apply(recv)
+			}
+			if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 {
+				recv = recvTy
+			}
+			inst, err := fl.pkg.mono.EnsureMethod(origin, recv)
+			if err != nil {
+				return nil, nil, err
+			}
+			if inst != nil {
+				return fl.monoInstFuncValue(inst)
+			}
+		}
 	}
 	return fl.topLevelFuncValue(fn)
 }

@@ -1929,6 +1929,9 @@ func Sanitize(s string) string {
 	s = strings.ReplaceAll(s, "(", "_")
 	s = strings.ReplaceAll(s, ")", "_")
 	s = strings.ReplaceAll(s, ",", "_")
+	// Mono / local-type suffixes use '$' in TypeKey; '$' starts a new IR name
+	// token, so main.I$int would lex as main.I + $int and break itabtype lookup.
+	s = strings.ReplaceAll(s, "$", "_")
 	return s
 }
 
@@ -2132,7 +2135,59 @@ func findTypeByKey(pkg *types.Package, key string) types.Type {
 			return tn.Type()
 		}
 	}
+	// Instantiated generics: TypeKey is Origin$arg1$arg2 (see mono.NamedIRSuffix).
+	// Package scope only holds the origin; rebuild via types.Instantiate.
+	if i := strings.Index(want, "$"); i > 0 {
+		originName := want[:i]
+		argKeys := strings.Split(want[i+1:], "$")
+		obj := pkg.Scope().Lookup(originName)
+		if tn, ok := obj.(*types.TypeName); ok {
+			named, _ := types.Unalias(tn.Type()).(*types.Named)
+			if named != nil && named.TypeParams().Len() == len(argKeys) {
+				args := make([]types.Type, len(argKeys))
+				ok := true
+				for j, ak := range argKeys {
+					args[j] = resolveTypeArgKey(pkg, ak)
+					if args[j] == nil {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					if inst, err := types.Instantiate(nil, named, args, false); err == nil {
+						return inst
+					}
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// resolveTypeArgKey resolves one mono.TypeArgKey fragment within pkg.
+func resolveTypeArgKey(pkg *types.Package, key string) types.Type {
+	if key == "" {
+		return nil
+	}
+	if t := builtinType(key); t != nil {
+		return t
+	}
+	if strings.HasPrefix(key, "*") {
+		if elem := resolveTypeArgKey(pkg, strings.TrimPrefix(key, "*")); elem != nil {
+			return types.NewPointer(elem)
+		}
+		return nil
+	}
+	// Named args use pkg.Name().Type (TypeArgKey), not the full import path.
+	shortPrefix := pkg.Name() + "."
+	if strings.HasPrefix(key, shortPrefix) {
+		return findTypeByKey(pkg, pkgIRPrefix(pkg)+"."+strings.TrimPrefix(key, shortPrefix))
+	}
+	if strings.Contains(key, ".") {
+		return findTypeByKey(pkg, key)
+	}
+	// Bare name in this package.
+	return findTypeByKey(pkg, pkgIRPrefix(pkg)+"."+key)
 }
 
 // scalarBoxOf returns the $go.box.* type and element type for a scalar IR type.

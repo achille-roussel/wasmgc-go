@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -11,6 +12,7 @@ import (
 
 // boxIRToIface wraps an already-lowered concrete value as dst interface.
 func (fl *funcLower) boxIRToIface(x ir.Expr, src, dst types.Type) ir.Expr {
+	_ = fl.ensureIfaceMethodInstances(src, dst)
 	box := boxKind(src)
 	itab := desc.ItabGlobal(dst, src)
 	return &ir.Instr{
@@ -21,6 +23,37 @@ func (fl *funcLower) boxIRToIface(x ir.Expr, src, dst types.Type) ir.Expr {
 		Field:  box,
 		Args:   []ir.Expr{x},
 	}
+}
+
+// assignToMaybeBox assigns rhs to lhs, boxing into an interface when lhs is
+// interface-typed and srcGo is concrete (comma-ok / select / map paths that
+// materialize concrete temps before assignTo).
+func (fl *funcLower) assignToMaybeBox(lhs ast.Expr, rhs ir.Expr, srcGo types.Type) ([]ir.Stmt, error) {
+	dstGo := fl.typeOf(lhs)
+	if dstGo == nil {
+		if id, ok := lhs.(*ast.Ident); ok {
+			if obj := fl.info.Defs[id]; obj != nil {
+				dstGo = obj.Type()
+			} else if obj := fl.info.Uses[id]; obj != nil {
+				dstGo = obj.Type()
+			}
+		}
+	}
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		if dstGo != nil {
+			dstGo = fl.pkg.subst.Apply(dstGo)
+		}
+		if srcGo != nil {
+			srcGo = fl.pkg.subst.Apply(srcGo)
+		}
+	}
+	// Type params have interface constraints as Underlying; only box when the
+	// post-subst destination is a true interface (not a substituted concrete).
+	if dstGo != nil && isIface(dstGo) && !isTypeParam(dstGo) &&
+		srcGo != nil && !isIface(srcGo) && !isTypeParam(srcGo) {
+		rhs = fl.boxIRToIface(rhs, srcGo, dstGo)
+	}
+	return fl.assignTo(lhs, rhs)
 }
 
 // callResultTuple returns the *types.Tuple when e is a multi-result call.
@@ -144,6 +177,12 @@ func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, 
 		return nil, nil, err
 	}
 
+	// Ensure mono instances for methods of a generic concrete type so itab
+	// wrappers have a real call target (IteratorFunc[T].Iterate, etc.).
+	if err := fl.ensureIfaceMethodInstances(src, dst); err != nil {
+		return nil, nil, err
+	}
+
 	// Untyped nil / typed nil pointer → may still build non-nil iface with null data.
 	box := boxKind(src)
 	itab := desc.ItabGlobal(dst, src)
@@ -155,6 +194,110 @@ func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, 
 		Field:  box,
 		Args:   []ir.Expr{x},
 	}, stmts, nil
+}
+
+// ensureIfaceMethodInstances records mono specializations for methods of a
+// generic concrete src so itab wrappers have real call targets. When dst is a
+// non-empty interface, only those methods are ensured; for empty interface
+// (or unknown dst), ensure every method in src's method set that needs mono —
+// later type-asserts rebuild itabs that call those methods (genembed).
+func (fl *funcLower) ensureIfaceMethodInstances(src, dst types.Type) error {
+	if fl.pkg == nil || fl.pkg.mono == nil {
+		return nil
+	}
+	concrete := src
+	if p, ok := types.Unalias(src).(*types.Pointer); ok {
+		concrete = p.Elem()
+	}
+	named, _ := types.Unalias(concrete).(*types.Named)
+	if named == nil || named.TypeArgs().Len() == 0 {
+		return nil
+	}
+	if named.Origin().TypeParams().Len() == 0 {
+		return nil
+	}
+	ms := types.NewMethodSet(src)
+	iface, _ := types.Unalias(dst).Underlying().(*types.Interface)
+	ensureSel := func(sel *types.Selection) error {
+		if sel == nil {
+			return nil
+		}
+		fn, ok := sel.Obj().(*types.Func)
+		if !ok {
+			return nil
+		}
+		if origin := fn.Origin(); origin != nil {
+			fn = origin
+		}
+		if !methodNeedsMono(fn) {
+			return nil
+		}
+		recv := methodDeclaringRecv(src, sel)
+		if recv == nil {
+			recv = fn.Type().(*types.Signature).Recv().Type()
+		}
+		if _, err := fl.pkg.mono.EnsureMethod(fn, recv); err != nil {
+			return fmt.Errorf("mono method %s: %w", fn.Name(), err)
+		}
+		return nil
+	}
+	if iface != nil && !iface.Empty() {
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			sel := ms.Lookup(m.Pkg(), m.Name())
+			if sel == nil {
+				sel = types.NewMethodSet(types.NewPointer(concrete)).Lookup(m.Pkg(), m.Name())
+			}
+			if err := ensureSel(sel); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for i := 0; i < ms.Len(); i++ {
+		if err := ensureSel(ms.At(i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// methodDeclaringRecv returns the receiver type to pass to EnsureMethod: the
+// (possibly embedded) declaring type with concrete type args. For promoted
+// methods (A embeds B), this is *B[T] / B[T], not A.
+func methodDeclaringRecv(src types.Type, sel *types.Selection) types.Type {
+	if sel == nil {
+		return src
+	}
+	idx := sel.Index()
+	ty := src
+	if len(idx) > 1 {
+		for _, fi := range idx[:len(idx)-1] {
+			if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+				ty = p.Elem()
+			}
+			st, ok := types.Unalias(ty).Underlying().(*types.Struct)
+			if !ok || fi < 0 || fi >= st.NumFields() {
+				return src
+			}
+			ty = st.Field(fi).Type()
+		}
+	}
+	fn, ok := sel.Obj().(*types.Func)
+	if !ok {
+		return ty
+	}
+	origin := fn.Origin()
+	if origin == nil {
+		origin = fn
+	}
+	origRecv := origin.Type().(*types.Signature).Recv().Type()
+	if _, wantPtr := types.Unalias(origRecv).(*types.Pointer); wantPtr {
+		if _, isPtr := types.Unalias(ty).(*types.Pointer); !isPtr {
+			ty = types.NewPointer(ty)
+		}
+	}
+	return ty
 }
 
 func boxKind(t types.Type) string {
@@ -197,6 +340,14 @@ func isIface(t types.Type) bool {
 		return false
 	}
 	_, ok := types.Unalias(t).Underlying().(*types.Interface)
+	return ok
+}
+
+func isTypeParam(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := types.Unalias(t).(*types.TypeParam)
 	return ok
 }
 
