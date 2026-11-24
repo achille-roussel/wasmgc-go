@@ -551,7 +551,9 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
-	if want != nil {
+	// Prefer make's result type over want: blank `_` reports i32 via lhsType
+	// and would corrupt OpMakeSlice/Map/Chan typing (makeslice.go, issue37975).
+	if want != nil && isRefIR(want) {
 		irt = want
 	}
 	if isChan(resTy) {
@@ -599,6 +601,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if err != nil {
 		return nil, nil, err
 	}
+	lenEx = fl.ensureI32Len(e.Args[1], lenEx)
 	var capEx ir.Expr
 	if len(e.Args) >= 3 {
 		var cstmts []ir.Stmt
@@ -607,10 +610,21 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			return nil, nil, err
 		}
 		stmts = append(stmts, cstmts...)
+		capEx = fl.ensureI32Len(e.Args[2], capEx)
 	} else {
 		capEx = lenEx
 	}
 	return &ir.Instr{Op: ir.OpMakeSlice, Type: irt, Args: []ir.Expr{lenEx, capEx}}, stmts, nil
+}
+
+// ensureI32Len wraps int64/uint64 make lengths down to i32 (WasmGC int).
+func (fl *funcLower) ensureI32Len(arg ast.Expr, ex ir.Expr) ir.Expr {
+	if t := fl.typeOf(arg); t != nil {
+		if irt, err := fl.mapType(t); err == nil && irNumWidth(irt) == ir.I64 {
+			return &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		}
+	}
+	return ex
 }
 
 func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -640,9 +654,11 @@ func (fl *funcLower) builtinAppend(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir
 	if len(e.Args) < 1 {
 		return nil, nil, fl.errorf(e, "append needs a slice")
 	}
-	ty := want
-	if ty == nil {
-		ty, _ = fl.mapType(fl.typeOf(e))
+	ty, _ := fl.mapType(fl.typeOf(e))
+	// Prefer append's result type over want: blank `_` reports i32 via lhsType
+	// and would corrupt OpSliceAppend typing (makeslice.go append(make...)).
+	if want != nil && isRefIR(want) {
+		ty = want
 	}
 	slice, stmts, err := fl.expr(e.Args[0], nil)
 	if err != nil {

@@ -71,6 +71,32 @@ func (rt *runtimeLower) panicSliceB() []ir.Stmt {
 	}
 }
 
+// forceI32Expr wraps i64 make/append lengths down to i32 (WasmGC int width).
+func forceI32Expr(ex ir.Expr) ir.Expr {
+	switch x := ex.(type) {
+	case *ir.Const:
+		if x.Op == ir.OpI64Const {
+			return &ir.Const{Op: ir.OpI32Const, I64: int64(int32(x.I64))}
+		}
+	case *ir.Name:
+		var ty ir.Type
+		if x.Temp != nil {
+			ty = x.Temp.Typ
+		} else if x.Var != nil {
+			ty = x.Var.Typ
+		}
+		if ty == ir.TypeI64 {
+			return &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		}
+	case *ir.Instr:
+		if x.Type == ir.TypeI64 || x.Op == ir.OpI64Const ||
+			x.Op == ir.OpI64Add || x.Op == ir.OpI64Sub || x.Op == ir.OpI64Mul {
+			return &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		}
+	}
+	return ex
+}
+
 // newVar allocates a mutable local name for values that cross region boundaries.
 func (rt *runtimeLower) newVar(prefix string, typ ir.Type) *ir.Var {
 	rt.tmp++
@@ -485,6 +511,8 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		}
 		pre = append(pre, pre2...)
 	}
+	lenEx = forceI32Expr(lenEx)
+	capEx = forceI32Expr(capEx)
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
 	alloc, allocPre := rt.allocArray(arrName, capEx)
 	pre = append(pre, allocPre...)

@@ -31,7 +31,6 @@ chan/powser1.go — compile error: lower: copy: unsupported dst type
 chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
 chan/select3.go — compile error: lower: unsupported select assign
 chan/sieve2.go — output mismatch
-chan/zerosize.go — failed: build: pipeline: IR verify: cannot assign refnull $go.chan to var h1 of type i32 in main.main pipeli…
 chancap.go — failed: build: pipeline: IR verify: cannot assign refnull $go.chan to var h14768 of type i32 in main.clos.29…
 closedchan.go — wasm validate/compile error
 closure2.go — failed: panic: g() != 1
@@ -84,8 +83,6 @@ fixedbugs/bug259.go — runtime error
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug262.go — output mismatch
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
-fixedbugs/bug269.go — compile error: codegen
-fixedbugs/bug271.go — compile error: lower: tuple type not a single value: (int, int)
 fixedbugs/bug272.go — wasm validate/compile error
 fixedbugs/bug273.go — wasm validate/compile error
 fixedbugs/bug293.go — output mismatch
@@ -110,7 +107,6 @@ fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug494.go — failed: build: pipeline: IR verify: cannot assign i32 to var pd of type refnull $go.ptr.i32 in main.(*MyInt)…
-fixedbugs/bug499.go — failed: build: pipeline: IR verify: cannot assign refnull $go.hmap to var h1 of type i32 in main.main pipeli…
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/gcc65755.go — compile error: codegen
@@ -144,7 +140,6 @@ fixedbugs/issue16948.go — unsupported: unsafe
 fixedbugs/issue16985.go — unsupported: unsafe
 fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3df8cf8e0380 stack=[0x3d…
 fixedbugs/issue17381.go — unsupported: unsafe
-fixedbugs/issue17640.go — failed: build: literal of type i32 not supported literal of type i32 not supported
 fixedbugs/issue18149.go — compile error: codegen
 fixedbugs/issue18636.go — wasm module missing export run (large stack array)
 fixedbugs/issue18725.go — failed: panic: syscall.Exit
@@ -215,7 +210,6 @@ fixedbugs/issue34395.go — timeout
 fixedbugs/issue35027.go — unsupported: unsafe
 fixedbugs/issue35073a.go — unsupported: unsafe
 fixedbugs/issue35576.go — compile error: lower: print of type (int16, float64, string) not supported in M3 (need string or int)
-fixedbugs/issue37716.go — runtime error
 fixedbugs/issue37975.go — failed: build: make.slice: bad type i32 make.slice: bad type i32
 fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue38496.go — runtime error
@@ -247,17 +241,14 @@ fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finaliz
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
 fixedbugs/issue47771.go — compile error: codegen
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
-fixedbugs/issue48357.go — runtime error
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
 fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1 destinations but rhs produces 2 values pipeline: IR ver…
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
-fixedbugs/issue50671.go — failed: build: pipeline: IR verify: return value 1: have f64, want i64 in main.F pipeline: IR verify: return…
 fixedbugs/issue51101.go — wasm validate/compile error
 fixedbugs/issue51913.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
-fixedbugs/issue52788.go — compile error: build: load: typecheck
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
 fixedbugs/issue53600.go — output mismatch
 fixedbugs/issue53619.go — compile error: lower: tuple type not a single value: (bool, bool)
@@ -308,7 +299,6 @@ fixedbugs/issue73748b.go — runtime error: nil deref not recovered as Go panic
 fixedbugs/issue73916.go — output mismatch
 fixedbugs/issue73917.go — runtime error
 fixedbugs/issue73920.go — runtime error
-fixedbugs/issue74935.go — runtime error
 fixedbugs/issue75327.go — failed: build: pipeline: IR verify: cannot assign i64 to var h20905 of type i32 in main.foo pipeline: IR ver…
 fixedbugs/issue75365.go — output mismatch
 fixedbugs/issue7550.go — failed: build: pipeline: IR verify: cannot assign refnull $go.slice.go.struct.anon to var sl6 of type refnul…
@@ -317,7 +307,6 @@ fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ra
 fixedbugs/issue76008.go — output mismatch
 fixedbugs/issue7690.go — compile error: lower: unsupported binary op &^ for width i32 regexp/syntax: lower: unsupported binary op &^ for wid…
 fixedbugs/issue77779.go — runtime error
-fixedbugs/issue78081.go — failed: build: pipeline: IR verify: cannot assign refnull $go.slice.i32 to var sl10 of type refnull any in m…
 fixedbugs/issue78295.go — compile error: lower: field index 0 out of range for gotestcase.B
 fixedbugs/issue78404.go — failed: build: mono: pending main.Iface$int.Foo missing package/info mono: pending main.Iface$int.Foo missin…
 fixedbugs/issue7863.go — wasm validate/compile error
@@ -352,7 +341,6 @@ fixedbugs/issue9604.go — failed: panic: ^uint16(0xffff) != 0
 fixedbugs/issue9691.go — failed: panic: bad
 fixedbugs/issue9738.go — output mismatch
 fixedbugs/walk_bounded_overshift_empty_bound.go — runtime error
-float_lit.go — compile error: lower: close wants 1 arg
 float_lit2.go — wasm validate/compile error
 floatcmp.go — runtime error
 for.go — output mismatch
@@ -369,8 +357,6 @@ inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
 intcvt.go — output mismatch
 interface/convert.go — wasm validate/compile error
-interface/convert1.go — compile error: codegen
-interface/convert2.go — compile error: codegen
 interface/embed.go — failed: build: pipeline: IR verify: return value 0: have i32, want i64 in $go.acc.go_array_i32.elem.get pipe…
 interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
@@ -381,7 +367,6 @@ ken/cplx3.go — compile error: IR verify: complex128 assign from i32
 ken/cplx4.go — failed: build: pipeline: IR verify: cannot assign i32 to var c3 of type refnull $go.complex128 in main.main …
 ken/cplx5.go — wasm validate/compile error
 ken/divconst.go — unsupported: unsafe
-ken/interfun.go — compile error: codegen
 ken/label.go — failed: build: pipeline: IR verify: br target $goto.loop not in scope pipeline: IR verify: br target $goto.l…
 ken/modconst.go — unsupported: unsafe
 ken/range.go — wasm validate/compile error
@@ -440,10 +425,6 @@ typeparam/boundmethod.go — codegen: missing StringStruct$myint.String method b
 typeparam/chans.go — compile error: codegen finalize method value
 typeparam/combine.go — compile error: lower: unsupported expression *ast.IndexListExpr
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
-typeparam/devirtualize1.go — compile error: codegen
-typeparam/devirtualize2.go — compile error: codegen
-typeparam/dictionaryCapture-noinline.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
-typeparam/dictionaryCapture.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/dottype.go — compile error: lower: print of type (int, bool) not supported in M3 (need string or int)
 typeparam/double.go — failed: panic: got [%!s(int=2) %!s(int=4) %!s(int=6)], want [%!s(int=2) %!s(int=4) %!s(int=6)]
 typeparam/equal.go — failed: panic: assertion failed
@@ -481,13 +462,10 @@ typeparam/issue50419.go — runtime error
 typeparam/issue50642.go — wasm validate/compile error
 typeparam/issue50690a.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue50690b.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
-typeparam/issue50690c.go — failed: build: unsubstituted type parameter T unsubstituted type parameter T
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
 typeparam/issue51521.go — compile error: codegen
 typeparam/issue51522b.go — wasm validate/compile error
-typeparam/issue51700.go — compile error: codegen
 typeparam/issue52026.go — compile error: codegen
-typeparam/issue52228.go — compile error: codegen
 typeparam/issue54225.go — compile error: codegen
 typeparam/issue54456.go — failed: panic: bad type identity
 typeparam/issue54535.go — compile error: lower: variable int has no IR local (in main.main)
@@ -511,7 +489,6 @@ typeparam/orderedmap.go — compile error: codegen unknown type global
 typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
 typeparam/shape1.go — wasm validate/compile error: mono f$*incrementer recv width
 typeparam/shape_assert.go — wasm validate/compile error
-typeparam/slices.go — failed: build: unsubstituted type parameter Elem unsubstituted type parameter Elem
 typeparam/typeswitch1.go — output mismatch
 typeparam/typeswitch2.go — compile error: lower: variable x has no IR local (in main.f$any)
 typeparam/typeswitch4.go — compile error: lower: variable x has no IR local (in main.f$main.myint32)
