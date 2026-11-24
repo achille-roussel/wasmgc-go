@@ -70,17 +70,37 @@ func Breakpoint() {}
 
 // MemStats is a stub heap-stats snapshot (fields used by language tests).
 type MemStats struct {
-	Alloc      uint64
-	TotalAlloc uint64
-	Sys        uint64
-	Lookups    uint64
-	Mallocs    uint64
-	Frees      uint64
-	HeapAlloc  uint64
-	HeapSys    uint64
-	HeapIdle   uint64
-	HeapInuse  uint64
-	NumGC      uint32
+	Alloc         uint64
+	TotalAlloc    uint64
+	Sys           uint64
+	Lookups       uint64
+	Mallocs       uint64
+	Frees         uint64
+	HeapAlloc     uint64
+	HeapSys       uint64
+	HeapIdle      uint64
+	HeapInuse     uint64
+	HeapReleased  uint64
+	HeapObjects   uint64
+	StackInuse    uint64
+	StackSys      uint64
+	MSpanInuse    uint64
+	MSpanSys      uint64
+	MCacheInuse   uint64
+	MCacheSys     uint64
+	BuckHashSys   uint64
+	GCSys         uint64
+	OtherSys      uint64
+	NextGC        uint64
+	LastGC        uint64
+	PauseTotalNs  uint64
+	PauseNs       [256]uint64
+	PauseEnd      [256]uint64
+	NumGC         uint32
+	NumForcedGC   uint32
+	GCCPUFraction float64
+	EnableGC      bool
+	DebugGC       bool
 }
 
 func ReadMemStats(m *MemStats) {
@@ -117,3 +137,15 @@ func (r *MemProfileRecord) Stack() []uintptr {
 func MemProfile(p []MemProfileRecord, inuseZero bool) (n int, ok bool) {
 	return 0, true
 }
+
+// Goexit terminates the calling goroutine. Stub: returns to the caller so
+// surrounding defers still run when the function exits. Real $go.goexit EH
+// (non-returning) remains a follow-up; enough for language tests that only
+// need the symbol and defer sequencing.
+func Goexit() {}
+
+// GOROOT returns the Go root used by the toolchain. Stub: empty under wasmgc.
+func GOROOT() string { return "" }
+
+// Version returns the Go tree's version string.
+func Version() string { return "wasmgc-go" }

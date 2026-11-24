@@ -4,9 +4,25 @@ package os
 
 import (
 	"io"
+	"io/fs"
 	"runtime"
 	"syscall"
 )
+
+// Path separators for GOOS=js / wasmgc (unix-shaped).
+const (
+	PathSeparator     = '/'
+	PathListSeparator = ':'
+)
+
+// IsPathSeparator reports whether c is a directory separator character.
+func IsPathSeparator(c uint8) bool { return PathSeparator == c }
+
+// FileInfo is the os alias of fs.FileInfo.
+type FileInfo = fs.FileInfo
+
+// DirEntry is the os alias of fs.DirEntry.
+type DirEntry = fs.DirEntry
 
 var (
 	Stdin  = NewFile(0, "/dev/stdin")
@@ -56,9 +72,30 @@ func (f *File) Write(b []byte) (int, error) {
 
 func (f *File) Close() error { return nil }
 
+// Readdirnames reads the names of directory entries. Stub: no host FS.
+func (f *File) Readdirnames(n int) ([]string, error) {
+	_ = n
+	if f == nil {
+		return nil, ErrInvalid
+	}
+	return nil, &PathError{Op: "readdirnames", Path: f.name, Err: syscall.ENOSYS}
+}
+
+// Readdir reads directory entries as FileInfo values. Stub: no host FS.
+func (f *File) Readdir(n int) ([]FileInfo, error) {
+	_ = n
+	if f == nil {
+		return nil, ErrInvalid
+	}
+	return nil, &PathError{Op: "readdir", Path: f.name, Err: syscall.ENOSYS}
+}
+
 var (
 	ErrInvalid = errInvalid()
 	ErrClosed  = errClosed()
+	ErrExist   = errExist()
+	ErrNotExist = errNotExist()
+	ErrPermission = errPermission()
 )
 
 type PathError struct {
@@ -73,8 +110,11 @@ func (e *PathError) Error() string {
 
 func (e *PathError) Unwrap() error { return e.Err }
 
-func errInvalid() error { return syscall.EINVAL }
-func errClosed() error  { return syscall.EINVAL }
+func errInvalid() error    { return syscall.EINVAL }
+func errClosed() error     { return syscall.EINVAL }
+func errExist() error      { return syscall.EEXIST }
+func errNotExist() error   { return syscall.ENOENT }
+func errPermission() error { return syscall.EPERM }
 
 func Exit(code int) { syscall.Exit(code) }
 
@@ -98,9 +138,39 @@ func Open(name string) (*File, error) {
 	return nil, &PathError{Op: "open", Path: name, Err: syscall.ENOENT}
 }
 
+// Stat returns FileInfo for the named file. Stub: always not found.
+func Stat(name string) (FileInfo, error) {
+	return nil, &PathError{Op: "stat", Path: name, Err: syscall.ENOENT}
+}
+
+// Lstat is like Stat but does not follow symlinks. Stub: always not found.
+func Lstat(name string) (FileInfo, error) {
+	return nil, &PathError{Op: "lstat", Path: name, Err: syscall.ENOENT}
+}
+
+// ReadDir reads the named directory. Stub: always not found.
+func ReadDir(name string) ([]DirEntry, error) {
+	return nil, &PathError{Op: "readdir", Path: name, Err: syscall.ENOENT}
+}
+
+// Readlink returns the destination of the named symbolic link. Stub.
+func Readlink(name string) (string, error) {
+	return "", &PathError{Op: "readlink", Path: name, Err: syscall.EINVAL}
+}
+
 // IsNotExist reports whether err indicates a file does not exist.
 func IsNotExist(err error) bool {
 	return isPathError(err, syscall.ENOENT)
+}
+
+// IsExist reports whether err indicates a file already exists.
+func IsExist(err error) bool {
+	return isPathError(err, syscall.EEXIST)
+}
+
+// IsPermission reports whether err indicates a permission error.
+func IsPermission(err error) bool {
+	return isPathError(err, syscall.EPERM)
 }
 
 func isPathError(err error, errno syscall.Errno) bool {

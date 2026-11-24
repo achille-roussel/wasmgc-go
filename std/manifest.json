@@ -242,6 +242,36 @@
       "tier": "rewrite",
       "notes": "M10: minimal T/M/MainStart for wasmgc-go test; no testdeps/fuzz"
     },
+    "runtime/debug": {
+      "tier": "rewrite",
+      "notes": "Thin stubs: Stack/SetGCPercent/SetMaxStack/FreeOSMemory; no internal/poll"
+    },
+    "runtime/trace": {
+      "tier": "rewrite",
+      "notes": "No-op Start/Stop/Log for language tests"
+    },
+    "log": {
+      "tier": "rewrite",
+      "notes": "Thin Print/Fatal logger; avoids time.Date/Clock"
+    },
+    "context": {
+      "tier": "rewrite",
+      "notes": "Background/TODO/WithCancel/WithValue; avoids time.Timer deps in upstream"
+    },
+    "io/ioutil": {
+      "tier": "rewrite",
+      "notes": "Thin wrappers to io/os; TempFile/TempDir ENOSYS-style stubs"
+    },
+    "internal/filepathlite": {
+      "tier": "overlay",
+      "overlays": ["path_wasmgc.go"],
+      "notes": "path_unix.go is tagged js&&wasm; wasmgc twin with unix separators"
+    },
+    "path/filepath": {
+      "tier": "overlay",
+      "overlays": ["path_wasmgc.go"],
+      "notes": "path_unix.go is tagged js&&wasm; wasmgc twin (splitList/join/abs)"
+    },
     "testing/internal/testdeps": {
       "tier": "out",
       "notes": "M10: avoided; MainStart takes no testDeps"
