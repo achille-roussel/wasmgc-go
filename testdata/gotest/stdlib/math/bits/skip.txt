@@ -1,6 +1,3 @@
 # math/bits — wasmgc-go test skips
 TestAdd64OverflowPanic — recover path: illegal cast in overflow panic/recover
-TestReverse — RuntimeError: array element access out of bounds in Reverse8
-TestReverseBytes — ReverseBytes16 wrong result (byte-swap width)
-TestRotateLeft — RotateLeft8/16 ignore full-width rotate; wrong want
 TestSub64OverflowPanic — recover path: illegal cast in overflow panic/recover

@@ -72,6 +72,11 @@ type funcLower struct {
 	// rangeYield is true when this funcLower is a synthesized yield body.
 	rangeFrames []*rangeFrame
 	rangeYield  bool
+
+	// rangeIterVars are for/range key/value objects of this function. Closures
+	// capture them by value (Go 1.22 per-iteration vars) so each closure sees
+	// the iteration that created it, not a shared cell updated later.
+	rangeIterVars map[types.Object]bool
 }
 
 // rangeFrame holds the state machine and early-exit cells for one

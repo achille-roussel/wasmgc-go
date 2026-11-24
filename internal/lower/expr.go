@@ -1720,6 +1720,11 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		}
 	}
 	if ir.TypesEqual(dstIR, actualSrc) {
+		// Same Wasm register (e.g. int8 ↔ uint8 → i32) still needs a Go-width
+		// truncate so uint8(-1) becomes 255 (issue 20530).
+		if isInteger(dst) {
+			return fl.truncateInt(x, dst), stmts, nil
+		}
 		return x, stmts, nil
 	}
 	// unsafe.Pointer ↔ *T / ref: Wasm GC has no integer address; this is ref.cast
@@ -1803,10 +1808,13 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
-	if conv == 0 {
-		return x, stmts, nil
+	if conv != 0 {
+		x = &ir.Instr{Op: conv, Args: []ir.Expr{x}}
 	}
-	return &ir.Instr{Op: conv, Args: []ir.Expr{x}}, stmts, nil
+	if isInteger(dst) {
+		x = fl.truncateInt(x, dst)
+	}
+	return x, stmts, nil
 }
 
 func isNumericIR(t ir.Type) bool {

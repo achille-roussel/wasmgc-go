@@ -29,6 +29,15 @@ func (fl *funcLower) boxIRToIface(x ir.Expr, src, dst types.Type) ir.Expr {
 // interface-typed and srcGo is concrete (comma-ok / select / map paths that
 // materialize concrete temps before assignTo).
 func (fl *funcLower) assignToMaybeBox(lhs ast.Expr, rhs ir.Expr, srcGo types.Type) ([]ir.Stmt, error) {
+	ex, err := fl.maybeBoxExpr(rhs, srcGo, lhs)
+	if err != nil {
+		return nil, err
+	}
+	return fl.assignTo(lhs, ex)
+}
+
+// maybeBoxExpr boxes rhs when lhs is an interface destination (no assign).
+func (fl *funcLower) maybeBoxExpr(rhs ir.Expr, srcGo types.Type, lhs ast.Expr) (ir.Expr, error) {
 	dstGo := fl.typeOf(lhs)
 	if dstGo == nil {
 		if id, ok := lhs.(*ast.Ident); ok {
@@ -47,13 +56,11 @@ func (fl *funcLower) assignToMaybeBox(lhs ast.Expr, rhs ir.Expr, srcGo types.Typ
 			srcGo = fl.pkg.subst.Apply(srcGo)
 		}
 	}
-	// Type params have interface constraints as Underlying; only box when the
-	// post-subst destination is a true interface (not a substituted concrete).
 	if dstGo != nil && isIface(dstGo) && !isTypeParam(dstGo) &&
 		srcGo != nil && !isIface(srcGo) && !isTypeParam(srcGo) {
-		rhs = fl.boxIRToIface(rhs, srcGo, dstGo)
+		return fl.boxIRToIface(rhs, srcGo, dstGo), nil
 	}
-	return fl.assignTo(lhs, rhs)
+	return rhs, nil
 }
 
 // callResultTuple returns the *types.Tuple when e is a multi-result call.

@@ -55,7 +55,6 @@ fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Acce
 fixedbugs/bug246.go — unsupported: unsafe
 fixedbugs/bug257.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug258.go — runtime error
-fixedbugs/bug259.go — runtime error
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug262.go — output mismatch
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
@@ -67,7 +66,6 @@ fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 10000000
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug434.go — runtime error
-fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug444.go — runtime error
 fixedbugs/bug461.go — failed: panic: int should be unexported
@@ -75,13 +73,10 @@ fixedbugs/bug491.go — compile error: IR verify: temp used outside defining reg
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/issue10332.go — output mismatch
-fixedbugs/issue10486.go — compile error: codegen
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue11286.go — compile error: codegen
 fixedbugs/issue12577.go — wasm validate/compile error
 fixedbugs/issue12621.go — runtime error
-fixedbugs/issue1304.go — runtime error
-fixedbugs/issue13162.go — runtime error
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue14725.go — runtime error: panic: f1 returned 0, wanted 1
@@ -99,15 +94,12 @@ fixedbugs/issue17381.go — unsupported: unsafe
 fixedbugs/issue18149.go — compile error: codegen
 fixedbugs/issue18636.go — wasm module missing export run (large stack array)
 fixedbugs/issue18725.go — failed: panic: syscall.Exit
-fixedbugs/issue18906.go — failed: panic: runtime error: index out of range [-1] with length 256
 fixedbugs/issue19040.go — compile error: codegen
 fixedbugs/issue19078.go — unsupported: unsafe
 fixedbugs/issue19246.go — output mismatch
 fixedbugs/issue19799.go — compile error: codegen
-fixedbugs/issue20530.go — output mismatch
 fixedbugs/issue20811.go — failed: build: pipeline: IR verify: cannot assign ref $go.string to var h4 of type i32 in main.main pipeline…
 fixedbugs/issue21221.go — unsupported: unsafe
-fixedbugs/issue21687.go — output mismatch
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue21887.go — output mismatch
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
@@ -115,7 +107,6 @@ fixedbugs/issue22605.go — failed: panic: interface conversion: type assertion 
 fixedbugs/issue22662.go — compile error: codegen
 fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
 fixedbugs/issue23017.go — compile error: lower: field index 0 out of range for gotestcase.T
-fixedbugs/issue23188.go — runtime error
 fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue23522.go — runtime error
 fixedbugs/issue23545.go — failed: panic: FAIL
@@ -149,11 +140,9 @@ fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of typ
 fixedbugs/issue30977.go — compile error: codegen
 fixedbugs/issue31546.go — output mismatch
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
-fixedbugs/issue32175.go — output mismatch: named result capture through defer CallExpr thunk
 fixedbugs/issue32187.go — runtime error: interface conversion type assertion failed
 fixedbugs/issue32288.go — runtime error
 fixedbugs/issue32477.go — compile error: codegen
-fixedbugs/issue32680.go — output mismatch
 fixedbugs/issue33724.go — runtime error: null deref / stub stack
 fixedbugs/issue34123.go — compile error: codegen
 fixedbugs/issue34395.go — timeout
@@ -175,7 +164,6 @@ fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue4562.go — compile error: codegen
 fixedbugs/issue4585.go — runtime error
-fixedbugs/issue4620.go — output mismatch
 fixedbugs/issue46304.go — runtime error
 fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
@@ -203,9 +191,7 @@ fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice o
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
 fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
-fixedbugs/issue60601.go — runtime error
 fixedbugs/issue65417.go — runtime error
-fixedbugs/issue66066b.go — output mismatch
 fixedbugs/issue68227.go — wasm validate/compile error
 fixedbugs/issue68322.go — runtime error
 fixedbugs/issue68415.go — could not import unique
@@ -244,13 +230,10 @@ fixedbugs/issue8132.go — compile error: codegen
 fixedbugs/issue81863.go — runtime error
 fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
-fixedbugs/issue8613.go — runtime error
 fixedbugs/issue8947.go — failed: panic: wrong2
 fixedbugs/issue9006.go — failed: panic: bad2
 fixedbugs/issue9321.go — could not import runtime/pprof
 fixedbugs/issue9604.go — failed: panic: ^uint16(0xffff) != 0
-fixedbugs/issue9691.go — failed: panic: bad
-fixedbugs/issue9738.go — output mismatch
 fixedbugs/walk_bounded_overshift_empty_bound.go — runtime error
 floatcmp.go — runtime error
 gcgort.go — compile error: IR verify complex64 nullability
@@ -264,7 +247,6 @@ initialize.go — failed: build: pipeline: IR verify: return value 0: have refnu
 inline_caller.go — compile error: codegen
 inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
-intcvt.go — output mismatch
 interface/receiver.go — codegen: unknown heap type
 ken/chan.go — timeout
 ken/chan1.go — output mismatch
@@ -284,8 +266,6 @@ nilptr.go — unsupported: unsafe
 nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
-range.go — failed: panic: fail
-range3.go — failed: panic: must not be executed
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
 recover1.go — wasm validate/compile error
@@ -298,7 +278,6 @@ reflectmethod4.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod5.go — compile error: codegen
 reflectmethod6.go — compile error: codegen
 reflectmethod7.go — failed: panic: FAIL
-reorder.go — output mismatch
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error
@@ -307,7 +286,6 @@ stackobj2.go — compile error: codegen
 stackobj3.go — compile error: codegen
 strcopy.go — runtime error
 string_lit.go — failed: panic: syscall.Exit
-stringrange.go — output mismatch
 switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — output mismatch
 typeparam/chans.go — compile error: codegen finalize method value

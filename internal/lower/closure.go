@@ -241,7 +241,9 @@ func (fl *funcLower) planCaptures(free []types.Object) ([]captureInfo, error) {
 		}
 		// Capture by reference when the variable is assigned (or address-taken)
 		// in the enclosing function; otherwise capture by value.
-		byRef := fl.pkg.varNeedsCell(obj)
+		// Range iteration variables are per-iteration in Go 1.22+: capture by
+		// value so each closure records that iteration's value (not a shared cell).
+		byRef := fl.pkg.varNeedsCell(obj) && !fl.rangeIterVars[obj]
 		c := captureInfo{
 			obj:  obj,
 			name: "c_" + obj.Name(),
@@ -382,6 +384,7 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 
 	// Bind captures from clos fields into locals (or cell locals).
 	var preamble []ir.Stmt
+	captureBound := map[*ir.Var]bool{}
 	closTyped := ir.Expr(child.useVar(closParam))
 	if closName != closBaseName {
 		closTyped = &ir.Instr{
@@ -402,11 +405,13 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			child.vars[c.obj] = v
 			child.cells[c.obj] = v
 			child.extraLocals = append(child.extraLocals, v)
+			captureBound[v] = true
 			preamble = append(preamble, &ir.VarDef{Var: v}, child.assignVar(v, fieldGet))
 		} else {
 			v := &ir.Var{Name: c.obj.Name(), Typ: c.typ}
 			child.vars[c.obj] = v
 			child.extraLocals = append(child.extraLocals, v)
+			captureBound[v] = true
 			preamble = append(preamble, &ir.VarDef{Var: v}, child.assignVar(v, fieldGet))
 		}
 	}
@@ -500,7 +505,13 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 		}
 	}
 	// Zero-init non-defaultable refs and Go value zeros; *T stays null.
+	// Skip capture-bound locals — they were already loaded from the clos
+	// fields above; re-zeroing would wipe by-value captures (e.g. range
+	// iteration structs closed over by func literals).
 	for _, v := range append(child.namedResults, child.extraLocals...) {
+		if captureBound[v] {
+			continue
+		}
 		if r, ok := v.Typ.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.cell.") {
 			continue
 		}
@@ -581,6 +592,9 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 			// Skip when vars[obj] is the cell itself (nested closure child that
 			// already bound the capture as a cell local — syncing would write
 			// the cell ref into field v).
+			// Also skip inside loops: the sync IR would re-run every iteration and
+			// clobber cell updates from earlier closures in the same iteration
+			// (e.g. `for a[func(){ q++ }()] = range … { g = func(){ return q } }`).
 			if v := fl.vars[c.obj]; v != nil && v != cv && fl.plainDirty[c.obj] {
 				cellTy := cv.Typ.(*ir.Ref).Named
 				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
@@ -1100,6 +1114,18 @@ func (fl *funcLower) markAssigned(obj types.Object) {
 	fl.pkg.meta.cellVars[obj] = true
 }
 
+// markRangeIterVar records a for/range key or value for Go 1.22 per-iteration
+// capture-by-value (see planCaptures).
+func (fl *funcLower) markRangeIterVar(obj types.Object) {
+	if obj == nil {
+		return
+	}
+	if fl.rangeIterVars == nil {
+		fl.rangeIterVars = map[types.Object]bool{}
+	}
+	fl.rangeIterVars[obj] = true
+}
+
 // markPlainDirty records that obj was written via the plain local (not a cell).
 func (fl *funcLower) markPlainDirty(obj types.Object) {
 	if obj == nil {
@@ -1151,3 +1177,20 @@ func (fl *funcLower) writeVar(obj types.Object, rhs ir.Expr) ([]ir.Stmt, error) 
 	}
 	return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 }
+
+// assignLocalSync writes rhs into a range/loop local, updating the capture cell
+// when one exists (so assign-form `for i = range` closures see later iterations).
+func (fl *funcLower) assignLocalSync(obj types.Object, v *ir.Var, rhs ir.Expr) []ir.Stmt {
+	if obj != nil && fl.cells != nil {
+		if _, ok := fl.cells[obj]; ok {
+			if stmts, err := fl.writeVar(obj, rhs); err == nil {
+				return stmts
+			}
+		}
+	}
+	if obj != nil {
+		fl.markPlainDirty(obj)
+	}
+	return []ir.Stmt{fl.assignVar(v, rhs)}
+}
+

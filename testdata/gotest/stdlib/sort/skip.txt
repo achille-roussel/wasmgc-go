@@ -12,7 +12,6 @@ TestReverseRange — sort tables / pdqsort / exhaustive / stable paths
 TestReverseSortIntSlice — sort tables / pdqsort / exhaustive / stable paths
 TestSearchEfficiency — sort tables / pdqsort / exhaustive / stable paths
 TestSearchExhaustive — sort tables / pdqsort / exhaustive / stable paths
-TestSearchWrappersDontAlloc — sort tables / pdqsort / exhaustive / stable paths
 TestSlice — sort tables / pdqsort / exhaustive / stable paths
 TestSortBM — sort tables / pdqsort / exhaustive / stable paths
 TestSortFloat64Slice — sort tables / pdqsort / exhaustive / stable paths

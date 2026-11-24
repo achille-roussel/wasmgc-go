@@ -6,9 +6,9 @@ suite passes, **646** skip-listed; stdlib packages green with **~1038** per-test
 skips. Priority: functionality first, size later. JSPI always required; CI on
 Node 26.13.1.
 
-**Current (this PR):** `$GOROOT/test` **~682** pass / **344** skip-listed; stdlib
-per-test **431** (array `==`, `*[N]byte` star-assign copy, int `/` panic, bits Div panics).
-per-test **437** (nil-slice Len + struct-array zero + array reflect).
+**Current (this PR):** `$GOROOT/test` **~704** pass / **322** skip-listed; stdlib
+per-test **425** (range assign-form + parallel assign + int truncate/print +
+named-result defer sync; bytes IndexAny; sort SearchWrappers; bits Reverse/Rotate).
 
 Auto-skipped `$GOROOT/test` actions (`errorcheck*`, `compile*`, `rundir`,
 `asmcheck`, …) and build-tag exclusions are **not** in `skip.txt` (M10 reported
@@ -27,21 +27,21 @@ only.
 Do not add new skips without a one-line reason. Growing `$GOROOT/test` `skip.txt`
 fails CI unless `skip_bump.txt` justifies it.
 
-Batch PRs: base on latest `main`, unskip roughly **≥15** verified PASSes (or clear
+Batch PRs: base on latest `main`, unskip roughly **≥25** verified PASSes (or clear
 a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 1. `$GOROOT/test` — 344 skips (was 646 at M10)
+## 1. `$GOROOT/test` — 322 skips (was 646 at M10)
 
 ### By major category (current)
 
 | Category | Count | Fixability | Notes |
 |---:|---:|---|---|
 | Compile gaps (lower/load/IR) | ~119 | **fixable** | IR verify, typecheck, other compile |
-| Runtime panic / trap | ~119 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
-| Output / failed-run mismatch | ~78 | **fixable** | Often panic text, stack traces, print/ABI |
-| Codegen / Wasm validate | ~38 | **fixable** | `codegen:` + wasm validate/compile; −15 this PR |
+| Runtime panic / trap | ~115 | **fixable** | Wrong panic, nil deref, illegal cast, hang/timeout |
+| Output / failed-run mismatch | ~65 | **fixable** | Often panic text, stack traces, print/ABI |
+| Codegen / Wasm validate | ~38 | **fixable** | `codegen:` + wasm validate/compile |
 | Unsupported: unsafe | 41 | **by design** | `uintptr`↔`Pointer`, rejected ops |
 | Other / mono | ~5 | mixed | |
 | Missing stdlib import | 4 | **fixable** (overlays) | |
@@ -53,7 +53,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 ---
 
-## 2. Stdlib per-test skips — **431** (was ~1038 at M10)
+## 2. Stdlib per-test skips — **425** (was ~1038 at M10)
 
 | Package | Skips | Dominant root cause | Fixability |
 |---|---:|---|---|
@@ -61,11 +61,11 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | time | 145 | Thin rewrite vs `export_test` / zoneinfo | Overlay depth |
 | fmt | 31 | scan/regexp + tables/reflect | Fixable |
 | slices | **30** | Insert/Delete/Replace generics; iter+rand/v2 | Was 54 |
-| sort | 26 | Tables / pdqsort / stable; needs `math/rand/v2` in tests | Runtime |
-| math/bits | **5** | Reverse/RotateLeft + Add/Sub64 overflow recover | Was 11 |
-| bytes | **9** | Remaining validate + IndexAny/Split/Repeat | Was 80 |
+| sort | **25** | Tables / pdqsort / stable; needs `math/rand/v2` in tests | Runtime |
 | strings | **14** | Compare IR; Builder/Map leftovers | Was 61 |
+| bytes | **7** | Remaining validate + Split/Repeat | Was 80 |
 | errors | 2 | `Is`/`AsType` leftovers | **Fixable** |
+| math/bits | **2** | Add/Sub64 overflow recover illegal cast | Was 11 |
 | strconv | 1 | ParseComplex | complex reflect |
 | maps | 1 | `Clone` large keys / `-0` | Overlay |
 | container/heap | **0** | — | **done** |
@@ -79,7 +79,7 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 1. **json / time** — http stubs, export_test, zoneinfo depth.
 2. **fmt** scan_test / regexp IR; shared `fmtTests`.
 3. **slices** Insert/Delete/Replace unsubstituted type params; `math/rand/v2`.
-4. **bytes** IndexAny / Split / validate leftovers.
+4. **errors.TestIs** — Go 1.22 per-iter value capture (by-value range iter) without breaking `TestAs`.
 5. GOROOT compile / wasm-validate buckets.
 
 ---
@@ -91,7 +91,8 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 | Through #49 | GOROOT + fmt/math/TypeKey | **done** (~607/419; stdlib 612) |
 | #50 bytes/strings/slices | testenv/B/atomic/rand | **done** (−112 →500) |
 | #55 array/reflect Len/Index | **done** (−23 →354; stdlib 437) |
-| array `==` + Div panic + bits Div | **this PR** | −16 (~682/344; stdlib 431) |
+| #56 array `==` + Div panic | **done** (−16 →344; stdlib 431) |
+| range assign-form + parallel assign | **this PR** | −22 GOROOT + 6 stdlib →322 / 425 |
 | fmt scan/regexp + json/time | stdlib | next |
 | GOROOT compile/runtime buckets | GOROOT | −15+ each batch |
 
@@ -117,7 +118,5 @@ a whole root-cause bucket), report `$GOROOT/test` and stdlib totals vs M10.
 
 | Layer | Pass | Skip |
 |---|---:|---:|
-| `$GOROOT/test` | **~682** | **344** |
-| Stdlib per-test | — | **431** |
-
-Update this section when a burn-down PR lands.
+| `$GOROOT/test` | **~704** | **322** |
+| Stdlib per-test | — | **425** |
