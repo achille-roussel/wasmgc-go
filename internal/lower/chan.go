@@ -128,9 +128,17 @@ func (fl *funcLower) multiAssignRecv(s *ast.AssignStmt, recv *ast.UnaryExpr, out
 		return nil, err
 	}
 	out = append(out, stmts...)
-	valTy, err := fl.lhsType(s.Lhs[0])
-	if err != nil {
-		return nil, err
+	elemGo := chanElem(chTy)
+	// Recv into a concrete element temp (not the LHS type). When LHS is
+	// interface{}, expandChanRecv would otherwise treat a closed/empty
+	// receive as a nil iface; Go requires a typed zero boxed into the
+	// interface (typeparam/mdempsky/18).
+	valTy, err := fl.mapType(elemGo)
+	if err != nil || valTy == nil {
+		valTy, err = fl.lhsType(s.Lhs[0])
+		if err != nil {
+			return nil, err
+		}
 	}
 	ex := &ir.Instr{
 		Op:   ir.OpChanRecv,
@@ -138,9 +146,9 @@ func (fl *funcLower) multiAssignRecv(s *ast.AssignStmt, recv *ast.UnaryExpr, out
 		Str:  "ok",
 		Args: []ir.Expr{ch},
 	}
-	if elem := chanElem(chTy); elem != nil {
-		ex.Global = desc.TypeKey(elem)
-		ex.Field = boxKind(elem)
+	if elemGo != nil {
+		ex.Global = desc.TypeKey(elemGo)
+		ex.Field = boxKind(elemGo)
 	}
 	vt := fl.newTemp(valTy)
 	ot := fl.newTemp(ir.TypeI32)
@@ -151,11 +159,11 @@ func (fl *funcLower) multiAssignRecv(s *ast.AssignStmt, recv *ast.UnaryExpr, out
 		},
 		Rhs: ex,
 	})
-	as0, err := fl.assignTo(s.Lhs[0], fl.useTemp(vt))
+	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), elemGo)
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignTo(s.Lhs[1], fl.useTemp(ot))
+	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
 	if err != nil {
 		return nil, err
 	}
@@ -363,29 +371,58 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 					Args: []ir.Expr{fl.useVar(recvIface)},
 				}})
 			} else {
-				valTy, err := fl.lhsType(lhs0)
-				if err != nil {
-					return nil, err
-				}
 				elemGo := chanElem(fl.typeOf(meta.recvExpr.X))
-				assert := &ir.Instr{
-					Op:    ir.OpIfaceAssert,
-					Type:  valTy,
-					Field: boxKind(elemGo),
-					Str:   "concrete",
-					Args:  []ir.Expr{fl.useVar(recvIface)},
+				dstGo := fl.typeOf(lhs0)
+				if dstGo != nil && isIface(dstGo) && elemGo != nil && !isIface(elemGo) {
+					// Interface LHS: selectGo returns nil iface on closed recv,
+					// but Go wants a typed zero. Start with boxed zero; overwrite
+					// with the runtime iface when the receive succeeded.
+					elemIR, err := fl.mapType(elemGo)
+					if err != nil {
+						return nil, err
+					}
+					z, err := fl.zeroValue(elemIR)
+					if err != nil {
+						return nil, err
+					}
+					as0, err := fl.assignTo(lhs0, fl.boxIRToIface(z, elemGo, dstGo))
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, as0...)
+					asOK, err := fl.assignTo(lhs0, fl.useVar(recvIface))
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, &ir.If{
+						Cond: fl.useVar(recvOK),
+						Then: &ir.Seq{Stmts: asOK},
+						Else: &ir.Seq{},
+					})
+				} else {
+					valTy, err := fl.lhsType(lhs0)
+					if err != nil {
+						return nil, err
+					}
+					assert := &ir.Instr{
+						Op:    ir.OpIfaceAssert,
+						Type:  valTy,
+						Field: boxKind(elemGo),
+						Str:   "concrete",
+						Args:  []ir.Expr{fl.useVar(recvIface)},
+					}
+					if elemGo != nil {
+						assert.Global = desc.TypeKey(elemGo)
+					}
+					as0, err := fl.assignTo(lhs0, assert)
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, as0...)
 				}
-				if elemGo != nil {
-					assert.Global = desc.TypeKey(elemGo)
-				}
-				as0, err := fl.assignTo(lhs0, assert)
-				if err != nil {
-					return nil, err
-				}
-				body.Stmts = append(body.Stmts, as0...)
 			}
 			if meta.recvOk {
-				as1, err := fl.assignTo(meta.assign.Lhs[1], fl.useVar(recvOK))
+				as1, err := fl.assignToMaybeBox(meta.assign.Lhs[1], fl.useVar(recvOK), types.Typ[types.Bool])
 				if err != nil {
 					return nil, err
 				}

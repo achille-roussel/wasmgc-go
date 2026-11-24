@@ -2552,9 +2552,31 @@ func (fl *funcLower) resolveMethodCallee(e *ast.CallExpr, fun *ast.SelectorExpr)
 	}
 	// After mono subst, type-param receivers become concrete while the
 	// selection still names the constraint method — call the implementation.
-	if recvTy := fl.typeOf(fun.X); recvTy != nil {
+	recvTy := fl.typeOf(fun.X)
+	if recvTy != nil {
 		if m := concreteMethod(recvTy, fn); m != nil {
 			fn = m
+		}
+	}
+	if fl.pkg != nil && fl.pkg.mono != nil {
+		origin := fn.Origin()
+		if origin == nil {
+			origin = fn
+		}
+		if methodNeedsMono(origin) {
+			recv := fn.Type().(*types.Signature).Recv().Type()
+			if len(fl.pkg.subst) > 0 {
+				recv = fl.pkg.subst.Apply(recv)
+			}
+			if recvTy != nil {
+				// Prefer the concrete receiver after subst (Ledger[string,int]).
+				if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 {
+					recv = recvTy
+				}
+			}
+			if _, err := fl.pkg.mono.EnsureMethod(origin, recv); err != nil {
+				return "", nil, fl.errorf(fun, "%v", err)
+			}
 		}
 	}
 	sig := fn.Type().(*types.Signature)

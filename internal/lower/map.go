@@ -137,11 +137,11 @@ func (fl *funcLower) mapIndexCommaOk(s *ast.AssignStmt, e *ast.IndexExpr, out []
 		},
 		Rhs: in,
 	})
-	as0, err := fl.assignTo(s.Lhs[0], fl.useTemp(vt))
+	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), elemT)
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignTo(s.Lhs[1], fl.useTemp(ot))
+	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
 	if err != nil {
 		return nil, err
 	}
@@ -454,12 +454,23 @@ func (fl *funcLower) rangeMapStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 		Cond:  &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useTemp(okTmp)}},
 	})
 	if keyVar != nil {
-		ub := fl.mapUnbox(fl.useTemp(kTmp), keyIR, keyT)
-		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, ub))
+		keyGo := fl.goTypeOfLocal(keyVar)
+		if keyGo != nil && isIface(keyGo) && !isTypeParam(keyGo) {
+			// MapNext already yields iface; keep it when ranging into any/iface.
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, fl.useTemp(kTmp)))
+		} else {
+			ub := fl.mapUnbox(fl.useTemp(kTmp), keyIR, keyT)
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, ub))
+		}
 	}
 	if valVar != nil {
-		ub := fl.mapUnbox(fl.useTemp(vTmp), valIR, elemT)
-		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, ub))
+		valGo := fl.goTypeOfLocal(valVar)
+		if valGo != nil && isIface(valGo) && !isTypeParam(valGo) {
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, fl.useTemp(vTmp)))
+		} else {
+			ub := fl.mapUnbox(fl.useTemp(vTmp), valIR, elemT)
+			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, ub))
+		}
 	}
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {

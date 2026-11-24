@@ -915,6 +915,25 @@ func arrayElemType(t types.Type) types.Type {
 	return nil
 }
 
+// rangeElemType is the element type of a slice, array, or *[N]T range expression.
+func rangeElemType(t types.Type) types.Type {
+	if t == nil {
+		return nil
+	}
+	u := types.Unalias(t).Underlying()
+	switch u := u.(type) {
+	case *types.Slice:
+		return u.Elem()
+	case *types.Array:
+		return u.Elem()
+	case *types.Pointer:
+		if a, ok := types.Unalias(u.Elem()).Underlying().(*types.Array); ok {
+			return a.Elem()
+		}
+	}
+	return nil
+}
+
 func isStruct(t types.Type) bool {
 	t = types.Unalias(t)
 	_, ok := t.Underlying().(*types.Struct)

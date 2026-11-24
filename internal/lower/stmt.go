@@ -475,7 +475,16 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 		if i < len(srcGos) {
 			srcGo = srcGos[i]
 		}
-		if dstGo != nil && isIface(dstGo) && srcGo != nil && !isIface(srcGo) {
+		if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			if dstGo != nil {
+				dstGo = fl.pkg.subst.Apply(dstGo)
+			}
+			if srcGo != nil {
+				srcGo = fl.pkg.subst.Apply(srcGo)
+			}
+		}
+		if dstGo != nil && isIface(dstGo) && !isTypeParam(dstGo) &&
+			srcGo != nil && !isIface(srcGo) && !isTypeParam(srcGo) {
 			ex = fl.boxIRToIface(ex, srcGo, dstGo)
 		}
 		as, err := fl.assignTo(s.Lhs[i], ex)
@@ -792,11 +801,12 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 		},
 		Rhs: ex,
 	})
-	as0, err := fl.assignTo(s.Lhs[0], fl.useTemp(vt))
+	assertGo := fl.typeOf(ta.Type)
+	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), assertGo)
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignTo(s.Lhs[1], fl.useTemp(ot))
+	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
 	if err != nil {
 		return nil, err
 	}
@@ -1053,8 +1063,19 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 			if fl.sig != nil && i < fl.sig.Results().Len() {
 				dstGo = fl.sig.Results().At(i).Type()
 			}
-			if dstGo != nil && isIface(dstGo) && i < len(srcGos) && srcGos[i] != nil && !isIface(srcGos[i]) {
-				boxed := fl.boxIRToIface(ex, srcGos[i], dstGo)
+			if fl.pkg != nil && len(fl.pkg.subst) > 0 && dstGo != nil {
+				dstGo = fl.pkg.subst.Apply(dstGo)
+			}
+			srcGi := types.Type(nil)
+			if i < len(srcGos) {
+				srcGi = srcGos[i]
+				if fl.pkg != nil && len(fl.pkg.subst) > 0 && srcGi != nil {
+					srcGi = fl.pkg.subst.Apply(srcGi)
+				}
+			}
+			if dstGo != nil && isIface(dstGo) && !isTypeParam(dstGo) &&
+				srcGi != nil && !isIface(srcGi) && !isTypeParam(srcGi) {
+				boxed := fl.boxIRToIface(ex, srcGi, dstGo)
 				nt := fl.newTemp(typeIface)
 				stmts = append(stmts, fl.assignTemp(nt, boxed))
 				ex = fl.useTemp(nt)
@@ -1300,11 +1321,30 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	i := fl.newVar("ri", ir.TypeI32)
 	out = append(out, fl.assignVar(i, fl.i32const(0)))
 
-	// Bind range vars if present.
+	// Bind range vars if present. := keys can alias the index local when the
+	// key is a plain int; assign-form / iface keys need an explicit write each
+	// iteration (with boxing when ranging into any/iface).
+	var keyVar *ir.Var
+	keyAliasIndex := false
 	if s.Key != nil {
 		if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
 			if keyObj := fl.info.Defs[id]; keyObj != nil {
-				fl.vars[keyObj] = i
+				keyGo := keyObj.Type()
+				if len(fl.pkg.subst) > 0 {
+					keyGo = fl.pkg.subst.Apply(keyGo)
+				}
+				if keyGo != nil && !isIface(keyGo) {
+					fl.vars[keyObj] = i
+					keyAliasIndex = true
+				}
+			}
+			if !keyAliasIndex {
+				v, defs, err := fl.defineLocal(id)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, defs...)
+				keyVar = v
 			}
 		}
 	}
@@ -1347,23 +1387,36 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 		Label: breakL,
 		Cond:  &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{fl.useVar(i), fl.useVar(lenV)}},
 	})
+	if keyVar != nil {
+		// Index is i32; box when the range key is any/iface.
+		keyEx := ir.Expr(fl.useVar(i))
+		if keyGo := fl.goTypeOfLocal(keyVar); keyGo != nil && isIface(keyGo) && !isTypeParam(keyGo) {
+			keyEx = fl.boxIRToIface(keyEx, types.Typ[types.Int], keyGo)
+		}
+		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(keyVar, keyEx))
+	}
 	if valVar != nil {
+		elemGo := rangeElemType(xType)
+		elemIR, _ := fl.mapType(elemGo)
+		if elemIR == nil {
+			elemIR = valVar.Typ
+		}
 		var elem ir.Expr
 		if isArray(xType) || isPtrToArray(xType) {
 			// Match indexExpr: array.get / array.get_u for [N]byte etc.
 			arrName := ""
-			elemT := xType
+			arrT := xType
 			if isPtrToArray(xType) {
 				if p, ok := types.Unalias(xType).Underlying().(*types.Pointer); ok {
-					elemT = p.Elem()
+					arrT = p.Elem()
 				}
 			}
-			if irt, err := fl.mapType(elemT); err == nil {
+			if irt, err := fl.mapType(arrT); err == nil {
 				if r, ok := irt.(*ir.Ref); ok {
 					arrName = r.Named
 				}
 			}
-			at := valVar.Typ
+			at := elemIR
 			if arrName != "" {
 				at = &ir.Ref{Named: arrName}
 			}
@@ -1372,7 +1425,7 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 			case "$go.bytes":
 				op = ir.OpArrayGetU
 			case "$go.i16s":
-				if et := arrayElemType(elemT); et != nil && isUnsigned(et) {
+				if et := arrayElemType(arrT); et != nil && isUnsigned(et) {
 					op = ir.OpArrayGetU
 				} else {
 					op = ir.OpArrayGetS
@@ -1380,7 +1433,11 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 			}
 			elem = &ir.Instr{Op: op, Type: at, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
 		} else {
-			elem = &ir.Instr{Op: ir.OpSliceGet, Type: valVar.Typ, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+			elem = &ir.Instr{Op: ir.OpSliceGet, Type: elemIR, Args: []ir.Expr{fl.useVar(xv), fl.useVar(i)}}
+		}
+		if valGo := fl.goTypeOfLocal(valVar); valGo != nil && isIface(valGo) && !isTypeParam(valGo) &&
+			elemGo != nil && !isIface(elemGo) && !isTypeParam(elemGo) {
+			elem = fl.boxIRToIface(elem, elemGo, valGo)
 		}
 		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
 	}
@@ -2458,6 +2515,9 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 				}
 			} else if len(cc.List) == 0 {
 				caseTy = fl.typeOf(tagExpr) // default: interface type
+			} else {
+				// Multi-type case (case T1, T2:): bind as the switch interface.
+				caseTy = fl.typeOf(tagExpr)
 			}
 			if caseTy != nil && caseTy != types.Typ[types.UntypedNil] {
 				irTy, err := fl.mapType(caseTy)
