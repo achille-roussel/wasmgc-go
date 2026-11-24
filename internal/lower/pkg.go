@@ -640,12 +640,12 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		}
 	}
 
-	// Clone by-value struct params/receivers when the callee assigns a field
-	// (docs/design/03): caller must not observe the write.
+	// Clone by-value array/struct params/receivers when the callee mutates
+	// them (docs/design/03): caller must not observe the write.
 	var clones []ir.Stmt
 	for i := 0; i < fl.sig.Params().Len(); i++ {
 		p := fl.sig.Params().At(i)
-		if isPointer(p.Type()) || !isStruct(p.Type()) {
+		if isPointer(p.Type()) || !needsValueClone(p.Type()) {
 			continue
 		}
 		if !fl.paramFieldAssigned(p, fd.Body) {
@@ -657,7 +657,7 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 		}
 		clones = append(clones, clone...)
 	}
-	if recv := fl.sig.Recv(); recv != nil && !isPointer(recv.Type()) && isStruct(recv.Type()) {
+	if recv := fl.sig.Recv(); recv != nil && !isPointer(recv.Type()) && needsValueClone(recv.Type()) {
 		if fl.paramFieldAssigned(recv, fd.Body) {
 			clone, err := fl.cloneStruct(fl.vars[recv])
 			if err != nil {
@@ -973,6 +973,14 @@ func (fl *funcLower) assignsFieldOf(lhs ast.Expr, obj types.Object) bool {
 			}
 		}
 		return fl.assignsFieldOf(lhs.X, obj)
+	case *ast.IndexExpr:
+		// a[i] = … mutates by-value array (or nested array field) param a.
+		if id, ok := lhs.X.(*ast.Ident); ok {
+			if fl.info.Uses[id] == obj || fl.info.Defs[id] == obj {
+				return true
+			}
+		}
+		return fl.assignsFieldOf(lhs.X, obj)
 	case *ast.ParenExpr:
 		return fl.assignsFieldOf(lhs.X, obj)
 	}
@@ -980,25 +988,199 @@ func (fl *funcLower) assignsFieldOf(lhs ast.Expr, obj types.Object) bool {
 }
 
 func (fl *funcLower) cloneStruct(v *ir.Var) ([]ir.Stmt, error) {
-	name := refTypeName(v.Typ)
+	// Deep-clone into a fresh object, then reseat the local (docs/design/03).
+	var gt types.Type
+	for obj, iv := range fl.vars {
+		if iv == v {
+			gt = obj.Type()
+			break
+		}
+	}
+	if gt == nil || !needsValueClone(gt) {
+		// Fallback: shallow field copy (legacy path for IR-only vars).
+		name := refTypeName(v.Typ)
+		td := fl.mod.LookupType(name)
+		if td == nil {
+			return nil, fmt.Errorf("clone: unknown type %s", name)
+		}
+		var args []ir.Expr
+		for _, f := range td.Fields {
+			args = append(args, &ir.Instr{
+				Op:    ir.OpStructGet,
+				Type:  &ir.Ref{Named: name},
+				Field: f.Name,
+				Args:  []ir.Expr{fl.useVar(v)},
+			})
+		}
+		return []ir.Stmt{fl.assignVar(v, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: name},
+			Args: args,
+		})}, nil
+	}
+	cloned, stmts, err := fl.cloneValue(fl.useVar(v), gt)
+	if err != nil {
+		return nil, err
+	}
+	return append(stmts, fl.assignVar(v, cloned)), nil
+}
+
+// needsValueClone reports whether assigning a value of t must allocate a fresh
+// object (array/struct values). Pointers, slices, maps, chans, ifaces stay shared.
+func needsValueClone(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch types.Unalias(t).Underlying().(type) {
+	case *types.Array, *types.Struct:
+		return true
+	default:
+		return false
+	}
+}
+
+// isFreshValueAlloc reports RHS expressions that already allocate a unique
+// array/struct object (composite lit, struct.new, array.new*). Cloning those
+// again is redundant.
+func isFreshValueAlloc(ex ir.Expr) bool {
+	in, ok := ex.(*ir.Instr)
+	if !ok {
+		return false
+	}
+	switch in.Op {
+	case ir.OpStructNew, ir.OpArrayNew, ir.OpArrayNewDefault, ir.OpArrayNewFixed, ir.OpArrayNewData, ir.OpLiteral:
+		return true
+	default:
+		return false
+	}
+}
+
+// cloneValue returns a deep copy of an array or struct value (docs/design/03).
+func (fl *funcLower) cloneValue(src ir.Expr, goTy types.Type) (ir.Expr, []ir.Stmt, error) {
+	if goTy == nil {
+		return src, nil, nil
+	}
+	goTy = types.Unalias(goTy)
+	switch u := goTy.Underlying().(type) {
+	case *types.Array:
+		return fl.cloneArrayValue(src, goTy, u)
+	case *types.Struct:
+		return fl.cloneStructValue(src, goTy)
+	default:
+		return src, nil, nil
+	}
+}
+
+func (fl *funcLower) cloneStructValue(src ir.Expr, goTy types.Type) (ir.Expr, []ir.Stmt, error) {
+	irTy, err := fl.mapType(goTy)
+	if err != nil {
+		return nil, nil, err
+	}
+	name := refTypeName(irTy)
 	td := fl.mod.LookupType(name)
 	if td == nil {
-		return nil, fmt.Errorf("clone: unknown type %s", name)
+		return nil, nil, fmt.Errorf("clone: unknown type %s", name)
+	}
+	st, _ := goTy.Underlying().(*types.Struct)
+	srcT := fl.newTemp(irTy)
+	stmts := []ir.Stmt{fl.assignTemp(srcT, src)}
+	// IR fields are Go fields with zero-size skipped (structFields), same order.
+	var goFields []*types.Var
+	if st != nil {
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			if isZeroSize(f.Type()) {
+				continue
+			}
+			goFields = append(goFields, f)
+		}
+	}
+	if len(goFields) != len(td.Fields) {
+		return nil, nil, fmt.Errorf("clone: field count mismatch for %s (go=%d ir=%d)", name, len(goFields), len(td.Fields))
 	}
 	var args []ir.Expr
-	for _, f := range td.Fields {
-		args = append(args, &ir.Instr{
+	for i, f := range td.Fields {
+		get := &ir.Instr{
 			Op:    ir.OpStructGet,
 			Type:  &ir.Ref{Named: name},
 			Field: f.Name,
-			Args:  []ir.Expr{fl.useVar(v)},
-		})
+			Args:  []ir.Expr{fl.useTemp(srcT)},
+		}
+		arg := ir.Expr(get)
+		if needsValueClone(goFields[i].Type()) {
+			cloned, pre, err := fl.cloneValue(get, goFields[i].Type())
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, pre...)
+			arg = cloned
+		}
+		args = append(args, arg)
 	}
-	return []ir.Stmt{fl.assignVar(v, &ir.Instr{
+	dst := fl.newTemp(irTy)
+	stmts = append(stmts, fl.assignTemp(dst, &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: name},
 		Args: args,
-	})}, nil
+	}))
+	return fl.useTemp(dst), stmts, nil
+}
+
+func (fl *funcLower) cloneArrayValue(src ir.Expr, goTy types.Type, arr *types.Array) (ir.Expr, []ir.Stmt, error) {
+	arrIR, err := fl.mapType(goTy)
+	if err != nil {
+		return nil, nil, err
+	}
+	r, ok := arrIR.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return nil, nil, fmt.Errorf("clone: bad array type for %s", goTy)
+	}
+	if _, _, err := fl.pkg.ensureArrayType(arr.Elem()); err != nil {
+		return nil, nil, err
+	}
+	n := arr.Len()
+	srcT := fl.newTemp(arrIR)
+	dstT := fl.newTemp(arrIR)
+	stmts := []ir.Stmt{fl.assignTemp(srcT, src)}
+	if z, ok := fl.goZeroValue(goTy, arrIR); ok {
+		stmts = append(stmts, fl.assignTemp(dstT, z))
+	} else {
+		stmts = append(stmts, fl.assignTemp(dstT, &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: &ir.Ref{Named: r.Named},
+			Args: []ir.Expr{fl.i32const(n)},
+		}))
+	}
+	if needsValueClone(arr.Elem()) {
+		// Element-wise deep clone (array.copy would share nested value refs).
+		for i := int64(0); i < n; i++ {
+			get := &ir.Instr{
+				Op:   ir.OpArrayGet,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{fl.useTemp(srcT), fl.i32const(i)},
+			}
+			cloned, pre, err := fl.cloneValue(get, arr.Elem())
+			if err != nil {
+				return nil, nil, err
+			}
+			stmts = append(stmts, pre...)
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op:   ir.OpArraySet,
+				Type: &ir.Ref{Named: r.Named},
+				Args: []ir.Expr{fl.useTemp(dstT), fl.i32const(i), cloned},
+			}})
+		}
+	} else {
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpArrayCopy, Type: arrIR, Type2: arrIR,
+			Args: []ir.Expr{
+				fl.useTemp(dstT), fl.i32const(0),
+				fl.useTemp(srcT), fl.i32const(0),
+				fl.i32const(n),
+			},
+		}})
+	}
+	return fl.useTemp(dstT), stmts, nil
 }
 
 func endsWithReturn(s *ir.Seq) bool {

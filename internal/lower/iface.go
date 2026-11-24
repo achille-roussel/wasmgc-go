@@ -700,13 +700,7 @@ func (fl *funcLower) structCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, 
 		return nil, nil, err
 	}
 	stmts := append(xstmts, ystmts...)
-	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
-	typeKey := desc.TypeKey(xt)
-	eqName := "$go.eq." + desc.Sanitize(typeKey)
-	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Global: typeKey, Args: []ir.Expr{
-		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
-		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
-	}}
+	eq := fl.valueEqCall(xt, x, y)
 	if op == token.NEQ {
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
@@ -735,17 +729,23 @@ func (fl *funcLower) arrayCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, [
 		return nil, nil, err
 	}
 	stmts := append(xstmts, ystmts...)
-	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
-	typeKey := desc.TypeKey(xt)
-	eqName := "$go.eq." + desc.Sanitize(typeKey)
-	eq := &ir.Instr{Op: ir.OpCall, Func: eqName, Global: typeKey, Args: []ir.Expr{
-		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
-		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
-	}}
+	eq := fl.valueEqCall(xt, x, y)
 	if op == token.NEQ {
 		return &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{eq}}, stmts, nil
 	}
 	return eq, stmts, nil
+}
+
+// valueEqCall returns i32 equality of two already-lowered values of goTy
+// (array/struct via $go.eq.*, not ref identity). Used by == and switch cases.
+func (fl *funcLower) valueEqCall(goTy types.Type, x, y ir.Expr) ir.Expr {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	typeKey := desc.TypeKey(goTy)
+	eqName := "$go.eq." + desc.Sanitize(typeKey)
+	return &ir.Instr{Op: ir.OpCall, Func: eqName, Global: typeKey, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{x}},
+		&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{y}},
+	}}
 }
 
 func structHasComparableField(st *types.Struct) bool {

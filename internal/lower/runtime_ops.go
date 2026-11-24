@@ -297,7 +297,8 @@ func (rt *runtimeLower) rewriteExpr(e ir.Expr, n *int) (ir.Expr, []ir.Stmt, erro
 	switch e := e.(type) {
 	case *ir.Const:
 		if e.Op == ir.OpStringLit {
-			t := &ir.Temp{Name: fmt.Sprintf("%%str%d", *n), Typ: &ir.Ref{Named: "$go.string"}}
+			t := &ir.Temp{Typ: &ir.Ref{Named: "$go.string"}}
+			t.Name = fmt.Sprintf("%%str_%p", t)
 			*n++
 			assign := &ir.Assign{Lhs: []ir.Dest{{Temp: t, Name: t.Name}}, Rhs: e}
 			stmts, err := expandStringAssign(rt.mod, assign, e.Str, n)
@@ -309,7 +310,8 @@ func (rt *runtimeLower) rewriteExpr(e ir.Expr, n *int) (ir.Expr, []ir.Stmt, erro
 		return e, nil, nil
 	case *ir.Instr:
 		if e.Op == ir.OpStringLit {
-			t := &ir.Temp{Name: fmt.Sprintf("%%str%d", *n), Typ: &ir.Ref{Named: "$go.string"}}
+			t := &ir.Temp{Typ: &ir.Ref{Named: "$go.string"}}
+			t.Name = fmt.Sprintf("%%str_%p", t)
 			*n++
 			assign := &ir.Assign{Lhs: []ir.Dest{{Temp: t, Name: t.Name}}, Rhs: e}
 			stmts, err := expandStringAssign(rt.mod, assign, e.Str, n)
@@ -2121,35 +2123,64 @@ func (rt *runtimeLower) ensureAccessor(container, field, kind string, isGet bool
 	return name
 }
 
+func ensureEmptyBytesGlobal(m *ir.Module) {
+	const gname = "$go.emptyBytes"
+	if m.LookupGlobal(gname) != nil {
+		return
+	}
+	m.Globals = append(m.Globals, &ir.Global{
+		Name: gname,
+		Typ:  &ir.Ref{Named: "$go.bytes"},
+		Mut:  false,
+		Init: &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: &ir.Ref{Named: "$go.bytes"},
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}},
+		},
+	})
+}
+
 func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.Stmt, error) {
 	if len(s.Lhs) != 1 {
 		return nil, fmt.Errorf("string literal assign wants 1 lhs")
 	}
-	// Use module-wide unique names: a second RuntimeOps pass (after Ensure*)
-	// must not reuse $lit0… and clobber earlier string data (e.g. "main" →
-	// "runtime error: …" printing as "runt").
-	litName := fmt.Sprintf("$lit%d", len(m.Data))
-	if n != nil {
-		*n = len(m.Data) + 1
-	}
-	m.Data = append(m.Data, &ir.Data{Name: litName, Bytes: []byte(str)})
+	// Unique temp names via pointer identity (empty strings do not append Data,
+	// so len(m.Data)-based counters would collide).
+	dataT := &ir.Temp{Typ: &ir.Ref{Named: "$go.bytes"}}
+	dataT.Name = fmt.Sprintf("%%strdata_%p", dataT)
 
-	dataTemp := fmt.Sprintf("%%strdata%d", *n)
-	dataT := &ir.Temp{Name: dataTemp, Typ: &ir.Ref{Named: "$go.bytes"}}
-
-	mkData := &ir.Assign{
-		Lhs: []ir.Dest{{Temp: dataT, Name: dataTemp}},
-		Rhs: &ir.Instr{
-			Op:   ir.OpArrayNewData,
-			Type: &ir.Ref{Named: "$go.bytes"},
-			Data: litName,
-		},
+	var mkData ir.Stmt
+	if str == "" {
+		// Canonical empty backing so unsafe.StringData of every empty string
+		// compares equal (strings.TestClone).
+		ensureEmptyBytesGlobal(m)
+		mkData = &ir.Assign{
+			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
+			Rhs: &ir.Instr{Op: ir.OpGlobalGet, Global: "$go.emptyBytes"},
+		}
+	} else {
+		// Use module-wide unique names: a second RuntimeOps pass (after Ensure*)
+		// must not reuse $lit0… and clobber earlier string data (e.g. "main" →
+		// "runtime error: …" printing as "runt").
+		litName := fmt.Sprintf("$lit%d", len(m.Data))
+		m.Data = append(m.Data, &ir.Data{Name: litName, Bytes: []byte(str)})
+		if n != nil && *n < len(m.Data)+1 {
+			*n = len(m.Data) + 1
+		}
+		mkData = &ir.Assign{
+			Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
+			Rhs: &ir.Instr{
+				Op:   ir.OpArrayNewData,
+				Type: &ir.Ref{Named: "$go.bytes"},
+				Data: litName,
+			},
+		}
 	}
 	strNew := &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.string"},
 		Args: []ir.Expr{
-			&ir.Name{Temp: dataT, Raw: dataTemp},
+			&ir.Name{Temp: dataT, Raw: dataT.Name},
 			&ir.Const{Op: ir.OpI32Const, I64: 0},
 			&ir.Const{Op: ir.OpI32Const, I64: int64(len(str))},
 		},
@@ -2162,9 +2193,11 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 	}
 	strT := lhs.Temp
 	if strT == nil {
-		strName := fmt.Sprintf("%%str%d", *n)
-		*n++
-		strT = &ir.Temp{Name: strName, Typ: &ir.Ref{Named: "$go.string"}}
+		strT = &ir.Temp{Typ: &ir.Ref{Named: "$go.string"}}
+		strT.Name = fmt.Sprintf("%%str_%p", strT)
+		if n != nil {
+			*n++
+		}
 	} else {
 		strT.Typ = &ir.Ref{Named: "$go.string"}
 	}

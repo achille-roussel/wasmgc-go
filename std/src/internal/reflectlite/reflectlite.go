@@ -225,7 +225,7 @@ func (v Value) Set(x Value) {
 }
 
 func (v Value) Swap(w Value) {
-	// Soft: full swap needs settable values; sort Swapper uses typed paths.
+	// Soft: full swap needs settable values; sort Swapper uses SetIndex.
 }
 
 func TypeOf(i any) Type {
@@ -242,17 +242,37 @@ func ValueOf(i any) Value {
 	return Value{typ: wrap(runtime.ReflectType(i)), data: runtime.ReflectData(i)}
 }
 
+// Swapper returns a function that swaps elements of slice.
+// Implemented via descriptor index/setIndex (no linear-memory memmove).
 func Swapper(slice any) func(i, j int) {
 	v := ValueOf(slice)
 	if v.Kind() != Slice {
 		panic("reflectlite.Swapper of non-slice")
 	}
+	switch v.Len() {
+	case 0:
+		return func(i, j int) { panic("reflect: slice index out of range") }
+	case 1:
+		return func(i, j int) {
+			if i != 0 || j != 0 {
+				panic("reflect: slice index out of range")
+			}
+		}
+	}
+	extra := runtime.ReflectExtra(v.typ.rt)
+	data := v.data
 	return func(i, j int) {
-		// Closure support exists since M5; element swap via Interface round-trip
-		// is incomplete without Set. Prefer typed sort paths; this keeps link.
-		_ = i
-		_ = j
-		_ = v
+		n := runtime.ReflectCallLen(extra, data)
+		if uint(i) >= uint(n) || uint(j) >= uint(n) {
+			panic("reflect: slice index out of range")
+		}
+		if i == j {
+			return
+		}
+		a := runtime.ReflectCallIndex(extra, data, i)
+		b := runtime.ReflectCallIndex(extra, data, j)
+		runtime.ReflectCallSetIndex(extra, data, i, b)
+		runtime.ReflectCallSetIndex(extra, data, j, a)
 	}
 }
 
