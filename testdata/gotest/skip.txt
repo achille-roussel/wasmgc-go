@@ -76,13 +76,10 @@ fixedbugs/bug352.go — runtime error
 fixedbugs/bug356.go — wasm validate/compile error
 fixedbugs/bug401.go — wasm validate/compile error
 fixedbugs/bug434.go — runtime error
-fixedbugs/bug436.go — runtime error: package init order (var c = b before var a, b = foo())
 fixedbugs/bug440_32.go — output mismatch
 fixedbugs/bug442.go — wasm validate/compile error
 fixedbugs/bug444.go — runtime error
-fixedbugs/bug446.go — failed: panic: dummy1 != 1
 fixedbugs/bug461.go — failed: panic: int should be unexported
-fixedbugs/bug473.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
@@ -129,7 +126,6 @@ fixedbugs/issue21687.go — output mismatch
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue21887.go — output mismatch
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
-fixedbugs/issue22326.go — output mismatch
 fixedbugs/issue22605.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue22662.go — compile error: codegen
 fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
@@ -157,7 +153,6 @@ fixedbugs/issue28390.go — output mismatch
 fixedbugs/issue28748.go — compile error: build: load: typecheck
 fixedbugs/issue28797.go — runtime error
 fixedbugs/issue29013a.go — runtime error
-fixedbugs/issue29013b.go — runtime error
 fixedbugs/issue29190.go — runtime error
 fixedbugs/issue29264.go — runtime error
 fixedbugs/issue29312.go — runtime error
@@ -189,7 +184,6 @@ fixedbugs/issue42703.go — runtime error
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue4316.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3c2b17f60340 stack=[0x3c…
 fixedbugs/issue43292.go — compile error: codegen
-fixedbugs/issue43444.go — output mismatch
 fixedbugs/issue4353.go — runtime error
 fixedbugs/issue43570.go — failed: panic: bad: []
 fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
@@ -212,7 +206,6 @@ fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 val
 fixedbugs/issue49512.go — failed: build: pipeline: IR verify: assignment has 1 destinations but rhs produces 2 values pipeline: IR ver…
 fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
-fixedbugs/issue51913.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
 fixedbugs/issue53600.go — output mismatch
