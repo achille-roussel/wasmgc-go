@@ -279,11 +279,30 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			// fat ptr), not typeOf(x) (the slice value), and walk embedding.
 			fn := sel.Obj().(*types.Func)
 			msig := fn.Type().(*types.Signature)
-			recvWant, err := fl.mapType(msig.Recv().Type())
-			if err != nil {
-				return nil, nil, err
+			exprTy := fl.typeOf(fun.X)
+			landed := selectionRecvType(exprTy, sel)
+			ifaceRecv := isIface(exprTy) || isIface(landed)
+			var recvGo types.Type
+			var recvWant ir.Type
+			var err error
+			if ifaceRecv {
+				recvGo = landed
+				if !isIface(recvGo) {
+					recvGo = exprTy
+				}
+				recvWant = typeIface
+			} else {
+				if m := concreteMethod(exprTy, fn); m != nil {
+					fn = m
+					msig = fn.Type().(*types.Signature)
+				}
+				recvGo = msig.Recv().Type()
+				recvWant, err = fl.mapType(recvGo)
+				if err != nil {
+					return nil, nil, err
+				}
 			}
-			rex, astmts, err := fl.methodRecvSel(fun.X, sel, msig.Recv().Type(), recvWant)
+			rex, astmts, err := fl.methodRecvSel(fun.X, sel, recvGo, recvWant)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -305,13 +324,22 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 				stmts = append(stmts, fl.assignTemp(t, ex))
 				addCap("a"+deferItoa(i), want, fl.useTemp(t))
 			}
+			ifaceType := recvGo
+			ifaceFn := fn
+			useIface := ifaceRecv
 			target := methodIRName(fn)
 			callBuilder = func(child *funcLower, clos *ir.Var, fieldOf func(string) ir.Expr) ([]ir.Stmt, error) {
 				args := []ir.Expr{fieldOf("recv")}
 				for i := range call.Args {
 					args = append(args, fieldOf("a"+deferItoa(i)))
 				}
-				return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: target, Args: args}}, &ir.Return{}}, nil
+				var call ir.Expr
+				if useIface {
+					call = makeIfaceCall(ifaceFn, ifaceType, args, nil)
+				} else {
+					call = &ir.Instr{Op: ir.OpCall, Func: target, Args: args}
+				}
+				return []ir.Stmt{&ir.ExprStmt{X: call}, &ir.Return{}}, nil
 			}
 		} else {
 			// package.Func

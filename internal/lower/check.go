@@ -18,7 +18,14 @@ func TypeCheck(filename, src string) (*token.FileSet, []*ast.File, *types.Packag
 
 // TypeCheckFiles parses and type-checks a multi-file package (same package
 // name across files). Used by rtlink when linking several runtime sources.
+// The types.Package path is the Go package clause name (e.g. "utf8").
 func TypeCheckFiles(filenames []string, srcs []string) (*token.FileSet, []*ast.File, *types.Package, *types.Info, error) {
+	return TypeCheckPath("", filenames, srcs)
+}
+
+// TypeCheckPath is TypeCheckFiles with an explicit import path (e.g.
+// "unicode/utf8") so IR names use the sanitized path prefix.
+func TypeCheckPath(path string, filenames []string, srcs []string) (*token.FileSet, []*ast.File, *types.Package, *types.Info, error) {
 	if len(filenames) != len(srcs) {
 		return nil, nil, nil, nil, fmt.Errorf("typecheck: %d filenames vs %d srcs", len(filenames), len(srcs))
 	}
@@ -52,7 +59,11 @@ func TypeCheckFiles(filenames []string, srcs []string) (*token.FileSet, []*ast.F
 		Sizes:    Sizes,
 		Importer: unsafeOnlyImporter{},
 	}
-	pkg, err := conf.Check(pkgName, fset, files, info)
+	checkPath := path
+	if checkPath == "" {
+		checkPath = pkgName
+	}
+	pkg, err := conf.Check(checkPath, fset, files, info)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("typecheck: %w", err)
 	}

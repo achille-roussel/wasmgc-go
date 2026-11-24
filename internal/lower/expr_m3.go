@@ -389,8 +389,7 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 	case types.MethodVal:
 		return fl.methodValue(e, sel, want)
 	case types.MethodExpr:
-		fn := sel.Obj().(*types.Func)
-		return fl.methodExpr(fn)
+		return fl.methodExpr(sel)
 	default:
 		return nil, nil, fl.errorf(e, "unsupported selection kind %v", sel.Kind())
 	}
