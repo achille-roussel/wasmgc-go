@@ -10,22 +10,6 @@ package runtime
 // printstring writes the bytes of s to fd 1 through the linear bridge.
 func printstring(s string)
 
-// panicIfaceString formats a panic payload for unrecoveredPanic (EH calls this
-// then writes the result to stderr). Handles string and error so plainError /
-// makechanError print real messages instead of "<non-string>".
-func panicIfaceString(v interface{}) string {
-	if v == nil {
-		return "<nil>"
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	if e, ok := v.(error); ok {
-		return e.Error()
-	}
-	return "<non-string>"
-}
-
 // printnl writes a single newline.
 func printnl() {
 	printstring("\n")

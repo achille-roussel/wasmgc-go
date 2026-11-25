@@ -32,7 +32,6 @@ TestLoadLocationFromTZDataSlim — lower/runtime gaps in time tests
 TestLoadLocationValidatesNames — lower/runtime gaps in time tests
 TestLoadLocationZipFile — lower/runtime gaps in time tests
 TestLocationRace — lower/runtime gaps in time tests
-TestLongAdjustTimers — lower/runtime gaps in time tests
 TestMalformedTZData — lower/runtime gaps in time tests
 TestMarshalBinaryVersion2 — lower/runtime gaps in time tests
 TestMarshalBinaryVersion2Bugfix — lower/runtime gaps in time tests
@@ -67,13 +66,11 @@ TestSleep — lower/runtime gaps in time tests
 TestStd0xParseError — lower/runtime gaps in time tests
 TestSub — lower/runtime gaps in time tests
 TestTickTimes — Node OOM in joint time package
-TestTicker — NewTicker loop; joint short time hangs/timeouts with many live timer tests
 TestTimeAddSecOverflow — lower/runtime gaps in time tests
 TestTimeGob — lower/runtime gaps in time tests
 TestTimeIsDST — lower/runtime gaps in time tests
 TestTimeJSON — lower/runtime gaps in time tests
 TestTimerModifiedEarlier — lower/runtime gaps in time tests
-TestTimerStopStress — stress Stop; joint short time hangs/timeouts
 TestTimeWithZoneTransition — lower/runtime gaps in time tests
 TestToEnglishName — lower/runtime gaps in time tests
 TestTruncateRound — lower/runtime gaps in time tests
@@ -96,7 +93,5 @@ TestVersion3 — lower/runtime gaps in time tests
 TestYearDay — lower/runtime gaps in time tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
-TestMultiWakeupTicker — NewTicker stress; joint -short time hangs/timeouts
-TestMultiWakeupTimer — timer stress; joint -short time hangs/timeouts
 TestTick — Tick() leaves an uncancellable ticker goroutine; joint OOM before ConcurrentTimerReset
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset
