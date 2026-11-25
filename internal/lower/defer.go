@@ -876,7 +876,12 @@ func (fl *funcLower) recoverPrologue() []ir.Stmt {
 // recoverOk still set (issue73916: defer F where F calls recover via helper).
 // No-op when $g is still null (packages that never panic/defer).
 func (fl *funcLower) clearRecoverOk() []ir.Stmt {
-	fl.pkg.ensureDeferTypes()
+	// Do not ensureDeferTypes here — that would pull $g into packages that
+	// never defer/panic (breaks empty-main IR goldens). Only clear when $g
+	// already exists (some other function in the package used defer/panic).
+	if fl.pkg.mod.LookupGlobal("$g") == nil {
+		return nil
+	}
 	gTy := &ir.Ref{Named: "$go.g"}
 	gGet := &ir.Instr{Op: ir.OpGlobalGet, Global: "$g"}
 	return []ir.Stmt{
