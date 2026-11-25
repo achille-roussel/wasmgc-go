@@ -1107,6 +1107,9 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		if n < 0 {
 			n = 0
 		}
+		if n == 0 {
+			return ensureZeroLenArrayGlobal(fl.mod, r.Named), true
+		}
 		// array.new_default fills ref elements with null. Go zeros for
 		// structs/strings/nested arrays are non-null values.
 		//

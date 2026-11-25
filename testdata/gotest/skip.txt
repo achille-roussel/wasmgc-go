@@ -226,4 +226,3 @@ unsafe_slice_data.go — unsupported: unsafe
 unsafe_string_data.go — unsupported: unsafe
 unsafebuiltins.go — unsupported: unsafe
 winbatch.go — os.Open/ReadFile stub ENOENT; needs host FS to check GOROOT .bat CRLF
-zerosize.go — output mismatch: zerobase pointer identity

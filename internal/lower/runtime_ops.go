@@ -759,6 +759,29 @@ func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
 	return nil, false
 }
 
+// ensureZeroLenArrayGlobal returns a module-global canonical []T of length 0
+// (runtime.zerobase semantics for new([0]T) and identical *[0]T identities).
+func ensureZeroLenArrayGlobal(mod *ir.Module, arrName string) ir.Expr {
+	gname := "$go.zerolen." + sanitize(arrName)
+	if mod.LookupGlobal(gname) == nil {
+		mod.Globals = append(mod.Globals, &ir.Global{
+			Name: gname,
+			Typ:  &ir.Ref{Named: arrName},
+			Mut:  false,
+			Init: &ir.Instr{
+				Op:   ir.OpArrayNewDefault,
+				Type: &ir.Ref{Named: arrName},
+				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}},
+			},
+		})
+	}
+	return &ir.Instr{Op: ir.OpGlobalGet, Global: gname}
+}
+
+func (rt *runtimeLower) ensureZeroLenArrayGlobal(arrName string) ir.Expr {
+	return ensureZeroLenArrayGlobal(rt.mod, arrName)
+}
+
 func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {
 	if arrName != "$go.bytes" && arrName != "$go.i16s" && rt.mod.LookupType(arrName) == nil {
 		elem := elemOfArrayName(arrName)
@@ -1138,6 +1161,9 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 		nElems := int64(in.I32)
 		if nElems < 0 {
 			nElems = 0
+		}
+		if nElems == 0 {
+			return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: rt.ensureZeroLenArrayGlobal(tname)}}, nil
 		}
 		alloc, pre := rt.allocArray(tname, &ir.Const{Op: ir.OpI32Const, I64: nElems})
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: alloc})
