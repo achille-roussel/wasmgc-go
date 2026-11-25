@@ -255,6 +255,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	// AppendFiles from Ensure* may have registered package inits (e.g.
 	// runtime.init for gp/ngo) after Finish already built main.run.
 	lower.LinkPendingInits(mod)
+	// Math Float*bits bodies are unsafe pointer casts; rewrite to reinterpret
+	// even when EnsureMaps/EnsureReflect did not run (Signbit-only programs).
+	rtlink.EnsureFloatBits(mod)
 	// Drop RegisterPoolCleanup calls (no-op) so sync.poolCleanup can die.
 	ir.PruneNoopCalls(mod)
 	// Blank fmt type-switch arms for types never boxed as any in this

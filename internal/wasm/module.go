@@ -328,9 +328,14 @@ func (m *Module) AddTag(typeIdx uint32) uint32 {
 	return idx
 }
 
+// NextGlobalIndex returns the index the next AddGlobal would assign.
+func (m *Module) NextGlobalIndex() uint32 {
+	return m.numImportedGlobals() + uint32(len(m.Globals))
+}
+
 // AddGlobal appends a global and returns its index.
 func (m *Module) AddGlobal(gt GlobalType, init []byte) uint32 {
-	idx := m.numImportedGlobals() + uint32(len(m.Globals))
+	idx := m.NextGlobalIndex()
 	m.Globals = append(m.Globals, Global{Type: gt, Init: init})
 	return idx
 }
