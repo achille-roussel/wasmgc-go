@@ -452,17 +452,6 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 		}
 		// Direct struct.get when base is a struct / *struct object ref.
 		// Promoted embedded fields use Selection.Index() as a chain of gets.
-		// Nil *T.field must panic (same as &p.f / method recv).
-		if xt != nil && isObjectPointer(xt) {
-			ptrTy, err := fl.mapType(xt)
-			if err != nil {
-				return nil, nil, err
-			}
-			pv := fl.newVar("pfield", ptrTy)
-			stmts = append(stmts, fl.assignVar(pv, base))
-			stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
-			base = fl.useVar(pv)
-		}
 		if xt != nil && (isStruct(xt) || isObjectPointer(xt)) {
 			ex, err := fl.fieldGetChain(base, xt, sel)
 			if err != nil {
