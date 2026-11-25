@@ -185,6 +185,7 @@ var panicSyms = []string{
 	"runtime.panicSliceB",
 	"runtime.panicNil",
 	"runtime.panicDivide",
+	"runtime.panicNegativeShift",
 	"runtime.panicUncomparable",
 	"runtime.panicTypeAssert",
 	"runtime.panicmakeslicelen",
@@ -275,6 +276,7 @@ func stripUnreferencedPanicHelpers(mod *ir.Module) {
 	optional := []string{
 		"runtime.panicSliceB",
 		"runtime.panicDivide",
+		"runtime.panicNegativeShift",
 		"runtime.panicUncomparable",
 		"runtime.panicTypeAssert",
 		"runtime.panicmakeslicelen",

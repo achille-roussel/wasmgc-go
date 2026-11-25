@@ -125,6 +125,18 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 			if isPointer(xt) && !isObjectPointer(xt) {
 				return nil, nil, fl.errorf(x, "cannot take address of field through fat pointer")
 			}
+			// &p.f through a nil pointer must panic (issue63657), not mint a
+			// fake fat pointer / offset into a null object.
+			if isPointer(xt) && isObjectPointer(xt) {
+				ptrTy, err := fl.mapType(xt)
+				if err != nil {
+					return nil, nil, err
+				}
+				pv := fl.newVar("paddr", ptrTy)
+				stmts = append(stmts, fl.assignVar(pv, base))
+				stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+				base = fl.useVar(pv)
+			}
 			idx := sel.Index()
 			if len(idx) == 0 {
 				return nil, nil, fl.errorf(x, "empty field selection for addr")

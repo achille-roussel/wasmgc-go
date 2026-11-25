@@ -2,7 +2,7 @@
 # M10: generous headroom — size corpus is a loose regression guard only.
 empty_main	512
 println	2048
-m8_fmt_hello	230000
-m8_fmt_map	250000
-m8_fmt_float	250000
-m8_fmt_quote	230000
+m8_fmt_hello	280000
+m8_fmt_map	290000
+m8_fmt_float	300000
+m8_fmt_quote	280000

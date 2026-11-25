@@ -628,7 +628,7 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, rs...)
 				var sstmts []ir.Stmt
-				rhs, sstmts, err = fl.shiftBounded(tok, lhsEx, rhsEx, want, yWant, lhsGo, nil)
+				rhs, sstmts, err = fl.shiftBounded(tok, lhsEx, rhsEx, want, yWant, lhsGo, yGo, nil)
 				if err != nil {
 					return nil, fl.errorf(s, "%v", err)
 				}
@@ -1786,6 +1786,50 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 			results = append(results, fl.useTemp(t))
 		}
 	}
+	// Materialize non-Name results into temps before the Return node.
+	// applyDeferPass inserts runDefers immediately before Return; RuntimeOps
+	// expands high ops (e.g. OpDeref / nil-check for *p) as stmts prepended to
+	// their Assign. Leaving high ops in Return.Results made RuntimeOps expand
+	// them AFTER runDefers (issue43835: recover defer ran before *p panicked,
+	// then the handler saw a nulled defer list and rethrew).
+	//
+	// Already-Name results (temps/vars) need no staging — re-wrapping them
+	// (%t2 = %t1; return %t2) breaks rtlink.specializeMapHashes, which rewrites
+	// `h = mapKeyHashFallthrough(...); return h` and would leave the forward
+	// assign referencing a deleted temp.
+	if len(results) > 0 && !stageTemps {
+		// Stage high ops only (RuntimeOps expands OpDeref etc. as stmts before
+		// the Assign). applyDeferPass inserts runDefers immediately before
+		// Return; leaving high ops in Return.Results made RuntimeOps expand
+		// them AFTER runDefers (issue43835). Low ops / Name / Const stay inline.
+		needsStage := false
+		for _, ex := range results {
+			if in, ok := ex.(*ir.Instr); ok && in.Op.IsHigh() {
+				needsStage = true
+				break
+			}
+		}
+		if needsStage {
+			staged := make([]ir.Expr, len(results))
+			for i, ex := range results {
+				in, isHigh := ex.(*ir.Instr)
+				if !isHigh || !in.Op.IsHigh() {
+					staged[i] = ex
+					continue
+				}
+				want := ir.Type(ir.TypeI32)
+				if i < len(fl.results) && fl.results[i] != nil {
+					want = fl.results[i]
+				} else if in.Type != nil {
+					want = in.Type
+				}
+				t := fl.newTemp(want)
+				out = append(out, fl.assignTemp(t, ex))
+				staged[i] = fl.useTemp(t)
+			}
+			results = staged
+		}
+	}
 	out = append(out, &ir.Return{Results: results})
 	return out, nil
 }
@@ -2108,9 +2152,10 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	if err != nil {
 		return nil, fl.errorf(s.X, "%v", err)
 	}
-	// range (*p) / range p for *[N]T: evaluate the pointer without nil-checking
-	// *p (issue73476, issue72844). Length comes from the type. Value access
-	// nil-checks below when needVal.
+	// range (*p) / range p for *[N]T: length comes from the type.
+	// For a variable p, *p is not evaluated (issue72844/73476). For a call
+	// or other non-name (*f()), evaluate * and nil-check (testRange1).
+	// Value access nil-checks below when needVal even for variable p.
 	xExpr := s.X
 	for {
 		if p, ok := xExpr.(*ast.ParenExpr); ok {
@@ -2125,7 +2170,12 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 	if star, ok := xExpr.(*ast.StarExpr); ok {
 		if pt := fl.typeOf(star.X); pt != nil && isPtrToArray(pt) {
 			ptrTy, _ := fl.mapType(pt)
-			x, xstmts, err = fl.expr(star.X, ptrTy)
+			if isSimpleName(star.X) {
+				x, xstmts, err = fl.expr(star.X, ptrTy)
+			} else {
+				// Non-name (*f()): evaluate * with nil check (issue72844).
+				x, xstmts, err = fl.starExpr(star, nil)
+			}
 			rangeViaNilableArrayPtr = true
 		}
 	}

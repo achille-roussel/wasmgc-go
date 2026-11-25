@@ -222,6 +222,8 @@ func (l *pkgLower) finishLowerFunc(fl *funcLower, fd *ast.FuncDecl) (*ir.Func, e
 	preamble = append(preamble, clones...)
 	if fl.needsRecoverPrologue && !fl.hasDefer {
 		preamble = append(preamble, fl.recoverPrologue()...)
+	} else if !fl.needsRecoverPrologue {
+		preamble = append(preamble, fl.clearRecoverOk()...)
 	}
 	if len(preamble) > 0 {
 		seq.Stmts = append(preamble, seq.Stmts...)

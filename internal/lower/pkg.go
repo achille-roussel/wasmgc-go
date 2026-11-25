@@ -713,6 +713,10 @@ func (l *pkgLower) lowerFunc(fd *ast.FuncDecl, irName string) (*ir.Func, error) 
 	preamble = append(preamble, clones...)
 	if fl.needsRecoverPrologue && !fl.hasDefer {
 		preamble = append(preamble, fl.recoverPrologue()...)
+	} else if !fl.needsRecoverPrologue {
+		// Drop recoverOk inherited from a deferred caller so recover() in
+		// nested helpers does not succeed (issue73916).
+		preamble = append(preamble, fl.clearRecoverOk()...)
 	}
 	if len(preamble) > 0 {
 		seq.Stmts = append(preamble, seq.Stmts...)
@@ -806,6 +810,20 @@ func (l *pkgLower) lowerBodyless(fd *ast.FuncDecl, irName string) (*ir.Func, err
 		return nil, err
 	}
 	body := &ir.Seq{}
+	// //go:wasmimport is not parsed yet (bridge.go). syscall.runtimeExit must
+	// call the host go.runtime.exit import; an empty bodyless stub is a no-op
+	// and breaks os.Exit(0) success paths (issue18725, switch.go Exit, …).
+	if fd.Name != nil && fd.Name.Name == "runtimeExit" && len(fl.params) == 1 && len(fl.results) == 0 {
+		p := fl.params[0]
+		body = &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{
+				Op:   ir.OpCall,
+				Func: "runtime.exit",
+				Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}},
+			}},
+			&ir.Unreachable{},
+		}}
+	}
 	if fd.Name != nil && fd.Name.Name == "runtime_rand" && len(fl.params) == 0 && len(fl.results) == 1 {
 		// //go:linkname runtime_rand runtime.rand — math/rand does not import
 		// runtime, so PackageHigh never links runtime.rand. Emit a tiny

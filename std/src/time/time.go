@@ -71,7 +71,18 @@ func (e *ParseError) Error() string {
 
 // hasExt marks a Time that holds an absolute Unix-nano ext value.
 // Distinguishes Unix(0,0) (1970) from the zero Time (year 1).
-const hasExt = 1
+// hasCivil marks a Time whose ext is absolute seconds since year 1 UTC
+// (for dates outside the Unix-nano int64 range); nsec lives in wall>>8.
+const (
+	hasExt   = 1
+	hasCivil = 2
+)
+
+// absoluteToInternal is seconds between year 1 and Unix epoch (1970-01-01).
+const absoluteToInternal int64 = 62135596800
+
+// maxUnixNanoSec is the largest |unix seconds| that fit in int64 nanoseconds.
+const maxUnixNanoSec int64 = 9223372036
 
 // Now returns the current local time from the host wall clock.
 func Now() Time {
@@ -129,34 +140,133 @@ func (t Time) String() string {
 }
 
 // Unix returns t as a Unix time (seconds since January 1, 1970 UTC).
-func (t Time) Unix() int64 { return t.ext / 1e9 }
+func (t Time) Unix() int64 { return t.unixSec() }
 
 // UnixMilli returns t as a Unix time in milliseconds.
-func (t Time) UnixMilli() int64 { return t.ext / 1e6 }
+func (t Time) UnixMilli() int64 {
+	return t.unixSec()*1e3 + int64(t.Nanosecond())/1e6
+}
 
 // UnixMicro returns t as a Unix time in microseconds.
-func (t Time) UnixMicro() int64 { return t.ext / 1e3 }
+func (t Time) UnixMicro() int64 {
+	return t.unixSec()*1e6 + int64(t.Nanosecond())/1e3
+}
 
 // UnixNano returns t as a Unix time in nanoseconds.
-func (t Time) UnixNano() int64 { return t.ext }
+func (t Time) UnixNano() int64 {
+	if t.wall&hasCivil != 0 {
+		return t.unixSec()*1e9 + int64(t.Nanosecond())
+	}
+	return t.ext
+}
 
 // Nanosecond returns the nanosecond offset within the second.
-func (t Time) Nanosecond() int { return int(t.ext % 1e9) }
+func (t Time) Nanosecond() int {
+	if t.wall&hasCivil != 0 {
+		return int(t.wall >> 8)
+	}
+	return int(t.ext % 1e9)
+}
 
 // UTC returns t with location UTC (no-op location in v1 rewrite).
 func (t Time) UTC() Time { return t }
 
-// Format returns a textual representation of t. Stub: UnixNano decimal
-// (enough for io/fs.FormatFileInfo which needs a Format method).
+// Format returns a textual representation of t.
 func (t Time) Format(layout string) string {
 	return string(t.AppendFormat(nil, layout))
 }
 
 // AppendFormat appends a textual representation of t to b.
-// Stub: appends UnixNano decimal; full layout parsing is deferred.
+// Thin subset: Kitchen, DateOnly, TimeOnly, RFC3339/RFC3339Nano (always Z).
+// Other layouts fall back to UnixNano decimal (keeps joint time binary small).
 func (t Time) AppendFormat(b []byte, layout string) []byte {
-	_ = layout
-	return strconv.AppendInt(b, t.ext, 10)
+	switch layout {
+	case Kitchen, "03:04PM": // Kitchen == "3:04PM"
+		h, m, _ := t.Clock()
+		ap := "AM"
+		h12 := h % 12
+		if h12 == 0 {
+			h12 = 12
+		}
+		if h >= 12 {
+			ap = "PM"
+		}
+		if layout == "03:04PM" && h12 < 10 {
+			b = append(b, '0')
+		}
+		b = strconv.AppendInt(b, int64(h12), 10)
+		b = append(b, ':')
+		if m < 10 {
+			b = append(b, '0')
+		}
+		b = strconv.AppendInt(b, int64(m), 10)
+		return append(b, ap...)
+	case TimeOnly:
+		h, m, s := t.Clock()
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, m)
+		b = append(b, ':')
+		return append2(b, s)
+	case DateOnly:
+		y, mo, d := t.Date()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		return append2(b, d)
+	case RFC3339, RFC3339Nano:
+		y, mo, d := t.Date()
+		h, mi, s := t.Clock()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		b = append2(b, d)
+		b = append(b, 'T')
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, mi)
+		b = append(b, ':')
+		b = append2(b, s)
+		if layout == RFC3339Nano {
+			b = append(b, '.')
+			ns := t.Nanosecond()
+			for div := 100000000; div >= 1; div /= 10 {
+				b = append(b, byte('0'+ns/div%10))
+			}
+		}
+		return append(b, 'Z')
+	default:
+		return strconv.AppendInt(b, t.ext, 10)
+	}
+}
+
+func append2(b []byte, n int) []byte {
+	if n < 0 {
+		n = 0
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
+}
+
+func append4(b []byte, n int) []byte {
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	if n < 1000 {
+		b = append(b, '0')
+	}
+	if n < 100 {
+		b = append(b, '0')
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
 }
 
 // AppendText appends RFC3339 text of t to b (stub via AppendFormat).
@@ -268,14 +378,61 @@ func (t Time) GobEncode() ([]byte, error) { return t.MarshalBinary() }
 func (t *Time) GobDecode(data []byte) error { return t.UnmarshalBinary(data) }
 
 // Parse parses a formatted string and returns the time value it represents.
-// Stub: only accepts decimal Unix nanoseconds (AppendFormat output).
+// Thin: Kitchen / "3:04PM" / "03:04PM" only; other layouts fall back to
+// decimal Unix nanoseconds (AppendFormat default output).
 func Parse(layout, value string) (Time, error) {
-	_ = layout
-	n, err := strconv.ParseInt(value, 10, 64)
+	switch layout {
+	case Kitchen, "03:04PM":
+		return parseKitchen(layout, value)
+	default:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+		}
+		return Time{wall: hasExt, ext: n}, nil
+	}
+}
+
+// parseKitchen parses "3:04PM" / "03:04PM" / "12:00AM" style values.
+func parseKitchen(layout, value string) (Time, error) {
+	if len(value) < 6 {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+	}
+	i := 0
+	for i < len(value) && value[i] != ':' {
+		i++
+	}
+	if i == 0 || i >= len(value) {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: "missing colon"}
+	}
+	h64, err := strconv.ParseInt(value[:i], 10, 64)
 	if err != nil {
 		return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
 	}
-	return Time{wall: hasExt, ext: n}, nil
+	rest := value[i+1:]
+	if len(rest) < 4 {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+	}
+	m64, err := strconv.ParseInt(rest[:2], 10, 64)
+	if err != nil {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+	}
+	ap := rest[2:]
+	h := int(h64)
+	switch ap {
+	case "PM", "pm":
+		if h != 12 {
+			h += 12
+		}
+	case "AM", "am":
+		if h == 12 {
+			h = 0
+		}
+	default:
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: "bad AM/PM"}
+	}
+	// Year 2000 avoids unreliable year-0 civil math in the thin stub.
+	return Date(2000, January, 1, h, int(m64), 0, 0, UTC), nil
 }
 
 const (
@@ -813,9 +970,11 @@ func (t Time) Day() int {
 	return d
 }
 func (t Time) Weekday() Weekday {
-	// Days since 0001-01-01 (Monday? actually Saturday in Go — abs weekday).
-	// Use absolute days from a Unix epoch anchor.
-	sec := t.ext / 1e9
+	// Special-case zero Time: Go's zero is Monday 0001-01-01.
+	if t.IsZero() {
+		return Monday
+	}
+	sec := t.unixSec()
 	// 1970-01-01 was Thursday.
 	const epochWeekday = Thursday
 	days := sec / 86400
@@ -826,40 +985,41 @@ func (t Time) Weekday() Weekday {
 	if w < 0 {
 		w += 7
 	}
-	// Special-case zero Time: Go's zero is Monday 0001-01-01.
-	if t.IsZero() {
-		return Monday
-	}
 	return Weekday(w)
 }
+// unixSec returns seconds since Unix epoch (handles hasCivil and hasExt).
+func (t Time) unixSec() int64 {
+	if t.wall&hasCivil != 0 {
+		return t.ext - absoluteToInternal
+	}
+	return t.ext / 1e9
+}
+
 func (t Time) Hour() int {
-	sec := t.ext / 1e9
 	if t.IsZero() {
 		return 0
 	}
-	s := sec % 86400
+	s := t.unixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
 	return int(s / 3600)
 }
 func (t Time) Minute() int {
-	sec := t.ext / 1e9
 	if t.IsZero() {
 		return 0
 	}
-	s := sec % 86400
+	s := t.unixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
 	return int((s % 3600) / 60)
 }
 func (t Time) Second() int {
-	sec := t.ext / 1e9
 	if t.IsZero() {
 		return 0
 	}
-	s := sec % 86400
+	s := t.unixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
@@ -988,12 +1148,37 @@ func (t Time) GoString() string {
 	if l := t.Location(); l == Local {
 		loc = "time.Local"
 	} else if l != nil && l != UTC && l.name != "" && l.name != "UTC" {
-		loc = "time.Location(" + strconv.Quote(l.name) + ")"
+		loc = "time.Location(" + quoteGoString(l.name) + ")"
 	}
 	return "time.Date(" + strconv.Itoa(t.Year()) + ", " + ms +
 		", " + strconv.Itoa(t.Day()) + ", " + strconv.Itoa(t.Hour()) + ", " +
 		strconv.Itoa(t.Minute()) + ", " + strconv.Itoa(t.Second()) + ", " +
 		strconv.Itoa(t.Nanosecond()) + ", " + loc + ")"
+}
+
+// quoteGoString quotes s like strconv.Quote but escapes every non-ASCII byte
+// as \xHH (matches upstream time.GoString expectations for Location names).
+func quoteGoString(s string) string {
+	b := make([]byte, 0, len(s)+2)
+	b = append(b, '"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' || c == '"':
+			b = append(b, '\\', c)
+		case c == '\n':
+			b = append(b, '\\', 'n')
+		case c == '\t':
+			b = append(b, '\\', 't')
+		case c >= 0x20 && c < 0x7f:
+			b = append(b, c)
+		default:
+			const hex = "0123456789abcdef"
+			b = append(b, '\\', 'x', hex[c>>4], hex[c&0xf])
+		}
+	}
+	b = append(b, '"')
+	return string(b)
 }
 
 // YearDay returns the day of the year in [1,365] (or 366 for leap years).
@@ -1003,58 +1188,44 @@ func (t Time) YearDay() int {
 }
 
 // ISOWeek returns the ISO 8601 year and week number.
+// Uses the Thursday of the current week to determine year and week.
 func (t Time) ISOWeek() (year, week int) {
-	// Approximate via year-day and weekday (Mon=0..Sun=6 in ISO).
-	y, _, _ := t.Date()
-	yd := t.YearDay()
-	// Weekday(): Sunday=0 … Saturday=6. ISO Monday=0.
-	wd := int(t.Weekday())
-	isoWD := (wd + 6) % 7
-	week = (yd - isoWD + 10) / 7
-	year = y
-	if week < 1 {
-		year--
-		week = 52
-	} else if week > 52 {
-		year++
-		week = 1
-	}
+	wd := int(t.Weekday()) // Sunday=0 … Saturday=6
+	isoWD := (wd + 6) % 7  // Monday=0 … Sunday=6
+	thu := t.Add(Duration(3-isoWD) * 24 * Hour)
+	year = thu.Year()
+	week = (thu.YearDay()-1)/7 + 1
 	return year, week
 }
 
 // Date returns the Time corresponding to the given calendar arguments in loc.
-// Stub: ignores loc; computes Unix nanos via a simple civil→epoch conversion.
+// Stub: ignores loc timezone rules; uses Unix nanos when they fit in int64,
+// otherwise hasCivil absolute seconds (year 0 / far dates for Format tests).
 func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) Time {
-	ext := civilToUnixNano(year, int(month), day, hour, min, sec, nsec)
-	return Time{wall: hasExt, ext: ext, loc: loc}
+	days := daysFromCivil(year, int(month), day) - daysFromCivil(1970, 1, 1)
+	unixSec := days*86400 + int64(hour)*3600 + int64(min)*60 + int64(sec)
+	if unixSec >= -maxUnixNanoSec && unixSec <= maxUnixNanoSec {
+		return Time{wall: hasExt, ext: unixSec*1e9 + int64(nsec), loc: loc}
+	}
+	absSec := unixSec + absoluteToInternal
+	return Time{wall: hasCivil | (uint64(uint32(nsec)) << 8), ext: absSec, loc: loc}
 }
 
 func (t Time) date() (year int, month Month, day int) {
 	if t.IsZero() {
 		return 1, January, 1
 	}
-	return unixNanoToCivil(t.ext)
-}
-
-// --- civil date helpers (proleptic Gregorian, UTC) ---
-
-func civilToUnixNano(year, month, day, hour, min, sec, nsec int) int64 {
-	// Days since 1970-01-01.
-	days := daysFromCivil(year, month, day) - daysFromCivil(1970, 1, 1)
-	return days*86400e9 + int64(hour)*3600e9 + int64(min)*60e9 + int64(sec)*1e9 + int64(nsec)
-}
-
-func unixNanoToCivil(ext int64) (year int, month Month, day int) {
-	sec := ext / 1e9
+	sec := t.unixSec()
 	days := sec / 86400
 	if sec%86400 < 0 {
 		days--
 	}
-	// days since 1970-01-01 → absolute day number from civil epoch.
 	abs := days + daysFromCivil(1970, 1, 1)
 	y, m, d := civilFromDays(abs)
 	return y, Month(m), d
 }
+
+// --- civil date helpers (proleptic Gregorian, UTC) ---
 
 // daysFromCivil returns days since 0000-03-01 (Howard Hinnant algorithm).
 func daysFromCivil(y, m, d int) int64 {

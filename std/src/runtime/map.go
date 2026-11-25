@@ -119,13 +119,16 @@ func (h *hmap) maybeGrow() {
 	}
 }
 
-// mapAccess looks up key. Nil map → (nil, false).
+// mapAccess looks up key. Nil map → (nil, false). Uncomparable keys panic
+// even on nil/empty maps (same as gc): hash before the empty short-circuit.
 func mapAccess(h *hmap, key any) (any, bool) {
 	if h == nil {
+		mapKeyHash(key, 0)
 		return nil, false
 	}
 	mapCheckWrite(h)
 	if h.ctrl == nil {
+		mapKeyHash(key, h.seed)
 		return nil, false
 	}
 	hash := mapKeyHash(key, h.seed)
@@ -201,16 +204,20 @@ func mapAssign(h *hmap, key, val any) {
 	h.writing = 0
 }
 
-// mapDelete removes key. Nil or missing is a no-op.
+// mapDelete removes key. Nil or missing is a no-op. Uncomparable keys panic
+// even when the map is nil or empty (gc behavior).
 func mapDelete(h *hmap, key any) {
 	if h == nil {
+		mapKeyHash(key, 0)
 		return
 	}
 	if h.writing != 0 {
 		throw("concurrent map writes")
 	}
 	h.writing = 1
-	if h.ctrl != nil {
+	if h.ctrl == nil {
+		mapKeyHash(key, h.seed)
+	} else {
 		hash := mapKeyHash(key, h.seed)
 		mask := uint32(h.mask)
 		i := hash & mask
@@ -332,6 +339,21 @@ func mapKeyHash(key any, seed uint32) uint32 {
 	if h, ok := hashString(key, seed); ok {
 		return h
 	}
+	// Comparable-but-unspecialized keys: key==key succeeds → seed mix.
+	// Uncomparable keys panic via ==; rewrite message for recover2.
+	return mapKeyHashFallthrough(key, seed)
+}
+
+func mapKeyHashFallthrough(key any, seed uint32) (h uint32) {
+	defer func() {
+		if recover() != nil {
+			name := ReflectTypeName(ReflectType(key))
+			if name == "" {
+				name = "<unknown>"
+			}
+			throwPanic(panicErr("runtime error: hash of unhashable type " + name))
+		}
+	}()
 	_ = key == key
 	return seed ^ 0x9e3779b9
 }

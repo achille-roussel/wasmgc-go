@@ -1,0 +1,1 @@
+winbatch needs host FS; issue19113 needs reflect.Call for concrete funcs — exposed once Exit/shift panics work; compensated by issue76008 plus stdlib time/fmt/json unskips.

@@ -91,6 +91,11 @@ type T struct {
 	matchPat string
 }
 
+// skipPanic aborts a test function after Skip/Skipf/SkipNow (like runtime.Goexit
+// in gc's testing). Without it, Skip only sets a flag and the rest of the test
+// body keeps running (ZeroTimer/MultiWakeup* stress loops under -short).
+type skipPanic struct{}
+
 // M drives the suite.
 type M struct {
 	tests    []InternalTest
@@ -137,7 +142,17 @@ func (m *M) Run() int {
 		if verbose {
 			fmt.Fprintf(os.Stdout, "=== RUN   %s\n", t.name)
 		}
-		tc.F(t)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(skipPanic); ok {
+						return
+					}
+					panic(r)
+				}
+			}()
+			tc.F(t)
+		}()
 		if t.skipped {
 			if verbose {
 				fmt.Fprintf(os.Stdout, "--- SKIP: %s\n", t.name)
@@ -269,12 +284,17 @@ func (t *T) Logf(format string, args ...any) {
 func (t *T) Skip(args ...any) {
 	fmt.Fprint(os.Stdout, fmt.Sprintln(args...))
 	t.skipped = true
+	panic(skipPanic{})
 }
 func (t *T) Skipf(format string, args ...any) {
 	fmt.Fprintf(os.Stdout, format+"\n", args...)
 	t.skipped = true
+	panic(skipPanic{})
 }
-func (t *T) SkipNow()                 { t.skipped = true }
+func (t *T) SkipNow() {
+	t.skipped = true
+	panic(skipPanic{})
+}
 func (t *T) Cleanup(f func())         { _ = f }
 func (t *T) TempDir() string          { t.Skip("TempDir not supported on wasmgc"); return "" }
 func (t *T) Setenv(key, value string) { _, _ = key, value }
@@ -289,7 +309,17 @@ func (t *T) Run(name string, f func(t *T)) bool {
 	if t.chatty {
 		fmt.Fprintf(os.Stdout, "=== RUN   %s\n", full)
 	}
-	f(sub)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(skipPanic); ok {
+					return
+				}
+				panic(r)
+			}
+		}()
+		f(sub)
+	}()
 	if sub.skipped {
 		if t.chatty {
 			fmt.Fprintf(os.Stdout, "--- SKIP: %s\n", full)

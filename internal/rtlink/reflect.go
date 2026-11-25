@@ -31,7 +31,7 @@ func EnsureReflect(mod *ir.Module, rewriteDir string) error {
 	// fatal calls printstring/exit. Include those even if already linked in IR.
 	files := []string{
 		"rtype.go", "map.go", "rand.go",
-		"fatal.go", "bridge.go", "print.go", "stringeq.go",
+		"fatal.go", "bridge.go", "print.go", "stringeq.go", "panic.go",
 	}
 
 	var filenames []string
@@ -59,6 +59,8 @@ func EnsureReflect(mod *ir.Module, rewriteDir string) error {
 	stripMapFuncs(mod)
 	stripPrintFuncs(mod)
 	stripReflectSupport(mod)
+	stripReflectDecls(mod)
+	stripPanicFuncs(mod)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower reflect runtime: %w", err)
 	}

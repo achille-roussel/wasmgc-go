@@ -1156,8 +1156,10 @@ func deepValueEqual(v1, v2 Value, depth int) bool {
 		return v1.Float() == v2.Float()
 	case String:
 		return v1.String() == v2.String()
-	case Chan, UnsafePointer, Complex64, Complex128:
-		// Best-effort: nilness for chan; complex/unsafe via iface when possible.
+	case Complex64, Complex128:
+		return v1.Complex() == v2.Complex()
+	case Chan, UnsafePointer:
+		// Best-effort: nilness for chan; unsafe via iface when possible.
 		if v1.Kind() == Chan {
 			return v1.IsNil() == v2.IsNil()
 		}

@@ -709,7 +709,11 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 }
 
 // exprArrayLenSideEffects evaluates expressions used only for their side
-// effects under len/cap of [N]T / *[N]T. *p of a *[N]T is not nil-checked.
+// effects under len/cap of [N]T / *[N]T.
+//
+// Go rule (issue72844): len(*p)/cap(*p) for a variable p of type *[N]T does
+// not evaluate *p (no nil panic). When the operand is not a simple name
+// (e.g. len(*f())), * must be evaluated and a nil pointer panics.
 func (fl *funcLower) exprArrayLenSideEffects(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
 	for {
 		if p, ok := e.(*ast.ParenExpr); ok {
@@ -720,10 +724,28 @@ func (fl *funcLower) exprArrayLenSideEffects(e ast.Expr) (ir.Expr, []ir.Stmt, er
 	}
 	if star, ok := e.(*ast.StarExpr); ok {
 		if pt := fl.typeOf(star.X); pt != nil && isPtrToArray(pt) {
-			return fl.expr(star.X, nil)
+			if isSimpleName(star.X) {
+				return fl.expr(star.X, nil)
+			}
+			return fl.starExpr(star, nil)
 		}
 	}
 	return fl.expr(e, nil)
+}
+
+// isSimpleName reports whether e (parens stripped) is a bare identifier —
+// a local, result, or package-level variable name. Used for len/cap/range
+// of *p on *[N]T, matching gc's "variable, do not evaluate *" rule.
+func isSimpleName(e ast.Expr) bool {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	_, ok := e.(*ast.Ident)
+	return ok
 }
 
 func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -978,10 +1000,18 @@ func (fl *funcLower) appendSliceSpread(e *ast.CallExpr, srcArg ast.Expr, prefix 
 	}
 	fitBody.Stmts = append(fitBody.Stmts, copyFit...)
 
+	copyBody := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(dstCapV), fl.useVar(needV)}},
+			Then: growBody,
+			Else: fitBody,
+		},
+	}}
+	// append(nil, empty...) must stay nil; SliceSlice(nil,0,0) yields non-nil empty.
 	stmts = append(stmts, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(dstCapV), fl.useVar(needV)}},
-		Then: growBody,
-		Else: fitBody,
+		Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{fl.useVar(srcLenV), fl.i32const(0)}},
+		Then: &ir.Seq{}, // outV already dst
+		Else: copyBody,
 	})
 	return fl.useVar(outV), stmts, nil
 }

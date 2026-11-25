@@ -29,18 +29,15 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	}
 	// TypeCheckFiles is isolated — include every dep map.go needs even when
 	// those symbols are already linked into the module (sched/select/print).
-	files := []string{"map.go", "rand.go", "fatal.go", "bridge.go", "print.go", "stringeq.go"}
+	// rtype.go: mapKeyHash uses ReflectType/ReflectTypeName for unhashable keys.
+	// panic.go: mapKeyHash uses throwPanic/panicErr (and panic_index may need it).
+	files := []string{"map.go", "rand.go", "fatal.go", "bridge.go", "print.go", "stringeq.go", "rtype.go", "panic.go"}
 	needPanic := mod.LookupFunc("runtime.panicUncomparable") == nil &&
 		mod.LookupFunc("runtime.deferRun") == nil
 	needPanicIndex := mod.LookupFunc("runtime.panicIndex") == nil
-	// panic_index.go calls throwPanic from panic.go — include panic.go in the
-	// isolated typecheck set whenever the index file is linked (mirror EnsurePanic).
-	// If panic symbols are already in the module, keep panic.go for typecheck only
-	// and drop its funcs after AppendFiles so we do not duplicate them.
-	panicTypecheckOnly := needPanicIndex && !needPanic
-	if needPanic || needPanicIndex {
-		files = append(files, "panic.go")
-	}
+	// panic.go is always typechecked with map.go; if panic symbols are already
+	// in the module, drop re-linked panic funcs after AppendFiles (keep index).
+	panicTypecheckOnly := !needPanic
 	if needPanicIndex {
 		files = append(files, "panic_index.go")
 	}
@@ -68,6 +65,7 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	stripMapRand(mod)
 	stripPrintFuncs(mod)
 	stripMapSupport(mod)
+	stripReflectDecls(mod)
 	prior := append([]*ir.Func(nil), mod.Funcs...)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower map runtime: %w", err)
@@ -202,6 +200,22 @@ func stripMapSupport(mod *ir.Module) {
 	mod.Funcs = out
 }
 
+// stripReflectDecls drops Reflect* / Rtype methods so EnsureMaps can re-link
+// rtype.go (mapKeyHash needs ReflectTypeName) without duplicate funcs.
+func stripReflectDecls(mod *ir.Module) {
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if len(f.Name) >= 16 && f.Name[:16] == "runtime.Reflect" {
+			continue
+		}
+		if f.Name == "runtime.(*Rtype).Kind" || f.Name == "runtime.(*Rtype).ID" {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
 // EnsureFloatBits rewrites math.Float*bits / Float*frombits (and runtime /
 // internal/strconv helpers) to Wasm reinterpret ops. The std math bodies use
 // unsafe.Pointer casts that lower to fat-pointer loads and trap with
@@ -274,7 +288,7 @@ func specializeMapHashes(mod *ir.Module) {
 		return // unknown keys — leave the full cascade
 	}
 	rewriteMapKeyHash(mod, keep)
-	drop := map[string]bool{}
+	drop := map[string]bool{"runtime.mapKeyHashFallthrough": true}
 	for _, name := range hashHelperFuncs {
 		if !keep[name] {
 			drop[name] = true
@@ -320,7 +334,13 @@ func scanMapKeyHashKeep(mod *ir.Module) (keep map[string]bool, ok bool) {
 	}
 	keep = map[string]bool{}
 	for k := range keys {
-		for _, h := range hashHelpersForKey(k) {
+		helpers := hashHelpersForKey(k)
+		if helpers == nil {
+			// interface / struct / pointer / etc. need mapKeyHashFallthrough
+			// for unhashable panics (recover2). Do not specialize.
+			return nil, false
+		}
+		for _, h := range helpers {
 			keep[h] = true
 		}
 	}
@@ -396,7 +416,108 @@ func rewriteMapKeyHash(mod *ir.Module, keep map[string]bool) {
 		// referenced locals only via a second pass on `out`.
 		i = j - 1
 	}
+	out = replaceMapKeyHashFallthrough(out, f)
 	f.Body = &ir.Seq{Stmts: stripUnusedHashLocals(out)}
+}
+
+// replaceMapKeyHashFallthrough swaps the Go `return mapKeyHashFallthrough(...)`
+// lowering (assign from call + return name, or a direct return call) for
+// `return seed ^ 0x9e3779b9` so int-only specialization does not keep the
+// unhashable-path helper live.
+func replaceMapKeyHashFallthrough(stmts []ir.Stmt, f *ir.Func) []ir.Stmt {
+	var seed *ir.Var
+	for _, p := range f.Params {
+		if p != nil && p.Name == "seed" {
+			seed = p
+			break
+		}
+	}
+	if seed == nil && len(f.Params) >= 2 {
+		seed = f.Params[1]
+	}
+	if seed == nil {
+		return stmts
+	}
+	xor := &ir.Instr{
+		Op: ir.OpI32Xor,
+		Args: []ir.Expr{
+			&ir.Name{Raw: seed.Name, Var: seed},
+			&ir.Const{Op: ir.OpI32Const, I64: 0x9e3779b9},
+		},
+	}
+	out := make([]ir.Stmt, 0, len(stmts))
+	for i := 0; i < len(stmts); i++ {
+		s := stmts[i]
+		// Direct return call.
+		if ret, ok := s.(*ir.Return); ok && len(ret.Results) == 1 {
+			if call, ok := ret.Results[0].(*ir.Instr); ok && call.Op == ir.OpCall && call.Func == "runtime.mapKeyHashFallthrough" {
+				out = append(out, &ir.Return{Results: []ir.Expr{xor}})
+				continue
+			}
+		}
+		// assign h = mapKeyHashFallthrough(...); return h
+		// (also skip temp-forwarding assigns: %t2 = %t1; return %t2)
+		if as, ok := s.(*ir.Assign); ok && len(as.Lhs) >= 1 {
+			if call, ok := as.Rhs.(*ir.Instr); ok && call.Op == ir.OpCall && call.Func == "runtime.mapKeyHashFallthrough" {
+				out = append(out, &ir.Return{Results: []ir.Expr{xor}})
+				live := map[string]bool{}
+				if d := as.Lhs[0]; d.Temp != nil {
+					live[d.Temp.Name] = true
+				} else if d.Var != nil {
+					live[d.Var.Name] = true
+				}
+				for i+1 < len(stmts) {
+					next := stmts[i+1]
+					if as2, ok := next.(*ir.Assign); ok && len(as2.Lhs) == 1 && as2.Rhs != nil {
+						if n, ok := as2.Rhs.(*ir.Name); ok {
+							src := ""
+							if n.Temp != nil {
+								src = n.Temp.Name
+							} else if n.Var != nil {
+								src = n.Var.Name
+							} else {
+								src = n.Raw
+							}
+							if live[src] {
+								if d := as2.Lhs[0]; d.Temp != nil {
+									live[d.Temp.Name] = true
+								} else if d.Var != nil {
+									live[d.Var.Name] = true
+								}
+								i++
+								continue
+							}
+						}
+					}
+					if ret, ok := next.(*ir.Return); ok {
+						if len(ret.Results) == 1 {
+							if n, ok := ret.Results[0].(*ir.Name); ok {
+								src := ""
+								if n.Temp != nil {
+									src = n.Temp.Name
+								} else if n.Var != nil {
+									src = n.Var.Name
+								} else {
+									src = n.Raw
+								}
+								if live[src] || len(live) > 0 {
+									i++
+								}
+							} else if len(live) > 0 {
+								i++
+							}
+						} else if len(live) > 0 {
+							i++
+						}
+					}
+					break
+				}
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func isHashHelperCall(name string) bool {
