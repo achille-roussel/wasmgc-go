@@ -152,6 +152,7 @@ fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue81863.go — runtime error
+fixedbugs/issue8336.go — runtime error: Wasm null deref on select <-(*X)(nil).c (not recoverable Go panic)
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
 gcgort.go — compile error: IR verify complex64 nullability
