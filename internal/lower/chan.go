@@ -237,7 +237,7 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 				meta.kind = 1
 				meta.send = c
 			case *ast.ExprStmt:
-				if u, ok := c.X.(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+				if u, ok := ast.Unparen(c.X).(*ast.UnaryExpr); ok && u.Op == token.ARROW {
 					meta.kind = 0
 					meta.recvExpr = u
 				} else {
@@ -245,7 +245,8 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 				}
 			case *ast.AssignStmt:
 				if len(c.Rhs) == 1 {
-					if u, ok := c.Rhs[0].(*ast.UnaryExpr); ok && u.Op == token.ARROW {
+					// Accept parenthesized receives: case x := (<-ch):
+					if u, ok := ast.Unparen(c.Rhs[0]).(*ast.UnaryExpr); ok && u.Op == token.ARROW {
 						meta.kind = 0
 						meta.recvExpr = u
 						meta.assign = c
@@ -400,10 +401,22 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 						Else: &ir.Seq{},
 					})
 				} else {
+					// Concrete LHS: closed recv may yield a nil iface
+					// (defaultChanOps.zero). Match expandChanRecv — assign
+					// element zero, then iface-assert only when recvOK.
 					valTy, err := fl.lhsType(lhs0)
 					if err != nil {
 						return nil, err
 					}
+					z, err := fl.zeroValue(valTy)
+					if err != nil {
+						return nil, err
+					}
+					as0, err := fl.assignTo(lhs0, z)
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, as0...)
 					assert := &ir.Instr{
 						Op:    ir.OpIfaceAssert,
 						Type:  valTy,
@@ -414,11 +427,15 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 					if elemGo != nil {
 						assert.Global = desc.TypeKey(elemGo)
 					}
-					as0, err := fl.assignTo(lhs0, assert)
+					asOK, err := fl.assignTo(lhs0, assert)
 					if err != nil {
 						return nil, err
 					}
-					body.Stmts = append(body.Stmts, as0...)
+					body.Stmts = append(body.Stmts, &ir.If{
+						Cond: fl.useVar(recvOK),
+						Then: &ir.Seq{Stmts: asOK},
+						Else: &ir.Seq{},
+					})
 				}
 			}
 			if meta.recvOk {
