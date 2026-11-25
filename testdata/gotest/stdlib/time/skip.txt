@@ -100,7 +100,5 @@ TestYearDay — lower/runtime gaps in time tests
 TestZeroTimer — lower/runtime gaps in time tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
-TestNoonIs12PM — Format Kitchen layout stub incomplete
-TestMidnightIs12AM — Format Kitchen layout stub incomplete
 TestTick — Tick() leaves an uncancellable ticker goroutine; joint OOM before ConcurrentTimerReset
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset
