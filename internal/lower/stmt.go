@@ -671,12 +671,14 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			// x = f(...) → single assign from call (no extra temp).
 			// unsafe.Sizeof/Alignof/Offsetof are builtins via SelectorExpr; they
 			// must not fall through to resolveCallee (which expects *types.Func).
+			var callSrc types.Type
 			if ex, astmts, ok, err := fl.unsafeBuiltinCall(call, want); ok || err != nil {
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, astmts...)
 				rhs = ex
+				callSrc = fl.typeOf(call)
 			} else if sig := fl.funcValueSig(call.Fun); sig != nil {
 				ex, astmts, err := fl.callFuncValue(call, sig)
 				if err != nil {
@@ -687,6 +689,7 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 					return nil, fl.errorf(call, "call returns %d values, want 1", sig.Results().Len())
 				}
 				rhs = ex
+				callSrc = sig.Results().At(0).Type()
 			} else if fun, ok := call.Fun.(*ast.SelectorExpr); ok {
 				if sel, isIface := fl.ifaceMethod(fun); isIface {
 					ex, astmts, err := fl.ifaceCall(call, fun, sel)
@@ -695,6 +698,8 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 					}
 					out = append(out, astmts...)
 					rhs = ex
+					callSrc = fl.typeOf(call)
+					_ = sel
 				} else {
 					name, results, err := fl.resolveCallee(call)
 					if err != nil {
@@ -708,7 +713,8 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 					if len(results) != 1 {
 						return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
 					}
-					rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
+					rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args, Type: results[0]}
+					callSrc = fl.typeOf(call)
 				}
 			} else {
 				name, results, err := fl.resolveCallee(call)
@@ -723,8 +729,18 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				if len(results) != 1 {
 					return nil, fl.errorf(call, "call returns %d values, want 1", len(results))
 				}
-				rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args}
+				rhs = &ir.Instr{Op: ir.OpCall, Func: name, Args: args, Type: results[0]}
+				callSrc = fl.typeOf(call)
 			}
+			// Box concrete call results into interface LHS (gcgort: a = str(i)).
+			if callSrc == nil {
+				callSrc = fl.typeOf(call)
+			}
+			boxed, berr := fl.maybeBoxExpr(rhs, callSrc, s.Lhs[i])
+			if berr != nil {
+				return nil, berr
+			}
+			rhs = boxed
 		} else {
 			var stmts []ir.Stmt
 			var err error
@@ -745,7 +761,23 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			out = append(out, stmts...)
 		}
 		if parallel {
-			tmp := fl.newTemp(want)
+			tmpTy := want
+			if tmpTy == nil {
+				switch r := rhs.(type) {
+				case *ir.Instr:
+					tmpTy = r.Type
+				case *ir.Name:
+					if r.Var != nil {
+						tmpTy = r.Var.Typ
+					} else if r.Temp != nil {
+						tmpTy = r.Temp.Typ
+					}
+				}
+			}
+			if tmpTy == nil {
+				tmpTy = ir.TypeI32
+			}
+			tmp := fl.newTemp(tmpTy)
 			out = append(out, fl.assignTemp(tmp, rhs))
 			slots[i] = rhsSlot{expr: fl.useTemp(tmp), tmp: tmp}
 			continue
@@ -1571,7 +1603,9 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 
 func (fl *funcLower) lhsType(lhs ast.Expr) (ir.Type, error) {
 	if id, ok := lhs.(*ast.Ident); ok && id.Name == "_" {
-		return ir.TypeI32, nil
+		// No destination type: use the RHS's natural IR type. Returning i32
+		// mis-typed `_ = &x` / `_ = x.(T)` (fat pointers and non-i32 values).
+		return nil, nil
 	}
 	t := fl.typeOf(lhs)
 	if t == nil {
@@ -3443,8 +3477,10 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 					return nil, err
 				}
 				v := &ir.Var{Name: bind.Name, Typ: irTy}
-				// Shadow per-case — use unique IR name.
-				v.Name = bind.Name + "_" + itoa(i)
+				// Shadow per-case — unique across all type switches in the
+				// function (convert5 has many switch v := x.(type) in main).
+				fl.varSeq++
+				v.Name = bind.Name + "_" + itoa(fl.varSeq)
 				fl.extraLocals = append(fl.extraLocals, v)
 				// Per-case type-switch vars live in Implicits[CaseClause], not Defs[bind].
 				obj := fl.info.Implicits[cc]

@@ -13,6 +13,21 @@ import (
 
 func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	ptrTy := want
+	// Blank `_ = &x` used to pass want=i32 via lhsType("_"); ignore non-pointer
+	// wants so fat pointers keep `$go.ptr.*` (typeparam/issue49659b).
+	if ptrTy != nil {
+		keep := false
+		if r, ok := ptrTy.(*ir.Ref); ok && r.Named != "" {
+			if strings.HasPrefix(r.Named, "$go.ptr.") ||
+				strings.HasPrefix(r.Named, "$go.struct.") ||
+				strings.HasPrefix(r.Named, "$go.array.") {
+				keep = true
+			}
+		}
+		if !keep {
+			ptrTy = nil
+		}
+	}
 	if ptrTy == nil {
 		if xt := fl.typeOf(x); xt != nil {
 			var err error
@@ -1055,7 +1070,9 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		if !elemZeroIsNull(u.Elem()) {
 			elemIR, err := fl.mapType(u.Elem())
 			if err == nil {
-				if isStruct(u.Elem()) {
+				// Non-empty structs need per-slot zeros; zero-sized / strings
+				// may share one object (bug352 &a[i]==&a[j]).
+				if isStruct(u.Elem()) && !isZeroSize(u.Elem()) {
 					fn := fl.ensureZeroArrayFunc(r.Named, elemIR)
 					return &ir.Instr{
 						Op:   ir.OpCall,

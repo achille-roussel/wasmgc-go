@@ -270,8 +270,9 @@ func (v Value) IsNil() bool {
 	}
 	switch v.Kind() {
 	case Pointer:
+		// New(*T).Elem() stores the *T in a $go.box.ref; nil means boxed null.
 		if v.flag&flagRefBox != 0 {
-			return false // box pointer is always non-nil
+			return runtime.ReflectUnboxRef(v.data) == nil
 		}
 		return v.data == nil
 	case Interface, Slice, Map, Chan, Func, UnsafePointer:
@@ -343,18 +344,32 @@ func (v Value) Elem() Value {
 		// Pointee of New(t) / *T is always addressable.
 		fl := flagAddr
 		if v.flag&flagRefBox != 0 {
-			// reflect.New(map/slice/…) boxes the null ref.
-			fl |= flagRefBox
-		} else {
-			// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
-			// Only these kinds use flagRefBox in New; scalars use typed boxes
-			// and structs/arrays use the object ref itself as *T.
-			// Pointer too: ValueOf(&errP).Elem() for var errP *T must load
-			// through the fat pointer (errors.As / TestAs want check).
+			// New(T).Elem() boxes null refs. When T is itself a pointer/map/…
+			// the first Elem keeps the box so Set can fill the slot (json v2
+			// newAddressableValue). Further Elem through a boxed *scalar/*struct
+			// unboxes then dereferences.
 			switch elem.Kind() {
 			case Map, Slice, Interface, Chan, Func, Pointer:
-				fl |= flagFatPtr
+				return Value{typ: elem, data: v.data, flag: fl | flagRefBox}
 			}
+			ptr := runtime.ReflectUnboxRef(v.data)
+			if ptr == nil {
+				return Value{}
+			}
+			switch elem.Kind() {
+			case Struct, Array:
+				return Value{typ: elem, data: ptr, flag: fl}
+			}
+			return Value{typ: elem, data: ptr, flag: fl | flagFatPtr}
+		}
+		// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
+		// Scalars use typed boxes (New) or $go.ptr.i32 fat pointers
+		// (ValueOf(&local)) — Unbox/SetBox accept both shapes. Structs/arrays
+		// use the object ref itself as *T. Pointer too: ValueOf(&errP).Elem()
+		// for var errP *T must load through the fat pointer (errors.As).
+		switch elem.Kind() {
+		case Map, Slice, Interface, Chan, Func, Pointer:
+			fl |= flagFatPtr
 		}
 		return Value{typ: elem, data: v.data, flag: fl}
 	case Interface:
@@ -450,7 +465,9 @@ func (v Value) dataWord() unsafe.Pointer {
 		// to the slot holding the *T data word (errors.As / TestAs).
 		return runtime.ReflectFatPtrGet(v.data)
 	}
-	if v.flag&flagRefBox != 0 && v.Kind() != Pointer {
+	if v.flag&flagRefBox != 0 {
+		// New(T).Elem() for T pointer/map/slice/iface: data is $go.box.ref;
+		// readers need the boxed value (json v2 newAddressableValue).
 		return runtime.ReflectUnboxRef(v.data)
 	}
 	return v.data
@@ -636,6 +653,15 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 		runtime.ReflectCallSetIndex(runtime.ReflectExtra(v.baseTyp.rt), v.base, v.slot, boxed)
 		return
 	}
+	// ValueOf(&local).Elem(): data is $go.ptr.*; store through class set.
+	if v.flag&flagFatPtr != 0 {
+		runtime.ReflectFatPtrSet(v.data, boxed)
+		return
+	}
+	if v.flag&flagRefBox != 0 {
+		runtime.ReflectSetBoxRef(v.data, boxed)
+		return
+	}
 	// Whole addressable scalar from New().Elem(): mutate the box in place.
 	switch v.Kind() {
 	case Bool:
@@ -669,14 +695,6 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 			df.Set(src.Field(i))
 		}
 	case Map, Slice, Pointer, Interface, Chan, Func:
-		if v.flag&flagRefBox != 0 {
-			runtime.ReflectSetBoxRef(v.data, boxed)
-			return
-		}
-		if v.flag&flagFatPtr != 0 {
-			runtime.ReflectFatPtrSet(v.data, boxed)
-			return
-		}
 		// Composites without a box: Set through flagField/flagIndex parents.
 	case Array:
 		// Whole array Set from New().Elem() is not yet wired.
@@ -686,6 +704,18 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 func (v Value) Set(x Value) {
 	v.mustBeSettable()
 	if !x.IsValid() {
+		return
+	}
+	// Interface slots store a $go.iface ref, not the concrete data word.
+	// ValueOf(T{}).Set into New(iface).Elem() must pack via ReflectIface.
+	if v.Kind() == Interface {
+		var packed unsafe.Pointer
+		if x.Kind() == Interface {
+			packed = x.dataWord()
+		} else if x.typ != nil && x.typ.rt != nil {
+			packed = runtime.ReflectPackAny(runtime.ReflectIface(x.typ.rt, x.dataWord()))
+		}
+		v.setSlot(packed)
 		return
 	}
 	v.setSlot(x.dataWord())
@@ -962,8 +992,9 @@ func New(t Type) Value {
 	pt := asRtype(PointerTo(t))
 	fl := flag(0)
 	switch t.Kind() {
-	case Map, Slice, Interface, Chan, Func:
-		// Zero is a null ref; box it so New(t).Elem() is addressable and Set works.
+	case Map, Slice, Interface, Chan, Func, Pointer:
+		// Zero is a null ref; box it so New(t).Elem() is addressable and Set
+		// works. Pointer matters for json v2 newAddressableValue(*T).
 		data = runtime.ReflectNewRefBox(data)
 		fl = flagRefBox
 	}
@@ -1321,7 +1352,25 @@ func (t *rtype) NumIn() int           { return 0 }
 func (t *rtype) NumOut() int          { return 0 }
 func (t *rtype) In(i int) Type        { return nil }
 func (t *rtype) Out(i int) Type       { return nil }
-func (t *rtype) Implements(Type) bool { return false }
+func (t *rtype) Implements(u Type) bool {
+	if t == nil || u == nil {
+		return false
+	}
+	ur := asRtype(u)
+	if ur == nil || ur.rt == nil || ur.Kind() != Interface {
+		return false
+	}
+	if t.rt == nil {
+		return false
+	}
+	// Interface → interface: identity for now (method-set subset not wired).
+	// Needed so json.Marshaler.Implements(Marshaler) is true and v2's
+	// makeInterfaceArshaler sets whichMarshaler for typed-nil MarshalJSON.
+	if t.Kind() == Interface {
+		return t.rt == ur.rt
+	}
+	return runtime.ReflectImplements(t.rt, ur.rt)
+}
 func (t *rtype) AssignableTo(u Type) bool {
 	return t != nil && u != nil && t.Kind() == u.Kind()
 }

@@ -614,8 +614,17 @@ func (rt *runtimeLower) panicMakeSliceCap() []ir.Stmt {
 
 // allocArray allocates an array of arrName with the given length. Uses
 // array.new with a zero init when elements are non-defaultable (e.g.
-// (ref $go.string)); otherwise array.new_default.
+// (ref $go.string)); struct elems need a fill helper so each slot gets a
+// fresh zero (array.new would alias one object; new_default leaves null).
 func (rt *runtimeLower) allocArray(arrName string, size ir.Expr) (ir.Expr, []ir.Stmt) {
+	if fn, ok := rt.ensureMakeZeroArrayFunc(arrName); ok {
+		return &ir.Instr{
+			Op:   ir.OpCall,
+			Func: fn,
+			Args: []ir.Expr{size},
+			Type: &ir.Ref{Named: arrName},
+		}, nil
+	}
 	if z, ok := rt.arrayElemZero(arrName); ok {
 		return &ir.Instr{
 			Op:   ir.OpArrayNew,
@@ -630,7 +639,99 @@ func (rt *runtimeLower) allocArray(arrName string, size ir.Expr) (ir.Expr, []ir.
 	}, nil
 }
 
-// arrayElemZero returns a zero element for non-defaultable array elems.
+// ensureMakeZeroArrayFunc builds $go.zeroArray.* for make([]Struct) when
+// array.new_default would leave null struct slots (refnull $go.struct.*).
+// Pointer-elem arrays ($go.array.ptr.*) keep nulls. Zero-sized structs share
+// one object via arrayElemZero so &a[i]==&a[j] (bug352).
+func (rt *runtimeLower) ensureMakeZeroArrayFunc(arrName string) (string, bool) {
+	if strings.HasPrefix(arrName, "$go.array.ptr.") {
+		return "", false
+	}
+	td := rt.mod.LookupType(arrName)
+	if td == nil || td.Kind != ir.TypeArray {
+		return "", false
+	}
+	r, ok := td.Elem.(*ir.Ref)
+	if !ok || r.Named == "" || !strings.HasPrefix(r.Named, "$go.struct.") {
+		return "", false
+	}
+	ntd := rt.mod.LookupType(r.Named)
+	if ntd == nil || ntd.Kind != ir.TypeStruct {
+		return "", false
+	}
+	if len(ntd.Fields) == 0 {
+		// Zero-sized: array.new of a shared empty (arrayElemZero).
+		return "", false
+	}
+	name := "$go.zeroArray." + strings.TrimPrefix(arrName, "$")
+	if rt.mod.LookupFunc(name) != nil {
+		return name, true
+	}
+	aty := &ir.Ref{Named: arrName}
+	elemTy := &ir.Ref{Null: true, Named: r.Named}
+	nVar := &ir.Var{Name: "n", Typ: ir.TypeI32}
+	aVar := &ir.Var{Name: "a", Typ: aty}
+	iVar := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	mkZero := func() ir.Expr {
+		z, err := rt.structZeroExpr(ntd, elemTy, map[string]bool{})
+		if err != nil {
+			return &ir.Instr{Op: ir.OpRefNull, Type: elemTy}
+		}
+		return z
+	}
+	loopL := rt.fresh("zeroArrL")
+	breakL := rt.fresh("zeroArrB")
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: aVar},
+		&ir.VarDef{Var: iVar},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "a", Var: aVar}}, Rhs: &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: aty,
+			Args: []ir.Expr{&ir.Name{Raw: "n", Var: nVar}},
+		}},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iVar}}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 0}},
+		&ir.Block{Name: breakL, Body: &ir.Loop{
+			Name: loopL,
+			Body: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{
+						&ir.Name{Raw: "i", Var: iVar},
+						&ir.Name{Raw: "n", Var: nVar},
+					}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Br{Label: breakL}}},
+				},
+				&ir.ExprStmt{X: &ir.Instr{
+					Op:   ir.OpArraySet,
+					Type: aty,
+					Args: []ir.Expr{
+						&ir.Name{Raw: "a", Var: aVar},
+						&ir.Name{Raw: "i", Var: iVar},
+						mkZero(),
+					},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iVar}}, Rhs: &ir.Instr{
+					Op: ir.OpI32Add, Args: []ir.Expr{
+						&ir.Name{Raw: "i", Var: iVar},
+						&ir.Const{Op: ir.OpI32Const, I64: 1},
+					},
+				}},
+				&ir.Br{Label: loopL},
+			}},
+		}},
+		&ir.Return{Results: []ir.Expr{&ir.Name{Raw: "a", Var: aVar}}},
+	}}
+	rt.mod.Funcs = append(rt.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{nVar},
+		Results: []ir.Type{aty},
+		Body:    body,
+	})
+	return name, true
+}
+
+// arrayElemZero returns a zero element for non-defaultable array elems that
+// are safe to share across slots (immutable strings, zero-sized structs).
+// Non-empty struct elems use ensureMakeZeroArrayFunc instead.
 func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
 	if arrName == "$go.array.go.string" {
 		return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
@@ -640,15 +741,16 @@ func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
 		return nil, false
 	}
 	r, ok := td.Elem.(*ir.Ref)
-	if !ok || r.Null {
+	if !ok {
 		return nil, false
 	}
 	if r.Named == "$go.string" {
 		return &ir.Instr{Op: ir.OpStringLit, Str: ""}, true
 	}
-	if strings.HasPrefix(r.Named, "$go.struct.") {
-		if ntd := rt.mod.LookupType(r.Named); ntd != nil && ntd.Kind == ir.TypeStruct {
-			z, err := rt.structZeroExpr(ntd, r, map[string]bool{})
+	// Zero-sized struct{}: one shared object so &slice[i]==&slice[j] (bug352).
+	if strings.HasPrefix(r.Named, "$go.struct.") && !strings.HasPrefix(arrName, "$go.array.ptr.") {
+		if ntd := rt.mod.LookupType(r.Named); ntd != nil && ntd.Kind == ir.TypeStruct && len(ntd.Fields) == 0 {
+			z, err := rt.structZeroExpr(ntd, &ir.Ref{Null: true, Named: r.Named}, map[string]bool{})
 			if err == nil {
 				return z, true
 			}
@@ -685,6 +787,11 @@ func elemOfArrayName(arrName string) ir.Type {
 		return ir.TypeI16
 	}
 	suf := strings.TrimPrefix(arrName, "$go.array.")
+	// $go.array.ptr.go.struct.T → same elem ref as $go.array.go.struct.T
+	// (*Struct and Struct share IR; only the array name differs).
+	if strings.HasPrefix(suf, "ptr.") {
+		suf = strings.TrimPrefix(suf, "ptr.")
+	}
 	switch suf {
 	case "i32":
 		return ir.TypeI32

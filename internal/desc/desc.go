@@ -1568,8 +1568,9 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	}
 	if isPointer(concrete) {
 		elem := derefIfPtr(concrete)
-		if isStruct(elem) {
-			// *Struct: data is already the struct object ref.
+		if isStruct(elem) || isArray(elem) {
+			// *Struct / *[N]T: data is already the object/array ref
+			// (matches mapTypeApprox / lower.mapPointer).
 			expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 		} else {
 			// *scalar / *string / *slice: data is the fat pointer.
@@ -1577,7 +1578,7 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 			expr = &ir.Instr{Op: ir.OpRefCast, Type: ptrIR, Args: []ir.Expr{expr}}
 		}
 		cur = concrete
-	} else if isStruct(concrete) {
+	} else if isStruct(concrete) || isArray(concrete) {
 		expr = &ir.Instr{Op: ir.OpRefCast, Type: baseIR, Args: []ir.Expr{expr}}
 	} else {
 		// Numeric scalars are stored as $go.box.{i32,i64,f32,f64}.
@@ -1612,6 +1613,9 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	}
 	fieldPath := index[:len(index)-1]
 	obj := derefNamed(cur)
+	var lastParent ir.Expr
+	var lastOwner ir.Type
+	var lastField string
 	for _, fi := range fieldPath {
 		st, ok := underlyingStruct(obj)
 		if !ok {
@@ -1623,14 +1627,19 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 		if err != nil {
 			return nil, nil, err
 		}
+		owner := baseIROf(obj)
 		// Zero-size fields (empty struct{}) are omitted from the Wasm struct
 		// (03-type-mapping). Synthesize a default value for promotion instead.
 		if isZeroSizeType(ft) {
 			expr = &ir.Instr{Op: ir.OpStructNewDefault, Type: fieldIR}
+			lastParent, lastOwner, lastField = nil, nil, ""
 		} else {
+			lastParent = expr
+			lastOwner = owner
+			lastField = field.Name()
 			expr = &ir.Instr{
 				Op:    ir.OpStructGet,
-				Type:  baseIROf(obj),
+				Type:  owner,
 				Field: field.Name(),
 				Args:  []ir.Expr{expr},
 			}
@@ -1642,23 +1651,45 @@ func (g *gen) loadRecv(concrete types.Type, index []int, wantRecv types.Type, wa
 	// Match wanted receiver pointer-ness.
 	havePtr := isPointer(obj)
 	needPtr := isPointer(wantRecv)
+	castWant := func(e ir.Expr) ir.Expr {
+		// Scalar receivers (named int, etc.) are plain i32/i64 — no ref.cast.
+		if _, ok := wantIR.(*ir.Ref); !ok {
+			return e
+		}
+		return &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{e}}
+	}
 	switch {
 	case needPtr && !havePtr:
-		// Value in iface but method wants pointer — data was addressable; for
-		// interface method calls on value types stored as refs, the ref is the object.
-		// Struct values in interfaces are boxed as the struct ref; pointer methods
-		// can use that same ref.
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		// Pointer method on value embed. Struct/array shares object ref;
+		// scalar embeds need OpAddr of the field (interface/receiver S.P).
+		if isStruct(obj) || isArray(obj) {
+			expr = castWant(expr)
+		} else if lastParent != nil && lastField != "" {
+			ownerName := ""
+			if r, ok := lastOwner.(*ir.Ref); ok {
+				ownerName = r.Named
+			}
+			expr = &ir.Instr{
+				Op:    ir.OpAddr,
+				Args:  []ir.Expr{lastParent},
+				Field: lastField,
+				Str:   ownerName,
+				Type:  wantIR,
+			}
+		} else {
+			expr = castWant(expr)
+		}
 	case !needPtr && havePtr:
-		// Pointer concrete, value method. *Struct data is already the object
-		// ref (cast above); *scalar/*string/*slice data is a fat pointer — deref.
-		if isStruct(derefIfPtr(obj)) {
-			expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		// Pointer concrete, value method. *Struct / *[N]T data is already the
+		// object ref (cast above); *scalar/*string/*slice data is a fat pointer — deref.
+		elem := derefIfPtr(obj)
+		if isStruct(elem) || isArray(elem) {
+			expr = castWant(expr)
 		} else {
 			expr = &ir.Instr{Op: ir.OpDeref, Type: wantIR, Args: []ir.Expr{expr}}
 		}
 	default:
-		expr = &ir.Instr{Op: ir.OpRefCast, Type: wantIR, Args: []ir.Expr{expr}}
+		expr = castWant(expr)
 	}
 	return stmts, expr, nil
 }
@@ -1960,35 +1991,33 @@ func mapArrayApprox(t *types.Array) (ir.Type, error) {
 			return &ir.Ref{Null: true, Named: "$go.i16s"}, nil
 		}
 	}
-	// Other element arrays: approximate as any (rare as method receivers).
-	return &ir.Ref{Null: true, Heap: ir.HeapAny}, nil
+	elemIR, err := mapTypeApprox(elem)
+	if err != nil {
+		elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
+	}
+	// Match lower.ensureArrayType / arrayNameForElem (*Struct → $go.array.ptr.*).
+	return &ir.Ref{Null: true, Named: arrayNameForElem(elem, elemIR)}, nil
 }
 
 // sliceIRApprox maps []T to the WasmGC slice header name used by the lowerer.
+// Must match lower.mapSlice / sliceTypeName so itab wrappers cast data to the
+// same $go.slice.* the method expects (named []struct receivers like intPairs).
 func sliceIRApprox(elem types.Type) ir.Type {
 	elem = types.Unalias(elem)
+	elemIR, err := mapTypeApprox(elem)
+	if err != nil {
+		elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
+	}
+	// Basics that pack into $go.bytes / $go.i16s (matches mapArrayApprox).
 	if b, ok := elem.Underlying().(*types.Basic); ok {
 		switch b.Kind() {
-		case types.Uint8: // also types.Byte
+		case types.Int8, types.Uint8, types.Bool:
 			return &ir.Ref{Null: true, Named: "$go.slice.i8"}
 		case types.Int16, types.Uint16:
 			return &ir.Ref{Null: true, Named: "$go.slice.i16"}
-		case types.Int, types.Int32, types.Uint, types.Uint32, types.Uintptr, types.Bool:
-			return &ir.Ref{Null: true, Named: "$go.slice.i32"}
-		case types.Int64, types.Uint64:
-			return &ir.Ref{Null: true, Named: "$go.slice.i64"}
-		case types.Float32:
-			return &ir.Ref{Null: true, Named: "$go.slice.f32"}
-		case types.Float64:
-			return &ir.Ref{Null: true, Named: "$go.slice.f64"}
-		case types.String:
-			return &ir.Ref{Null: true, Named: "$go.slice.go.string"}
 		}
 	}
-	if _, ok := elem.Underlying().(*types.Interface); ok {
-		return &ir.Ref{Null: true, Named: "$go.slice.go.iface"}
-	}
-	return &ir.Ref{Null: true, Heap: ir.HeapAny}
+	return &ir.Ref{Null: true, Named: sliceNameFor(arrayNameForElem(elem, elemIR))}
 }
 
 func structName(t *types.Named) string {
@@ -2376,6 +2405,12 @@ func isPointer(t types.Type) bool {
 
 func isStruct(t types.Type) bool {
 	_, ok := underlyingStruct(t)
+	return ok
+}
+
+func isArray(t types.Type) bool {
+	t = types.Unalias(t)
+	_, ok := t.Underlying().(*types.Array)
 	return ok
 }
 
