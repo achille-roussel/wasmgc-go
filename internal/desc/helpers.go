@@ -8,6 +8,29 @@ import (
 
 // fillReflectHelpers replaces empty bodies of runtime.Reflect* unpack helpers
 // that reflect/reflectlite call (docs/design/05).
+// namedDisplay reports whether n looks like "pkg.Type" / "main.T".
+func namedDisplay(n string) bool {
+	for i := 0; i < len(n); i++ {
+		if n[i] == '.' {
+			return true
+		}
+	}
+	return false
+}
+
+// uncomparableNamed reports whether t is a named type whose underlying value
+// cannot be compared (slice/map/func field) — the recover2 unhashable case.
+func uncomparableNamed(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	return !types.Comparable(n.Underlying())
+}
+
 // typeDisplayName returns a gc-like reflect.Type.String for a descriptor:
 // "main.T" for package main (even when the module path is gotestcase), else
 // "pkg.T" using the package name, else the go/types String / stored name.
@@ -178,8 +201,11 @@ func (g *gen) fillReflectTypeName() {
 		if tr == nil || tr.id < 0 {
 			continue
 		}
+		// Only named uncomparable types need display names for unhashable
+		// map-key panics (recover2). Emitting stringConsts for every named
+		// type bloats fmt size corpus past budget.
 		n := typeDisplayName(tr)
-		if n == "" {
+		if n == "" || !namedDisplay(n) || !uncomparableNamed(tr.goType) {
 			continue
 		}
 		entries = append(entries, idName{id: tr.id, name: n})
