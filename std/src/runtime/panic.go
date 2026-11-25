@@ -42,6 +42,10 @@ func panicDivide() {
 	throwPanic(panicErr("runtime error: integer divide by zero"))
 }
 
+func panicNegativeShift() {
+	throwPanic(panicErr("runtime error: negative shift amount"))
+}
+
 func panicUncomparable() {
 	throwPanic(panicErr("runtime error: comparing uncomparable type"))
 }

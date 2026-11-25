@@ -81,8 +81,8 @@ func (g *gen) scanEHNeeds() bool {
 			switch in.Func {
 			case "runtime.throwPanic", "runtime.deferRun", "runtime.gorecover",
 				"runtime.unrecoveredPanic", "runtime.panicIndex", "runtime.panicSliceB",
-				"runtime.panicNil", "runtime.panicDivide", "runtime.panicUncomparable",
-				"runtime.panicTypeAssert", "runtime.panicrangestate":
+				"runtime.panicNil", "runtime.panicDivide", "runtime.panicNegativeShift",
+				"runtime.panicUncomparable", "runtime.panicTypeAssert", "runtime.panicrangestate":
 				need = true
 			}
 		})

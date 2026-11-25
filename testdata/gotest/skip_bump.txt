@@ -1,0 +1,1 @@
+winbatch needs host FS; issue19113 needs reflect.Call for concrete funcs — both exposed as real fails once Exit/shift panics work; compensated by unskipping issue76008 (iface uncomparable) and issue8336 (select recv order).

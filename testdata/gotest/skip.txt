@@ -62,6 +62,7 @@ fixedbugs/issue18149.go — compile error: codegen
 fixedbugs/issue18636.go — wasm module missing export run (large stack array)
 fixedbugs/issue19040.go — compile error: codegen
 fixedbugs/issue19078.go — unsupported: unsafe
+fixedbugs/issue19113.go — reflect.Value.Call/Convert stubs: concrete funcs no-op (MakeFunc only); negative-shift Call never panics
 fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
@@ -140,7 +141,6 @@ fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallEx
 fixedbugs/issue75365.go — output mismatch
 fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.outer not in scope pipeline: IR verify: br target $goto.…
 fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ratio loop
-fixedbugs/issue76008.go — output mismatch
 fixedbugs/issue7690.go — compile error: lower: unsupported binary op &^ for width i32 regexp/syntax: lower: unsupported binary op &^ for wid…
 fixedbugs/issue77779.go — runtime error
 fixedbugs/issue78295.go — compile error: lower: field index 0 out of range for gotestcase.B
@@ -152,7 +152,6 @@ fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue81863.go — runtime error
-fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
 gcgort.go — compile error: IR verify complex64 nullability
@@ -225,4 +224,5 @@ uintptrescapes3.go — unsupported: unsafe
 unsafe_slice_data.go — unsupported: unsafe
 unsafe_string_data.go — unsupported: unsafe
 unsafebuiltins.go — unsupported: unsafe
+winbatch.go — os.Open/ReadFile stub ENOENT; needs host FS to check GOROOT .bat CRLF
 zerosize.go — output mismatch: zerobase pointer identity

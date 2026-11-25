@@ -456,14 +456,61 @@ func replaceMapKeyHashFallthrough(stmts []ir.Stmt, f *ir.Func) []ir.Stmt {
 			}
 		}
 		// assign h = mapKeyHashFallthrough(...); return h
+		// (also skip temp-forwarding assigns: %t2 = %t1; return %t2)
 		if as, ok := s.(*ir.Assign); ok && len(as.Lhs) >= 1 {
 			if call, ok := as.Rhs.(*ir.Instr); ok && call.Op == ir.OpCall && call.Func == "runtime.mapKeyHashFallthrough" {
 				out = append(out, &ir.Return{Results: []ir.Expr{xor}})
-				// Skip a following Return of the assign dest if present.
-				if i+1 < len(stmts) {
-					if _, isRet := stmts[i+1].(*ir.Return); isRet {
-						i++
+				live := map[string]bool{}
+				if d := as.Lhs[0]; d.Temp != nil {
+					live[d.Temp.Name] = true
+				} else if d.Var != nil {
+					live[d.Var.Name] = true
+				}
+				for i+1 < len(stmts) {
+					next := stmts[i+1]
+					if as2, ok := next.(*ir.Assign); ok && len(as2.Lhs) == 1 && as2.Rhs != nil {
+						if n, ok := as2.Rhs.(*ir.Name); ok {
+							src := ""
+							if n.Temp != nil {
+								src = n.Temp.Name
+							} else if n.Var != nil {
+								src = n.Var.Name
+							} else {
+								src = n.Raw
+							}
+							if live[src] {
+								if d := as2.Lhs[0]; d.Temp != nil {
+									live[d.Temp.Name] = true
+								} else if d.Var != nil {
+									live[d.Var.Name] = true
+								}
+								i++
+								continue
+							}
+						}
 					}
+					if ret, ok := next.(*ir.Return); ok {
+						if len(ret.Results) == 1 {
+							if n, ok := ret.Results[0].(*ir.Name); ok {
+								src := ""
+								if n.Temp != nil {
+									src = n.Temp.Name
+								} else if n.Var != nil {
+									src = n.Var.Name
+								} else {
+									src = n.Raw
+								}
+								if live[src] || len(live) > 0 {
+									i++
+								}
+							} else if len(live) > 0 {
+								i++
+							}
+						} else if len(live) > 0 {
+							i++
+						}
+					}
+					break
 				}
 				continue
 			}

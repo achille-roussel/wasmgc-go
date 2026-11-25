@@ -690,7 +690,7 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	// count ≥ bit width. Constant ≥width cases are folded above.
 	if e.Op == token.SHL || e.Op == token.SHR {
 		if tv, ok := fl.info.Types[e.Y]; !ok || tv.Value == nil {
-			return fl.shiftBounded(e.Op, x, y, xWant, yWant, xt, stmts)
+			return fl.shiftBounded(e.Op, x, y, xWant, yWant, xt, fl.typeOf(e.Y), stmts)
 		}
 		// Constant count < width: align count width to value width for IR shifts.
 		if irNumWidth(xWant) == ir.I64 && irNumWidth(yWant) == ir.I32 {
@@ -884,10 +884,11 @@ func goIntBits(t types.Type) int {
 }
 
 // shiftBounded emits Go's shift semantics for a non-constant count:
-// if count ≥ bit width → 0 (<< / unsigned >>) or signed fill (signed >>);
-// else the native Wasm shift. Count width (yWant) may differ from x (e.g.
-// int << uint64); compare in the count's width, convert for the Wasm shift.
-func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant, yWant ir.Type, xt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
+// if count < 0 (signed count types) → panic; if count ≥ bit width → 0
+// (<< / unsigned >>) or signed fill (signed >>); else the native Wasm shift.
+// Count width (yWant) may differ from x (e.g. int << uint64); compare in the
+// count's width, convert for the Wasm shift.
+func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant, yWant ir.Type, xt, yt types.Type, stmts []ir.Stmt) (ir.Expr, []ir.Stmt, error) {
 	is64 := irNumWidth(xWant) == ir.I64
 	yIs64 := irNumWidth(yWant) == ir.I64
 	bitW := int64(goIntBits(xt))
@@ -911,6 +912,25 @@ func (fl *funcLower) shiftBounded(op token.Token, x, y ir.Expr, xWant, yWant ir.
 	}
 	yv := fl.newVar("shy", yTy)
 	stmts = append(stmts, fl.assignVar(xv, x), fl.assignVar(yv, y))
+
+	// Signed shift counts: negative → panic (issue19113 / Go spec). Unsigned
+	// counts use GeU below (negative bit patterns are just huge ≥ width).
+	if yt != nil && !isUnsigned(yt) {
+		var neg ir.Expr
+		if yIs64 {
+			neg = &ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{fl.useVar(yv), fl.i64const(0)}}
+		} else {
+			neg = &ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{fl.useVar(yv), fl.i32const(0)}}
+		}
+		stmts = append(stmts, &ir.If{
+			Cond: neg,
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNegativeShift"}},
+				&ir.Unreachable{},
+			}},
+		})
+		fl.mayPanic = true
+	}
 
 	var ge ir.Expr
 	if yIs64 {

@@ -628,13 +628,29 @@ func (rt *runtimeLower) expandIfaceEq(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 				}),
 			}}
 		}
+		// Map/Slice/Func are never comparable (Go spec). Chan/Pointer/
+		// Interface/UnsafePointer use identity (refEq). Do not fall through
+		// uncomparable kinds to refEq — that made interface/noeq vacuously
+		// fail (or pass via defer double-fire) when x==x on a map/slice/func
+		// dynamic type returned false instead of panicking.
+		uncomparable := &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicUncomparable"}},
+			&ir.Unreachable{},
+		}}
 		tail := &ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(kindV), &ir.Const{Op: ir.OpI32Const, I64: 12}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{boxCmp("$go.box.i32", ir.OpI32Eq)}},
 			Else: &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(25), kindEq(17)}}, // Struct|Array
 				Then: structThen,
-				Else: &ir.Seq{Stmts: []ir.Stmt{refEq}},
+				Else: &ir.If{
+					Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+						kindEq(19), // Func
+						&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{kindEq(21), kindEq(23)}}, // Map|Slice
+					}},
+					Then: uncomparable,
+					Else: &ir.Seq{Stmts: []ir.Stmt{refEq}},
+				},
 			},
 		}
 		haveC64 := rt.mod.LookupType("$go.complex64") != nil
