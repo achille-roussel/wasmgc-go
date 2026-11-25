@@ -1275,6 +1275,11 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 		return &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(v)}}
 	}
 
+	// Result via a function-scoped var: assigning s.Lhs (often a Temp) inside
+	// both if arms makes the temp unusable after the If (bug491 multi-assign).
+	resV := rt.newVar("app", st)
+	pre = append(pre, &ir.VarDef{Var: resV})
+
 	fitSeq := &ir.Seq{}
 	for i, el := range elemEx {
 		idx := &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{
@@ -1286,10 +1291,9 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 			Args: []ir.Expr{nnData(dataV), idx, el},
 		}})
 	}
-	fitSeq.Stmts = append(fitSeq.Stmts, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{Op: ir.OpStructNew, Type: st, Args: []ir.Expr{nnData(dataV), useV(offV), useV(nlenV), useV(capV)}},
-	})
+	fitSeq.Stmts = append(fitSeq.Stmts, assignV(resV, &ir.Instr{
+		Op: ir.OpStructNew, Type: st, Args: []ir.Expr{nnData(dataV), useV(offV), useV(nlenV), useV(capV)},
+	}))
 
 	growSeq := &ir.Seq{}
 	growSeq.Stmts = append(growSeq.Stmts, assignV(twocapV, &ir.Instr{Op: ir.OpI32Mul, Args: []ir.Expr{useV(capV), &ir.Const{Op: ir.OpI32Const, I64: 2}}}))
@@ -1316,14 +1320,14 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 			Args: []ir.Expr{nnData(ndataV), idx, el},
 		}})
 	}
-	growSeq.Stmts = append(growSeq.Stmts, &ir.Assign{
-		Lhs: s.Lhs,
-		Rhs: &ir.Instr{Op: ir.OpStructNew, Type: st, Args: []ir.Expr{
+	growSeq.Stmts = append(growSeq.Stmts, assignV(resV, &ir.Instr{
+		Op: ir.OpStructNew, Type: st, Args: []ir.Expr{
 			nnData(ndataV), &ir.Const{Op: ir.OpI32Const, I64: 0}, useV(nlenV), useV(ncapV),
-		}},
-	})
+		},
+	}))
 
 	pre = append(pre, &ir.If{Cond: fits, Then: fitSeq, Else: growSeq})
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(resV)})
 	return pre, nil
 }
 

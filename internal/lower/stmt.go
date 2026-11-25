@@ -634,36 +634,56 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				}
 				out = append(out, sstmts...)
 			} else {
-				rhsEx, rs, err := fl.expr(s.Rhs[i], want)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, rs...)
-				// s += t for strings is concatenation, not i32.add.
-				if s.Tok == token.ADD_ASSIGN && isString(fl.typeOf(s.Lhs[i])) {
-					rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}
-				} else if s.Tok == token.AND_NOT_ASSIGN {
-					// x &^= y → x = x & (^y); binOp has no AND_NOT for i32.
-					width := irNumWidth(want)
-					var ynot ir.Expr
-					if width == ir.I64 {
-						ynot = &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{rhsEx, fl.i64const(-1)}}
-						rhs = &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}
-					} else {
-						ynot = &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{rhsEx, fl.i32const(-1)}}
-						rhs = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}
-					}
-				} else {
-					lhsGo := fl.typeOf(s.Lhs[i])
-					op, err := fl.binaryOpFromAssign(s.Tok, lhsGo)
-					if err != nil {
-						return nil, fl.errorf(s, "%v", err)
-					}
-					rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
+				lhsGo := fl.typeOf(s.Lhs[i])
+				// complex64/128 op=: arithmetic on real/imag (Ref has no numeric width).
+				if isComplex(lhsGo) && (s.Tok == token.ADD_ASSIGN || s.Tok == token.SUB_ASSIGN ||
+					s.Tok == token.MUL_ASSIGN || s.Tok == token.QUO_ASSIGN) {
+					binTok := token.ADD
 					switch s.Tok {
-					case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
-						token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN:
-						rhs = fl.truncateInt(rhs, lhsGo)
+					case token.SUB_ASSIGN:
+						binTok = token.SUB
+					case token.MUL_ASSIGN:
+						binTok = token.MUL
+					case token.QUO_ASSIGN:
+						binTok = token.QUO
+					}
+					cx, cst, err := fl.complexBinary(&ast.BinaryExpr{X: s.Lhs[i], Op: binTok, Y: s.Rhs[i]}, want)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, cst...)
+					rhs = cx
+				} else {
+					rhsEx, rs, err := fl.expr(s.Rhs[i], want)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, rs...)
+					// s += t for strings is concatenation, not i32.add.
+					if s.Tok == token.ADD_ASSIGN && isString(lhsGo) {
+						rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}
+					} else if s.Tok == token.AND_NOT_ASSIGN {
+						// x &^= y → x = x & (^y); binOp has no AND_NOT for i32.
+						width := irNumWidth(want)
+						var ynot ir.Expr
+						if width == ir.I64 {
+							ynot = &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{rhsEx, fl.i64const(-1)}}
+							rhs = &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}
+						} else {
+							ynot = &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{rhsEx, fl.i32const(-1)}}
+							rhs = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}
+						}
+					} else {
+						op, err := fl.binaryOpFromAssign(s.Tok, lhsGo)
+						if err != nil {
+							return nil, fl.errorf(s, "%v", err)
+						}
+						rhs = &ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}}
+						switch s.Tok {
+						case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
+							token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN:
+							rhs = fl.truncateInt(rhs, lhsGo)
+						}
 					}
 				}
 			}

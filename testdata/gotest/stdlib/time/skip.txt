@@ -1,6 +1,5 @@
 # time — wasmgc-go test skips
 TestAddDate — lower/runtime gaps in time tests
-TestAddToExactSecond — lower/runtime gaps in time tests
 TestAdjustTimers — lower/runtime gaps in time tests
 TestAfter — lower/runtime gaps in time tests
 TestAfterFunc — lower/runtime gaps in time tests
@@ -20,16 +19,6 @@ TestCountMallocs — lower/runtime gaps in time tests
 TestDate — lower/runtime gaps in time tests
 TestDaysIn — lower/runtime gaps in time tests
 TestDefaultLoc — lower/runtime gaps in time tests
-TestDurationAbs — lower/runtime gaps in time tests
-TestDurationHours — lower/runtime gaps in time tests
-TestDurationMicroseconds — lower/runtime gaps in time tests
-TestDurationMilliseconds — lower/runtime gaps in time tests
-TestDurationMinutes — lower/runtime gaps in time tests
-TestDurationNanoseconds — lower/runtime gaps in time tests
-TestDurationRound — lower/runtime gaps in time tests
-TestDurationSeconds — lower/runtime gaps in time tests
-TestDurationString — lower/runtime gaps in time tests
-TestDurationTruncate — lower/runtime gaps in time tests
 TestEarlyLocation — lower/runtime gaps in time tests
 TestEmbeddedTZData — lower/runtime gaps in time tests
 TestEnvTZUsage — lower/runtime gaps in time tests
@@ -79,9 +68,7 @@ TestOverflowPeriodRuntimeTimer — lower/runtime gaps in time tests
 TestOverflowSleep — lower/runtime gaps in time tests
 TestParse — lower/runtime gaps in time tests
 TestParseDayOutOfRange — lower/runtime gaps in time tests
-TestParseDuration — lower/runtime gaps in time tests
 TestParseDurationErrors — lower/runtime gaps in time tests
-TestParseDurationRoundTrip — lower/runtime gaps in time tests
 TestParseErrors — lower/runtime gaps in time tests
 TestParseFractionalSecondsLongerThanNineDigits — lower/runtime gaps in time tests
 TestParseInLocation — lower/runtime gaps in time tests
@@ -96,7 +83,6 @@ TestResetResult — lower/runtime gaps in time tests
 TestRFC3339Conversion — lower/runtime gaps in time tests
 TestRubyParse — lower/runtime gaps in time tests
 TestSleep — lower/runtime gaps in time tests
-TestSleepZeroDeadlock — lower/runtime gaps in time tests
 TestStd0xParseError — lower/runtime gaps in time tests
 TestStopResult — lower/runtime gaps in time tests
 TestSub — lower/runtime gaps in time tests
@@ -127,7 +113,6 @@ TestUnix — lower/runtime gaps in time tests
 TestUnixMicro — lower/runtime gaps in time tests
 TestUnixMilli — lower/runtime gaps in time tests
 TestUnixNano — lower/runtime gaps in time tests
-TestUnixNanoUTC — lower/runtime gaps in time tests
 TestUnixNanoUTCAndBack — lower/runtime gaps in time tests
 TestUnixUTC — lower/runtime gaps in time tests
 TestUnixUTCAndBack — lower/runtime gaps in time tests
@@ -135,9 +120,7 @@ TestUnmarshalInvalidTimes — lower/runtime gaps in time tests
 TestUnmarshalTextAllocations — lower/runtime gaps in time tests
 TestUSPacificZoneAbbr — lower/runtime gaps in time tests
 TestVersion3 — lower/runtime gaps in time tests
-TestWeekdayString — lower/runtime gaps in time tests
 TestYearDay — lower/runtime gaps in time tests
-TestZeroMonthString — lower/runtime gaps in time tests
 TestZeroTime — lower/runtime gaps in time tests
 TestZeroTimer — lower/runtime gaps in time tests
 TestZeroTimerResetPanics — lower/runtime gaps in time tests

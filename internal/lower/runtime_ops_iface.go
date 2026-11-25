@@ -402,15 +402,17 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 		)
 		return pre, nil
 	}
-	// One-result form: panic on failure.
+	// One-result form: panic on failure, then assign outside the If so the
+	// result Temp is defined in the outer region (recover3 type-assert expr).
 	pre = append(pre, &ir.If{
 		Cond: useV(okV),
-		Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: useV(outV)}}},
+		Then: &ir.Seq{},
 		Else: &ir.Seq{Stmts: []ir.Stmt{
 			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
 			&ir.Unreachable{},
 		}},
 	})
+	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(outV)})
 	return pre, nil
 }
 

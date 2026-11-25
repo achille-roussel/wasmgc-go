@@ -739,7 +739,7 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is) and
 	// array/struct value-clone helpers (docs/design/03). Tighten once clone
 	// is shared/pruned across packages.
-	runM8(t, "m8_fmt_hello", "hello\n", 172*1024) // ReflectImplements/PackAny/New(*T) box
+	runM8(t, "m8_fmt_hello", "hello\n", 220*1024) // time rewrite ParseDuration/String pulls into fmt
 }
 
 func TestM8FmtIntE2E(t *testing.T) {
