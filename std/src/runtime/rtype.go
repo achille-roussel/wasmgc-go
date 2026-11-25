@@ -61,6 +61,10 @@ func ReflectCallSetIndex(extra unsafe.Pointer, data unsafe.Pointer, i int, v uns
 // ReflectCallLen calls $go.extra.slice.len(data) → i32.
 func ReflectCallLen(extra unsafe.Pointer, data unsafe.Pointer) int
 
+// ReflectArrayLen returns the fixed length stored on $go.extra.slice.n
+// (arrays only; 0 for slices). Body-less: desc fills the IR.
+func ReflectArrayLen(extra unsafe.Pointer) int
+
 // ReflectString unboxes a string data word to a Go string.
 // Body-less: desc fills (ref.cast to $go.string).
 func ReflectString(data unsafe.Pointer) string
@@ -76,6 +80,14 @@ func ReflectUnboxF32(data unsafe.Pointer) float32
 
 // ReflectUnboxF64 reads $go.box.f64.v.
 func ReflectUnboxF64(data unsafe.Pointer) float64
+
+// ReflectComplex64 reads a $go.complex64 data word as complex128.
+// Body-less: desc fills the IR.
+func ReflectComplex64(data unsafe.Pointer) complex128
+
+// ReflectComplex128 reads a $go.complex128 data word.
+// Body-less: desc fills the IR.
+func ReflectComplex128(data unsafe.Pointer) complex128
 
 // ReflectMapLen returns len of a map whose data word is an hmap ref.
 // Body requires hmap from map.go — EnsureReflect typechecks them together.

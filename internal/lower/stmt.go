@@ -641,7 +641,7 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 				out = append(out, rs...)
 				// s += t for strings is concatenation, not i32.add.
 				if s.Tok == token.ADD_ASSIGN && isString(fl.typeOf(s.Lhs[i])) {
-					rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{lhsEx, rhsEx}}
+					rhs = &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}
 				} else if s.Tok == token.AND_NOT_ASSIGN {
 					// x &^= y → x = x & (^y); binOp has no AND_NOT for i32.
 					width := irNumWidth(want)
@@ -1003,7 +1003,7 @@ func (fl *funcLower) assignToSavedStar(lhs *ast.StarExpr, ptr, rhs ir.Expr) ([]i
 func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.Expr, want ir.Type) ([]ir.Stmt, bool, error) {
 	combine := func(lhsEx, rhsEx ir.Expr, lhsGo types.Type) (ir.Expr, error) {
 		if tok == token.ADD_ASSIGN && lhsGo != nil && isString(lhsGo) {
-			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{lhsEx, rhsEx}}, nil
+			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}, nil
 		}
 		if tok == token.AND_NOT_ASSIGN {
 			if irNumWidth(want) == ir.I64 {

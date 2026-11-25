@@ -863,9 +863,10 @@ func (p *pp) printValue(value reflect.Value, verb rune, depth int) {
 			p.printValue(value, verb, depth+1)
 		}
 	case reflect.Array, reflect.Slice:
-		// wasmgc: nested switch verb multi-case inside large Kind switch misses.
-		if verb == 's' || verb == 'q' || verb == 'x' || verb == 'X' {
-			// Handle byte and uint8 slices and arrays special for the above verbs.
+		// Handle byte and uint8 slices and arrays specially for %s/%q/%x/%X.
+		// (PruneDeadFmtTypeCases must not treat verb runes as reflect.Kinds.)
+		switch verb {
+		case 's', 'q', 'x', 'X':
 			t := f.Type()
 			if t.Elem().Kind() == reflect.Uint8 {
 				var bytes []byte

@@ -143,6 +143,9 @@ func (g *gen) fillReflectFatPtrGet() {
 	classTy := &ir.Ref{Named: "$go.class.ref"}
 	p := &ir.Var{Name: "p", Typ: ptrTy}
 	cl := &ir.Var{Name: "cl", Typ: classTy}
+	// flagFatPtr Values sometimes hold a plain data word (not $go.ptr.ref),
+	// e.g. interface/struct fields walked by fmt.printValue. ref.cast would
+	// trap; ref.test and fall through by returning data unchanged.
 	body := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: p},
 		&ir.VarDef{Var: cl},
@@ -152,22 +155,30 @@ func (g *gen) fillReflectFatPtrGet() {
 				&ir.Instr{Op: ir.OpRefNull, Type: anyT},
 			}}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
-					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-				}},
-				&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
-					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
-					Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
-				}},
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
-					Op:   ir.OpCallRef,
-					Type: &ir.Ref{Named: "$go.get.ref"},
-					Args: []ir.Expr{
-						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
-						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
-						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
-					},
-				}}},
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+						}},
+						&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+							Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+							Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+						}},
+						&ir.Return{Results: []ir.Expr{&ir.Instr{
+							Op:   ir.OpCallRef,
+							Type: &ir.Ref{Named: "$go.get.ref"},
+							Args: []ir.Expr{
+								&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+								&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+								&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+							},
+						}}},
+					}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+						&ir.Name{Raw: "data", Var: data},
+					}}}},
+				},
 			}},
 		},
 		&ir.Unreachable{},

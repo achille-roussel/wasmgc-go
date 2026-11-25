@@ -494,7 +494,13 @@ func (v Value) Float() float64 {
 }
 
 func (v Value) Complex() complex128 {
-	panic("reflect: Complex not implemented")
+	switch v.Kind() {
+	case Complex64:
+		return runtime.ReflectComplex64(v.dataWord())
+	case Complex128:
+		return runtime.ReflectComplex128(v.dataWord())
+	}
+	panic("reflect: call of Complex on " + v.Kind().String())
 }
 
 func (v Value) String() string {
@@ -749,7 +755,10 @@ func (v Value) SetBytes(x []byte)           {}
 func (v Value) SetCap(n int)                {}
 func (v Value) SetLen(n int)                {}
 func (v Value) SetPointer(x unsafe.Pointer) {}
-func (v Value) CanComplex() bool            { return false }
+func (v Value) CanComplex() bool {
+	k := v.Kind()
+	return k == Complex64 || k == Complex128
+}
 func (v Value) CanFloat() bool {
 	k := v.Kind()
 	return k == Float32 || k == Float64
@@ -1189,10 +1198,11 @@ func (t *rtype) String() string {
 		if k == Struct {
 			return "struct"
 		}
+		if k == Interface {
+			return "interface {}"
+		}
 		if k == Array {
-			// Len() is still a stub (0); emit kind name until array
-			// length is wired into the type descriptor.
-			return "array"
+			return "[" + itoa(t.Len()) + "]" + t.Elem().String()
 		}
 		if k == Slice {
 			return "[]" + t.Elem().String()
@@ -1239,7 +1249,12 @@ func (t *rtype) Key() Type {
 	return wrap(runtime.ReflectMapKey(runtime.ReflectExtra(t.rt)))
 }
 
-func (t *rtype) Len() int { return 0 }
+func (t *rtype) Len() int {
+	if t == nil || t.rt == nil || t.Kind() != Array {
+		return 0
+	}
+	return runtime.ReflectArrayLen(runtime.ReflectExtra(t.rt))
+}
 
 func (t *rtype) Bits() int {
 	if t == nil {
@@ -1339,5 +1354,29 @@ func (t *rtype) NumMethod() int    { return 0 }
 func (t *rtype) Method(int) Method { return Method{} }
 func (t *rtype) IsVariadic() bool  { return false }
 func (t *rtype) ChanDir() ChanDir  { return BothDir }
+
+// itoa is a tiny strconv-free decimal converter for Type.String.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var neg bool
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
 
 var _ = unsafe.Sizeof(0)
