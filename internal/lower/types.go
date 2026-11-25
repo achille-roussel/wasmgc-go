@@ -659,6 +659,16 @@ func (l *pkgLower) ensureArrayType(elem types.Type) (string, ir.Type, error) {
 		return "", nil, err
 	}
 	name := arrayTypeName(elemIR)
+	// *Struct shares the struct's IR ref with Struct, but make/append zeros
+	// differ (nil vs fresh struct). Give pointer elems a distinct array name
+	// so allocArray leaves nulls instead of filling zeros (strings.Replacer).
+	if isObjectPointer(elem) {
+		if r, ok := elemIR.(*ir.Ref); ok && r.Named != "" {
+			name = "$go.array.ptr." + strings.TrimPrefix(r.Named, "$")
+		} else {
+			name = "$go.array.ptr." + strings.TrimPrefix(name, "$go.array.")
+		}
+	}
 	l.mod.InternType(&ir.TypeDef{
 		Name:    name,
 		Kind:    ir.TypeArray,

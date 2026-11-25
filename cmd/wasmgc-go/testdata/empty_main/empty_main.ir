@@ -42,6 +42,70 @@ type $go.box.f64 sub $go.object struct {
   mut v f64
 }
 
+type $go.box.ref sub $go.object struct {
+  mut v refnull any
+}
+
+type $go.get.i32 func (refnull any, i32) i32
+
+type $go.set.i32 func (refnull any, i32, i32)
+
+type $go.class.i32 sub $go.object struct {
+  get ref $go.get.i32
+  set ref $go.set.i32
+}
+
+type $go.ptr.i32 sub $go.object struct {
+  class ref $go.class.i32
+  base refnull any
+  index i32
+}
+
+type $go.get.i64 func (refnull any, i32) i64
+
+type $go.set.i64 func (refnull any, i32, i64)
+
+type $go.class.i64 sub $go.object struct {
+  get ref $go.get.i64
+  set ref $go.set.i64
+}
+
+type $go.ptr.i64 sub $go.object struct {
+  class ref $go.class.i64
+  base refnull any
+  index i32
+}
+
+type $go.get.f32 func (refnull any, i32) f32
+
+type $go.set.f32 func (refnull any, i32, f32)
+
+type $go.class.f32 sub $go.object struct {
+  get ref $go.get.f32
+  set ref $go.set.f32
+}
+
+type $go.ptr.f32 sub $go.object struct {
+  class ref $go.class.f32
+  base refnull any
+  index i32
+}
+
+type $go.get.f64 func (refnull any, i32) f64
+
+type $go.set.f64 func (refnull any, i32, f64)
+
+type $go.class.f64 sub $go.object struct {
+  get ref $go.get.f64
+  set ref $go.set.f64
+}
+
+type $go.ptr.f64 sub $go.object struct {
+  class ref $go.class.f64
+  base refnull any
+  index i32
+}
+
 func export "run" main.run() {
   call main.main()
   return

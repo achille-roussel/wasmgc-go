@@ -16,6 +16,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectString()
 	g.fillReflectIface()
 	g.fillReflectIfaceFromData()
+	g.fillReflectPackAny()
 	g.fillReflectCallGetField()
 	g.fillReflectCallSetField()
 	g.fillReflectCallIndex()
@@ -49,6 +50,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectSliceOf()
 	g.fillReflectPointerTo()
 	g.fillReflectMapOfEmpty()
+	g.fillReflectImplements()
 	g.fillReflectNew()
 	g.fillReflectMakeSlice()
 	return nil
@@ -189,39 +191,66 @@ func (g *gen) fillReflectString() {
 	if g.mod.LookupFunc(name) == nil || !emptyBody(g.mod.LookupFunc(name)) {
 		return
 	}
-	// New(string).Elem() stores $go.box.string; unwrap before casting to $go.string.
+	// New(string).Elem() stores $go.box.string; ValueOf(&s).Elem() stores $go.ptr.ref;
+	// plain iface data may already be $go.string.
 	g.ensureBoxString()
+	g.ensureFatPtrRefTypes()
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	strTy := &ir.Ref{Named: "$go.string"}
 	d := &ir.Var{Name: "data", Typ: anyT}
 	boxTy := &ir.Ref{Named: "$go.box.string"}
-	hasBox := g.mod.LookupType("$go.box.string") != nil
-	var elseBody ir.Region
-	if hasBox {
-		bv := &ir.Var{Name: "b", Typ: boxTy}
-		elseBody = &ir.Seq{Stmts: []ir.Stmt{
-			&ir.VarDef{Var: bv},
-			&ir.If{
-				Cond: &ir.Instr{Op: ir.OpRefTest, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}}},
-				Then: &ir.Seq{Stmts: []ir.Stmt{
-					&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: bv}}, Rhs: &ir.Instr{
-						Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
-					}},
-					&ir.Return{Results: []ir.Expr{&ir.Instr{
-						Op: ir.OpStructGet, Type: boxTy, Field: "v",
-						Args: []ir.Expr{&ir.Name{Raw: "b", Var: bv}},
-					}}},
+	ptrTy := &ir.Ref{Named: "$go.ptr.ref"}
+	classTy := &ir.Ref{Named: "$go.class.ref"}
+	bv := &ir.Var{Name: "b", Typ: boxTy}
+	p := &ir.Var{Name: "p", Typ: ptrTy}
+	cl := &ir.Var{Name: "cl", Typ: classTy}
+	castStr := &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
+		Op: ir.OpRefCast, Type: strTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
+	}}}}}
+	ptrBranch := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
 				}},
-				Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
-					Op: ir.OpRefCast, Type: strTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
-				}}}}},
-			},
-		}}
-	} else {
-		elseBody = &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
-			Op: ir.OpRefCast, Type: strTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
-		}}}}}
-	}
+				&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpRefCast, Type: strTy,
+					Args: []ir.Expr{&ir.Instr{
+						Op: ir.OpCallRef, Type: &ir.Ref{Named: "$go.get.ref"},
+						Args: []ir.Expr{
+							&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+							&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+							&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+						},
+					}},
+				}}},
+			}},
+			Else: castStr,
+		},
+	}}
+	elseBody := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: bv},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: bv}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpStructGet, Type: boxTy, Field: "v",
+					Args: []ir.Expr{&ir.Name{Raw: "b", Var: bv}},
+				}}},
+			}},
+			Else: ptrBranch,
+		},
+	}}
 	body := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: d}}},
@@ -272,20 +301,75 @@ func (g *gen) fillReflectIface() {
 	g.replaceBody(name, []*ir.Var{typ, data}, []ir.Type{ifaceTy}, body)
 }
 
+func (g *gen) fillReflectPackAny() {
+	name := "runtime.ReflectPackAny"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	ifaceTy := &ir.Ref{Null: true, Named: "$go.iface"}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	i := &ir.Var{Name: "i", Typ: ifaceTy}
+	// any and unsafe.Pointer are both anyref; return the iface ref as-is.
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.Return{Results: []ir.Expr{&ir.Instr{
+			Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{&ir.Name{Raw: "i", Var: i}},
+		}}},
+	}}
+	g.replaceBody(name, []*ir.Var{i}, []ir.Type{anyT}, body)
+}
+
 func (g *gen) fillReflectIfaceFromData() {
 	name := "runtime.ReflectIfaceFromData"
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	ifaceTy := &ir.Ref{Null: true, Named: "$go.iface"}
 	data := &ir.Var{Name: "data", Typ: anyT}
+	g.ensureBoxRef()
+	ifaceRef := &ir.Ref{Named: "$go.iface"}
+	boxTy := &ir.Ref{Named: "$go.box.ref"}
+	iv := &ir.Var{Name: "iv", Typ: ifaceRef}
+	bv := &ir.Var{Name: "bv", Typ: boxTy}
+	nullIface := &ir.Instr{Op: ir.OpRefNull, Type: ifaceTy}
+	// Soft paths: New(interface{}).Elem() may be $go.box.ref; plain fields are
+	// $go.iface. Wrong shapes used to illegal-cast (json CompactBig / Elem).
 	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: iv},
+		&ir.VarDef{Var: bv},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefNull, Type: ifaceTy},
-			}}}},
-			Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefCast, Type: ifaceTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
-			}}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: ifaceRef, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
+						Op: ir.OpRefCast, Type: ifaceTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+					}}}}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "bv", Var: bv}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+								}},
+								&ir.If{
+									Cond: &ir.Instr{Op: ir.OpRefTest, Type: ifaceRef, Args: []ir.Expr{&ir.Instr{
+										Op: ir.OpStructGet, Type: boxTy, Field: "v",
+										Args: []ir.Expr{&ir.Name{Raw: "bv", Var: bv}},
+									}}},
+									Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
+										Op: ir.OpRefCast, Type: ifaceTy, Args: []ir.Expr{&ir.Instr{
+											Op: ir.OpStructGet, Type: boxTy, Field: "v",
+											Args: []ir.Expr{&ir.Name{Raw: "bv", Var: bv}},
+										}},
+									}}}}},
+									Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+								},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+						},
+					}},
+				},
+			}},
 		},
 		&ir.Unreachable{},
 	}}
@@ -809,6 +893,97 @@ func (g *gen) fillReflectPointerTo() {
 	})
 }
 
+// fillReflectImplements returns true when an itab was emitted for (concrete, iface).
+func (g *gen) fillReflectImplements() {
+	name := "runtime.ReflectImplements"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	t := &ir.Var{Name: "t", Typ: typeTy}
+	u := &ir.Var{Name: "u", Typ: typeTy}
+	tid := &ir.Var{Name: "tid", Typ: ir.TypeI32}
+	uid := &ir.Var{Name: "uid", Typ: ir.TypeI32}
+	falseC := &ir.Const{Op: ir.OpI32Const, I64: 0}
+	trueC := &ir.Const{Op: ir.OpI32Const, I64: 1}
+
+	type pair struct{ tid, uid int32 }
+	seen := map[pair]bool{}
+	var pairs []pair
+	for _, it := range g.itabs {
+		if it == nil {
+			continue
+		}
+		ct := g.types[it.concKey]
+		itIface := g.types[it.ifaceKey]
+		if ct == nil || itIface == nil || ct.id < 0 || itIface.id < 0 {
+			continue
+		}
+		p := pair{tid: ct.id, uid: itIface.id}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		pairs = append(pairs, p)
+	}
+	// Stable order for deterministic IR.
+	for i := 0; i < len(pairs); i++ {
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].tid < pairs[i].tid || (pairs[j].tid == pairs[i].tid && pairs[j].uid < pairs[i].uid) {
+				pairs[i], pairs[j] = pairs[j], pairs[i]
+			}
+		}
+	}
+
+	checks := make([]ir.Stmt, 0, len(pairs)+1)
+	for _, p := range pairs {
+		p := p
+		checks = append(checks, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+					&ir.Name{Raw: "tid", Var: tid},
+					&ir.Const{Op: ir.OpI32Const, I64: int64(p.tid)},
+				}},
+				&ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+					&ir.Name{Raw: "uid", Var: uid},
+					&ir.Const{Op: ir.OpI32Const, I64: int64(p.uid)},
+				}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{trueC}}}},
+			Else: &ir.Seq{},
+		})
+	}
+	checks = append(checks, &ir.Return{Results: []ir.Expr{falseC}})
+
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: tid}, &ir.VarDef{Var: uid},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{falseC}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "u", Var: u}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{falseC}}}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "tid", Var: tid}}, Rhs: &ir.Instr{
+							Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id",
+							Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
+						}},
+						&ir.Assign{Lhs: []ir.Dest{{Name: "uid", Var: uid}}, Rhs: &ir.Instr{
+							Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id",
+							Args: []ir.Expr{&ir.Name{Raw: "u", Var: u}},
+						}},
+						&ir.Seq{Stmts: checks},
+					}},
+				},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{t, u}, []ir.Type{ir.TypeI32}, body)
+}
+
 func (g *gen) fillReflectMapOfEmpty() {
 	empty := types.NewStruct(nil, nil)
 	g.fillReflectCtorByElemID("runtime.ReflectMapOfEmpty", func(elem *typeRec) *typeRec {
@@ -994,29 +1169,69 @@ func (g *gen) fillReflectUnbox(name, box string, res ir.Type) {
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	data := &ir.Var{Name: "data", Typ: anyT}
 	zero := ir.Expr(&ir.Const{Op: ir.OpI32Const, I64: 0})
+	kind := "i32"
 	switch res {
 	case ir.TypeI64:
 		zero = &ir.Const{Op: ir.OpI64Const, I64: 0}
+		kind = "i64"
 	case ir.TypeF32:
 		zero = &ir.Const{Op: ir.OpF32Const, F64: 0}
+		kind = "f32"
 	case ir.TypeF64:
 		zero = &ir.Const{Op: ir.OpF64Const, F64: 0}
+		kind = "f64"
 	}
+	g.ensureFatPtrScalarTypes()
 	boxTy := &ir.Ref{Named: box}
+	ptrTy := &ir.Ref{Named: "$go.ptr." + kind}
+	classTy := &ir.Ref{Named: "$go.class." + kind}
 	b := &ir.Var{Name: "b", Typ: boxTy}
+	p := &ir.Var{Name: "p", Typ: ptrTy}
+	cl := &ir.Var{Name: "cl", Typ: classTy}
+	// New().Elem() stores $go.box.*; ValueOf(&local).Elem() stores $go.ptr.*.
 	body := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: b},
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: b}}, Rhs: &ir.Instr{
-					Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-				}},
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
-					Op: ir.OpStructGet, Type: boxTy, Field: "v",
-					Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
-				}}},
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: b}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+						}},
+						&ir.Return{Results: []ir.Expr{&ir.Instr{
+							Op: ir.OpStructGet, Type: boxTy, Field: "v",
+							Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
+						}}},
+					}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+								}},
+								&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+									Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+									Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+								}},
+								&ir.Return{Results: []ir.Expr{&ir.Instr{
+									Op: ir.OpCallRef, Type: &ir.Ref{Named: "$go.get." + kind},
+									Args: []ir.Expr{
+										&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+										&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+										&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+									},
+								}}},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
+						},
+					}},
+				},
 			}},
 		},
 		&ir.Unreachable{},

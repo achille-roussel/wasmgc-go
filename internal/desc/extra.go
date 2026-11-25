@@ -929,7 +929,7 @@ func (g *gen) arrayIRName(tr *typeRec) string {
 	if err != nil {
 		elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
 	}
-	arrName := arrayNameFor(elemIR)
+	arrName := arrayNameForElem(elem, elemIR)
 	g.mod.InternType(&ir.TypeDef{Name: arrName, Kind: ir.TypeArray, Elem: storageElemApprox(elemIR), ElemMut: true})
 	return arrName
 }
@@ -989,7 +989,7 @@ func (g *gen) sliceElemIR(tr *typeRec) (ir.Type, string) {
 		if err != nil {
 			elemIR = &ir.Ref{Null: true, Heap: ir.HeapAny}
 		}
-		arrName = arrayNameFor(elemIR)
+		arrName = arrayNameForElem(elem, elemIR)
 		sliceName = sliceNameFor(arrName)
 		storage = storageElemApprox(elemIR)
 	}
@@ -1025,6 +1025,38 @@ func arrayNameFor(elemIR ir.Type) string {
 		}
 	}
 	return "$go.array.any"
+}
+
+// arrayNameForElem mirrors lower.ensureArrayType: *Struct elems use
+// $go.array.ptr.* so make/append leave nulls and itab wrappers match methods.
+func arrayNameForElem(elem types.Type, elemIR ir.Type) string {
+	name := arrayNameFor(elemIR)
+	if !isObjectPointerApprox(elem) {
+		return name
+	}
+	if r, ok := elemIR.(*ir.Ref); ok && r.Named != "" {
+		return "$go.array.ptr." + strings.TrimPrefix(r.Named, "$")
+	}
+	return "$go.array.ptr." + strings.TrimPrefix(name, "$go.array.")
+}
+
+// isObjectPointerApprox mirrors lower.isObjectPointer (*Struct / *[N]T as plain refs).
+func isObjectPointerApprox(t types.Type) bool {
+	p, ok := types.Unalias(t).Underlying().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	elem := types.Unalias(p.Elem())
+	switch e := elem.(type) {
+	case *types.Named:
+		switch e.Underlying().(type) {
+		case *types.Struct, *types.Array:
+			return true
+		}
+	case *types.Struct, *types.Array:
+		return true
+	}
+	return false
 }
 
 func sliceNameFor(arrName string) string {

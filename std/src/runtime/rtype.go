@@ -133,6 +133,12 @@ func ReflectIface(typ *Rtype, data unsafe.Pointer) any
 // Body-less: desc fills (ref.cast any → $go.iface).
 func ReflectIfaceFromData(data unsafe.Pointer) any
 
+// ReflectPackAny returns the $go.iface ref of an any as a data word so
+// ReflectSetBoxRef / SetField can store an interface value. Unlike ReflectData,
+// this does not unwrap .data — the iface itself is the stored representation.
+// Body-less: desc fills (identity cast).
+func ReflectPackAny(i any) unsafe.Pointer
+
 // ReflectStructNumField reads $go.extra.struct.numField.
 func ReflectStructNumField(extra unsafe.Pointer) int
 
@@ -160,6 +166,10 @@ func ReflectMapElem(extra unsafe.Pointer) *Rtype
 // ReflectSliceOf returns the descriptor for []T given T's descriptor.
 // Body-less: desc fills an id→global.get table over the closed universe.
 func ReflectSliceOf(t *Rtype) *Rtype
+
+// ReflectImplements reports whether concrete type t implements interface u.
+// Body-less: desc fills from emitted itabs ($go.itab.<iface>.@.<concrete>).
+func ReflectImplements(t, u *Rtype) bool
 
 // ReflectPointerTo returns the descriptor for *T given T's descriptor.
 // Body-less: desc fills an id→global.get table over the closed universe.

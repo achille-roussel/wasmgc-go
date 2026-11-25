@@ -3067,19 +3067,49 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 	}
 	if !needPtr && havePtr {
 		// Auto-deref for value-receiver method on pointer.
-		// *NamedStruct / *[N]T share the object ref with T — no OpDeref.
-		if isObjectPointer(xt) {
-			return fl.expr(x, want)
-		}
-		ex, stmts, err := fl.expr(x, nil)
+		// Forming x.M / calling x.M when x is a nil pointer and M has a value
+		// receiver must panic (Go spec) — emit panicNil before deref/use so
+		// recover can catch it (method5 shouldPanic), not a raw null trap.
+		ptrIR, err := fl.mapType(xt)
 		if err != nil {
 			return nil, nil, err
 		}
+		ex, stmts, err := fl.expr(x, ptrIR)
+		if err != nil {
+			return nil, nil, err
+		}
+		ptrT := fl.newTemp(ptrIR)
+		stmts = append(stmts, fl.assignTemp(ptrT, ex))
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(ptrT)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+				&ir.Unreachable{},
+			}},
+		})
+		// *NamedStruct / *[N]T share the object ref with T — no OpDeref.
+		if isObjectPointer(xt) {
+			if want != nil {
+				return &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{fl.useTemp(ptrT)}}, stmts, nil
+			}
+			return fl.useTemp(ptrT), stmts, nil
+		}
 		t := fl.newTemp(want)
-		stmts = append(stmts, fl.assignTemp(t, &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{ex}, Type: want}))
+		stmts = append(stmts, fl.assignTemp(t, &ir.Instr{Op: ir.OpDeref, Args: []ir.Expr{fl.useTemp(ptrT)}, Type: want}))
 		return fl.useTemp(t), stmts, nil
 	}
 	return fl.expr(x, want)
+}
+
+// panicIfNilRef appends `if ref.is_null v { runtime.panicNil(); unreachable }`.
+func (fl *funcLower) panicIfNilRef(v ir.Expr) ir.Stmt {
+	return &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{v}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
+	}
 }
 
 // methodRecvSel lowers the receiver for a MethodVal selection, following
@@ -3099,11 +3129,28 @@ func (fl *funcLower) methodRecvSel(x ast.Expr, sel *types.Selection, recvType ty
 	ty := xt
 	cur := base
 	if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+		// nil *T base: forming t.M must panic (method5 shouldPanic on *T3).
+		ptrIR, err := fl.mapType(xt)
+		if err != nil {
+			return nil, nil, err
+		}
+		ptrT := fl.newTemp(ptrIR)
+		stmts = append(stmts, fl.assignTemp(ptrT, cur))
+		stmts = append(stmts, fl.panicIfNilRef(fl.useTemp(ptrT)))
+		cur = fl.useTemp(ptrT)
 		ty = p.Elem()
 		// *NamedStruct is already the object ref; no extra deref.
 	}
 	// Walk embedding fields (Index[:len-1]); last entry is the method index.
-	for _, fi := range idx[:len(idx)-1] {
+	// Keep the Go type of `cur` in curTy (may be *D while ty tracks the
+	// deref'd embed for further field walks). Track the last struct.get so
+	// pointer methods on scalar embeds can OpAddr the field (a.g on C int).
+	curTy := xt
+	var lastOwner string
+	var lastField string
+	var lastParent ir.Expr
+	embedPath := idx[:len(idx)-1]
+	for ei, fi := range embedPath {
 		st := structOf(ty)
 		if st == nil || fi < 0 || fi >= st.NumFields() {
 			return nil, nil, fl.errorf(x, "method embedding index %d out of range for %s", fi, ty)
@@ -3116,22 +3163,111 @@ func (fl *funcLower) methodRecvSel(x ast.Expr, sel *types.Selection, recvType ty
 		if stName == "" {
 			return nil, nil, fl.errorf(x, "no IR type for %s", ty)
 		}
-		cur = &ir.Instr{
-			Op:    ir.OpStructGet,
-			Type:  &ir.Ref{Named: stName},
-			Field: fld.Name(),
-			Args:  []ir.Expr{cur},
+		fldIR, err := fl.mapType(fld.Type())
+		if err != nil {
+			return nil, nil, err
 		}
+		if irStructHasField(fl.mod, stName, fld.Name()) {
+			lastParent = cur
+			lastOwner = stName
+			lastField = fld.Name()
+			cur = &ir.Instr{
+				Op:    ir.OpStructGet,
+				Type:  &ir.Ref{Named: stName},
+				Field: fld.Name(),
+				Args:  []ir.Expr{cur},
+			}
+		} else {
+			// Zero-sized embeds omitted from IR — synthesize a zero.
+			lastOwner, lastField, lastParent = "", "", nil
+			z, zerr := fl.pkg.mexprEmbedZero(fldIR)
+			if zerr != nil {
+				return nil, nil, fl.errorf(x, "%v", zerr)
+			}
+			cur = z
+		}
+		curTy = fld.Type()
 		ty = fld.Type()
 		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			fldT := fl.newTemp(fldIR)
+			stmts = append(stmts, fl.assignTemp(fldT, cur))
+			cur = fl.useTemp(fldT)
+			curTy = fld.Type() // still *U
 			ty = p.Elem()
+			lastOwner, lastField, lastParent = "", "", nil
+			// Further embedding through *U requires a live pointer (T1.*T3.T4).
+			// Final *U kept as nil is OK for pointer-recv methods (a.i).
+			if ei+1 < len(embedPath) {
+				stmts = append(stmts, fl.panicIfNilRef(cur))
+			}
 		}
 	}
-	// cur is the embedded field (heap ref for struct values). Pointer and
-	// value receivers both use that ref (*T and T share the object).
-	_ = recvType
-	_ = want
-	_ = ty
+	// Value method on pointer embed: nil *D must panic before deref (a.h).
+	if isPointer(curTy) && !isPointer(recvType) {
+		stmts = append(stmts, fl.panicIfNilRef(cur))
+	}
+	// Adapt landed embed (curTy) to the method's declared receiver (recvType).
+	needPtr := isPointer(recvType)
+	havePtr := isPointer(curTy)
+	switch {
+	case needPtr && !havePtr:
+		// Pointer method on value embed. Scalars need OpAddr of the field
+		// slot; object embeds share the ref.
+		if isObjectPointer(types.NewPointer(curTy)) || (want != nil && refTypeName(want) != "" && !strings.HasPrefix(refTypeName(want), "$go.ptr.")) {
+			if want != nil {
+				if _, ok := want.(*ir.Ref); ok {
+					cur = &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{cur}}
+				}
+			}
+		} else if lastParent != nil && lastField != "" {
+			ptrWant := want
+			if ptrWant == nil {
+				var err error
+				ptrWant, err = fl.mapType(recvType)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			cur = &ir.Instr{
+				Op:    ir.OpAddr,
+				Args:  []ir.Expr{lastParent},
+				Field: lastField,
+				Str:   lastOwner,
+				Type:  ptrWant,
+			}
+		} else if want != nil {
+			if _, ok := want.(*ir.Ref); ok {
+				cur = &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{cur}}
+			}
+		}
+	case !needPtr && havePtr:
+		if isObjectPointer(curTy) {
+			if want != nil {
+				if _, ok := want.(*ir.Ref); ok {
+					cur = &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{cur}}
+				}
+			}
+		} else {
+			// Fat-pointer embed → value method: deref to i32/i64/…
+			derefWant := want
+			if derefWant == nil {
+				var err error
+				derefWant, err = fl.mapType(recvType)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			t := fl.newTemp(derefWant)
+			stmts = append(stmts, fl.assignTemp(t, &ir.Instr{Op: ir.OpDeref, Type: derefWant, Args: []ir.Expr{cur}}))
+			cur = fl.useTemp(t)
+		}
+	default:
+		if want != nil {
+			if _, ok := want.(*ir.Ref); ok {
+				cur = &ir.Instr{Op: ir.OpRefCast, Type: want, Args: []ir.Expr{cur}}
+			}
+		}
+	}
 	return cur, stmts, nil
 }
 

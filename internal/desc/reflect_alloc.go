@@ -94,40 +94,154 @@ func (g *gen) fillReflectUnboxRef() {
 	g.replaceBody(name, []*ir.Var{data}, []ir.Type{anyT}, body)
 }
 
-// ensureFatPtrRefTypes interns $go.ptr.ref / class / get / set so reflect can
-// load/store through ValueOf(&mapVar) fat pointers (json Unmarshal).
-func (g *gen) ensureFatPtrRefTypes() {
+// ensureFatPtrKindTypes interns $go.ptr.<kind> / class / get / set so reflect
+// can load/store through ValueOf(&local) fat pointers.
+func (g *gen) ensureFatPtrKindTypes(kind string, val ir.Type) {
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	getName := "$go.get." + kind
+	setName := "$go.set." + kind
+	className := "$go.class." + kind
+	ptrName := "$go.ptr." + kind
 	g.mod.InternType(&ir.TypeDef{
-		Name:    "$go.get.ref",
-		Kind:    ir.TypeFunc,
-		Params:  []ir.Type{anyT, ir.TypeI32},
-		Results: []ir.Type{anyT},
+		Name: getName, Kind: ir.TypeFunc,
+		Params: []ir.Type{anyT, ir.TypeI32}, Results: []ir.Type{val},
 	})
 	g.mod.InternType(&ir.TypeDef{
-		Name:   "$go.set.ref",
-		Kind:   ir.TypeFunc,
-		Params: []ir.Type{anyT, ir.TypeI32, anyT},
+		Name: setName, Kind: ir.TypeFunc,
+		Params: []ir.Type{anyT, ir.TypeI32, val},
 	})
 	g.mod.InternType(&ir.TypeDef{
-		Name:  "$go.class.ref",
-		Kind:  ir.TypeStruct,
-		Super: "$go.object",
+		Name: className, Kind: ir.TypeStruct, Super: "$go.object",
 		Fields: []ir.Field{
-			{Name: "get", Type: &ir.Ref{Named: "$go.get.ref"}},
-			{Name: "set", Type: &ir.Ref{Named: "$go.set.ref"}},
+			{Name: "get", Type: &ir.Ref{Named: getName}},
+			{Name: "set", Type: &ir.Ref{Named: setName}},
 		},
 	})
 	g.mod.InternType(&ir.TypeDef{
-		Name:  "$go.ptr.ref",
-		Kind:  ir.TypeStruct,
-		Super: "$go.object",
+		Name: ptrName, Kind: ir.TypeStruct, Super: "$go.object",
 		Fields: []ir.Field{
-			{Name: "class", Type: &ir.Ref{Named: "$go.class.ref"}},
+			{Name: "class", Type: &ir.Ref{Named: className}},
 			{Name: "base", Type: anyT},
 			{Name: "index", Type: ir.TypeI32},
 		},
 	})
+}
+
+// ensureFatPtrRefTypes interns $go.ptr.ref / class / get / set so reflect can
+// load/store through ValueOf(&mapVar) fat pointers (json Unmarshal).
+func (g *gen) ensureFatPtrRefTypes() {
+	g.ensureFatPtrKindTypes("ref", &ir.Ref{Null: true, Heap: ir.HeapAny})
+}
+
+func (g *gen) ensureFatPtrScalarTypes() {
+	g.ensureFatPtrKindTypes("i32", ir.TypeI32)
+	g.ensureFatPtrKindTypes("i64", ir.TypeI64)
+	g.ensureFatPtrKindTypes("f32", ir.TypeF32)
+	g.ensureFatPtrKindTypes("f64", ir.TypeF64)
+	// Boxes used when wrapping scalar get results for ReflectUnbox*.
+	for _, name := range []string{"$go.box.i32", "$go.box.i64", "$go.box.f32", "$go.box.f64"} {
+		if g.mod.LookupType(name) != nil {
+			continue
+		}
+		var vt ir.Type = ir.TypeI32
+		switch name {
+		case "$go.box.i64":
+			vt = ir.TypeI64
+		case "$go.box.f32":
+			vt = ir.TypeF32
+		case "$go.box.f64":
+			vt = ir.TypeF64
+		}
+		g.mod.InternType(&ir.TypeDef{
+			Name: name, Kind: ir.TypeStruct, Super: "$go.object",
+			Fields: []ir.Field{{Name: "v", Type: vt, Mut: true}},
+		})
+	}
+}
+
+// fatPtrGetScalarBranch: ref.test $go.ptr.<kind> → class.get → box → return any.
+func (g *gen) fatPtrGetScalarBranch(data *ir.Var, kind, box string, valTy ir.Type, elseBody ir.Region) ir.Region {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	ptrTy := &ir.Ref{Named: "$go.ptr." + kind}
+	classTy := &ir.Ref{Named: "$go.class." + kind}
+	boxTy := &ir.Ref{Named: box}
+	p := &ir.Var{Name: "p_" + kind, Typ: ptrTy}
+	cl := &ir.Var{Name: "cl_" + kind, Typ: classTy}
+	loaded := &ir.Var{Name: "v_" + kind, Typ: valTy}
+	return &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
+		&ir.VarDef{Var: loaded},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: p.Name, Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: cl.Name, Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: loaded.Name, Var: loaded}}, Rhs: &ir.Instr{
+					Op: ir.OpCallRef, Type: &ir.Ref{Named: "$go.get." + kind},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: cl.Name, Var: cl}}},
+					},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpRefCast, Type: anyT,
+					Args: []ir.Expr{&ir.Instr{
+						Op: ir.OpStructNew, Type: boxTy,
+						Args: []ir.Expr{&ir.Name{Raw: loaded.Name, Var: loaded}},
+					}},
+				}}},
+			}},
+			Else: elseBody,
+		},
+	}}
+}
+
+// fatPtrSetScalarBranch: ref.test $go.ptr.<kind> → unbox v → class.set.
+func (g *gen) fatPtrSetScalarBranch(data, v *ir.Var, kind, box string, valTy ir.Type, elseBody ir.Region) ir.Region {
+	ptrTy := &ir.Ref{Named: "$go.ptr." + kind}
+	classTy := &ir.Ref{Named: "$go.class." + kind}
+	boxTy := &ir.Ref{Named: box}
+	p := &ir.Var{Name: "sp_" + kind, Typ: ptrTy}
+	cl := &ir.Var{Name: "scl_" + kind, Typ: classTy}
+	bv := &ir.Var{Name: "sb_" + kind, Typ: boxTy}
+	return &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
+		&ir.VarDef{Var: bv},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: p.Name, Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: cl.Name, Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: bv.Name, Var: bv}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "v", Var: v}},
+				}},
+				&ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpCallRef, Type: &ir.Ref{Named: "$go.set." + kind},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: p.Name, Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: boxTy, Field: "v", Args: []ir.Expr{&ir.Name{Raw: bv.Name, Var: bv}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "set", Args: []ir.Expr{&ir.Name{Raw: cl.Name, Var: cl}}},
+					},
+				}},
+				&ir.Return{},
+			}},
+			Else: elseBody,
+		},
+	}}
 }
 
 func (g *gen) fillReflectFatPtrGet() {
@@ -137,49 +251,55 @@ func (g *gen) fillReflectFatPtrGet() {
 		return
 	}
 	g.ensureFatPtrRefTypes()
+	g.ensureFatPtrScalarTypes()
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	data := &ir.Var{Name: "data", Typ: anyT}
 	ptrTy := &ir.Ref{Named: "$go.ptr.ref"}
 	classTy := &ir.Ref{Named: "$go.class.ref"}
 	p := &ir.Var{Name: "p", Typ: ptrTy}
 	cl := &ir.Var{Name: "cl", Typ: classTy}
-	// flagFatPtr Values sometimes hold a plain data word (not $go.ptr.ref),
-	// e.g. interface/struct fields walked by fmt.printValue. ref.cast would
-	// trap; ref.test and fall through by returning data unchanged.
-	body := &ir.Seq{Stmts: []ir.Stmt{
+	// Fallback: not a known fat pointer — return data unchanged (fmt walk).
+	fallthrough_ := &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+		&ir.Name{Raw: "data", Var: data},
+	}}}}
+	// Chain: i32 → i64 → f32 → f64 → ref → fallthrough.
+	refBranch := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: p},
 		&ir.VarDef{Var: cl},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+					Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op:   ir.OpCallRef,
+					Type: &ir.Ref{Named: "$go.get.ref"},
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+						&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+					},
+				}}},
+			}},
+			Else: fallthrough_,
+		},
+	}}
+	f64 := g.fatPtrGetScalarBranch(data, "f64", "$go.box.f64", ir.TypeF64, refBranch)
+	f32 := g.fatPtrGetScalarBranch(data, "f32", "$go.box.f32", ir.TypeF32, f64)
+	i64 := g.fatPtrGetScalarBranch(data, "i64", "$go.box.i64", ir.TypeI64, f32)
+	i32 := g.fatPtrGetScalarBranch(data, "i32", "$go.box.i32", ir.TypeI32, i64)
+	body := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
 				&ir.Instr{Op: ir.OpRefNull, Type: anyT},
 			}}}},
-			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.If{
-					Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
-					Then: &ir.Seq{Stmts: []ir.Stmt{
-						&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
-							Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-						}},
-						&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
-							Op: ir.OpStructGet, Type: ptrTy, Field: "class",
-							Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
-						}},
-						&ir.Return{Results: []ir.Expr{&ir.Instr{
-							Op:   ir.OpCallRef,
-							Type: &ir.Ref{Named: "$go.get.ref"},
-							Args: []ir.Expr{
-								&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
-								&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
-								&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "get", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
-							},
-						}}},
-					}},
-					Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
-						&ir.Name{Raw: "data", Var: data},
-					}}}},
-				},
-			}},
+			Else: i32,
 		},
 		&ir.Unreachable{},
 	}}
@@ -193,6 +313,7 @@ func (g *gen) fillReflectFatPtrSet() {
 		return
 	}
 	g.ensureFatPtrRefTypes()
+	g.ensureFatPtrScalarTypes()
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	data := &ir.Var{Name: "data", Typ: anyT}
 	v := &ir.Var{Name: "v", Typ: anyT}
@@ -200,13 +321,14 @@ func (g *gen) fillReflectFatPtrSet() {
 	classTy := &ir.Ref{Named: "$go.class.ref"}
 	p := &ir.Var{Name: "p", Typ: ptrTy}
 	cl := &ir.Var{Name: "cl", Typ: classTy}
-	body := &ir.Seq{Stmts: []ir.Stmt{
+	// Unknown shape: no-op (matches prior ref-cast-or-trap → soft fail).
+	fallthrough_ := &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}}
+	refBranch := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: p},
 		&ir.VarDef{Var: cl},
 		&ir.If{
-			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
-			Else: &ir.Seq{Stmts: []ir.Stmt{
+			Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
 				&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
 					Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
 				}},
@@ -226,6 +348,18 @@ func (g *gen) fillReflectFatPtrSet() {
 				}},
 				&ir.Return{},
 			}},
+			Else: fallthrough_,
+		},
+	}}
+	f64 := g.fatPtrSetScalarBranch(data, v, "f64", "$go.box.f64", ir.TypeF64, refBranch)
+	f32 := g.fatPtrSetScalarBranch(data, v, "f32", "$go.box.f32", ir.TypeF32, f64)
+	i64 := g.fatPtrSetScalarBranch(data, v, "i64", "$go.box.i64", ir.TypeI64, f32)
+	i32 := g.fatPtrSetScalarBranch(data, v, "i32", "$go.box.i32", ir.TypeI32, i64)
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+			Else: i32,
 		},
 		&ir.Unreachable{},
 	}}
@@ -268,20 +402,74 @@ func (g *gen) fillReflectSetBox(name, box string, valT ir.Type) {
 	v := &ir.Var{Name: "v", Typ: valT}
 	boxTy := &ir.Ref{Named: box}
 	b := &ir.Var{Name: "b", Typ: boxTy}
+	kind := "i32"
+	switch box {
+	case "$go.box.i64":
+		kind = "i64"
+	case "$go.box.f32":
+		kind = "f32"
+	case "$go.box.f64":
+		kind = "f64"
+	case "$go.box.string", "$go.box.ref":
+		kind = "ref"
+	}
+	g.ensureFatPtrScalarTypes()
+	g.ensureFatPtrRefTypes()
+	ptrTy := &ir.Ref{Named: "$go.ptr." + kind}
+	classTy := &ir.Ref{Named: "$go.class." + kind}
+	p := &ir.Var{Name: "p", Typ: ptrTy}
+	cl := &ir.Var{Name: "cl", Typ: classTy}
+	storeVal := ir.Expr(&ir.Name{Raw: "v", Var: v})
+	if kind == "ref" {
+		storeVal = &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{&ir.Name{Raw: "v", Var: v}}}
+	}
+	// New().Elem() mutates $go.box.*; ValueOf(&local).Elem() stores through $go.ptr.*.
 	body := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: b},
+		&ir.VarDef{Var: p},
+		&ir.VarDef{Var: cl},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: b}}, Rhs: &ir.Instr{
-					Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-				}},
-				&ir.ExprStmt{X: &ir.Instr{
-					Op: ir.OpStructSet, Type: boxTy, Field: "v",
-					Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}, &ir.Name{Raw: "v", Var: v}},
-				}},
-				&ir.Return{},
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "b", Var: b}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: boxTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+						}},
+						&ir.ExprStmt{X: &ir.Instr{
+							Op: ir.OpStructSet, Type: boxTy, Field: "v",
+							Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}, &ir.Name{Raw: "v", Var: v}},
+						}},
+						&ir.Return{},
+					}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "p", Var: p}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: ptrTy, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+								}},
+								&ir.Assign{Lhs: []ir.Dest{{Name: "cl", Var: cl}}, Rhs: &ir.Instr{
+									Op: ir.OpStructGet, Type: ptrTy, Field: "class",
+									Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}},
+								}},
+								&ir.ExprStmt{X: &ir.Instr{
+									Op: ir.OpCallRef, Type: &ir.Ref{Named: "$go.set." + kind},
+									Args: []ir.Expr{
+										&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "base", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+										&ir.Instr{Op: ir.OpStructGet, Type: ptrTy, Field: "index", Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+										storeVal,
+										&ir.Instr{Op: ir.OpStructGet, Type: classTy, Field: "set", Args: []ir.Expr{&ir.Name{Raw: "cl", Var: cl}}},
+									},
+								}},
+								&ir.Return{},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+						},
+					}},
+				},
 			}},
 		},
 	}}

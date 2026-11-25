@@ -770,12 +770,25 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 		if err != nil {
 			return nil, nil, err
 		}
+		// var i Tinter; f = i.M panics on nil interface (method5).
+		ifaceT := fl.newTemp(typeIface)
+		stmts = append(stmts, fl.assignTemp(ifaceT, recvVal))
+		stmts = append(stmts, fl.panicIfNilRef(fl.useTemp(ifaceT)))
+		recvVal = fl.useTemp(ifaceT)
 	} else {
+		// Capture the method's receiver shape, not the selector expression's
+		// type. Go auto-addresses value exprs for pointer methods (sp.M →
+		// (&sp).M) and auto-derefs pointers for value methods; methodRecvSel
+		// applies that. Clos types are keyed by methodIRName, so every site
+		// for (*T).M must share a fat-ptr / object-ptr recv field — capturing
+		// the value type (i32) makes mval pass i32 into *T (method5).
+		wantRecv := fn.Type().(*types.Signature).Recv().Type()
+		captureTy = wantRecv
 		captureIR, err = fl.mapType(captureTy)
 		if err != nil {
 			return nil, nil, fl.errorf(e, "%v", err)
 		}
-		recvVal, stmts, err = fl.expr(recvExpr, captureIR)
+		recvVal, stmts, err = fl.methodRecvSel(recvExpr, sel, captureTy, captureIR)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -939,6 +952,10 @@ func wrapperCallBody(call ir.Expr, results []ir.Type) ir.Region {
 // methodExpr lowers T.M (method expression) as a func value.
 // Interface MethodExprs (I.m, error.Error, T.String with iface bound) dispatch
 // via OpIfaceCall; concrete ones call the implementation function.
+//
+// When the expression receiver differs from the method's declared receiver —
+// e.g. (*I).val for value method (I).val — the wrapper must accept *I and
+// deref (method.go). topLevelFuncValue alone always uses the declared recv.
 func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error) {
 	fn := sel.Obj().(*types.Func)
 	recvTy := sel.Recv()
@@ -973,7 +990,263 @@ func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error
 			}
 		}
 	}
-	return fl.topLevelFuncValue(fn)
+	declRecv := fn.Type().(*types.Signature).Recv().Type()
+	idx := sel.Index()
+	// Identical recv and no embedding path → call the method directly as a
+	// func value. Promoted methods (struct{T}.m / (*Outer).M) still need a
+	// wrapper that walks Selection.Index even when types look related.
+	if types.Identical(recvTy, declRecv) && len(idx) <= 1 {
+		return fl.topLevelFuncValue(fn)
+	}
+	// (*T).M with value method M, T.M with pointer method M, or embed path.
+	return fl.methodExprAdapted(fn, recvTy, declRecv, idx)
+}
+
+// methodExprAdapted builds a MethodExpr closure whose first parameter is
+// exprRecv (Selection.Recv), adapting to the method's declared receiver.
+// embedIdx is Selection.Index(); entries before the last are embedding fields
+// to walk from the expression receiver to the method's holder (method7).
+func (fl *funcLower) methodExprAdapted(fn *types.Func, exprRecv, declRecv types.Type, embedIdx []int) (ir.Expr, []ir.Stmt, error) {
+	msig := fn.Type().(*types.Signature)
+	// MethodExpr type: (exprRecv, params...) results — mirrors go/types Selection.Type().
+	exprSig := types.NewSignatureType(nil, nil, nil,
+		tupleWithRecv(exprRecv, msig.Params()),
+		msig.Results(), msig.Variadic())
+	fl.pkg.ensureClosBase()
+	wrapper := methodIRName(fn) + "$mexpr." + sanitizeTypeName(desc.TypeKey(exprRecv))
+	if fl.mod.LookupFunc(wrapper) == nil {
+		if err := fl.pkg.emitMethodExprAdaptedWrapper(wrapper, fn, exprRecv, declRecv, embedIdx); err != nil {
+			return nil, nil, err
+		}
+	}
+	funcTy, err := fl.pkg.ensureFuncType(exprSig, closBaseName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: closBaseName},
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefFunc, Func: wrapper, Type: &ir.Ref{Named: funcTy}},
+		},
+	}, nil, nil
+}
+
+func tupleWithRecv(recv types.Type, params *types.Tuple) *types.Tuple {
+	vars := make([]*types.Var, 0, 1+params.Len())
+	vars = append(vars, types.NewVar(token.NoPos, nil, "recv", recv))
+	for i := 0; i < params.Len(); i++ {
+		vars = append(vars, params.At(i))
+	}
+	return types.NewTuple(vars...)
+}
+
+func (l *pkgLower) emitMethodExprAdaptedWrapper(wrapper string, fn *types.Func, exprRecv, declRecv types.Type, embedIdx []int) error {
+	msig := fn.Type().(*types.Signature)
+	l.ensureClosBase()
+	closParam := &ir.Var{Name: "clos", Typ: &ir.Ref{Named: closBaseName}}
+	params := []*ir.Var{closParam}
+	exprIR, err := l.mapType(exprRecv)
+	if err != nil {
+		return err
+	}
+	declIR, err := l.mapType(declRecv)
+	if err != nil {
+		return err
+	}
+	recvV := &ir.Var{Name: "recv", Typ: exprIR}
+	params = append(params, recvV)
+	recvExpr := ir.Expr(&ir.Name{Raw: recvV.Name, Var: recvV})
+	var adaptStmts []ir.Stmt
+	// Walk embedding fields (Index[:len-1]) from the MethodExpr's first
+	// parameter down to the method holder (struct{T}.m2 / (*Outer).M).
+	curTy := exprRecv
+	var lastOwner, lastField string
+	var lastParent ir.Expr
+	if len(embedIdx) > 1 {
+		ty := exprRecv
+		cur := recvExpr
+		if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+			// *NamedStruct is already the object ref; strip pointer for field walk.
+			ty = p.Elem()
+		}
+		for step, fi := range embedIdx[:len(embedIdx)-1] {
+			st := structOf(ty)
+			if st == nil || fi < 0 || fi >= st.NumFields() {
+				return fmt.Errorf("method expression embedding index %d out of range for %s", fi, ty)
+			}
+			fld := st.Field(fi)
+			stName := ""
+			if irt, err := l.mapType(ty); err == nil {
+				stName = refTypeName(irt)
+			}
+			if stName == "" {
+				return fmt.Errorf("no IR type for %s in method expression", ty)
+			}
+			fldIR, err := l.mapType(fld.Type())
+			if err != nil {
+				return err
+			}
+			// Use step, not fi: deep embeds can repeat field index 0 (W→X→E).
+			t := &ir.Temp{Name: "%mexpr.emb" + strconv.Itoa(step), Typ: fldIR}
+			var rhs ir.Expr
+			if irStructHasField(l.mod, stName, fld.Name()) {
+				lastParent = cur
+				lastOwner = stName
+				lastField = fld.Name()
+				rhs = &ir.Instr{
+					Op:    ir.OpStructGet,
+					Type:  &ir.Ref{Named: stName},
+					Field: fld.Name(),
+					Args:  []ir.Expr{cur},
+				}
+			} else {
+				// Zero-sized embeds are omitted from IR (structFields); synthesize
+				// a zero of the embed type (mdempsky/15 X[int].E / W.EGood).
+				lastOwner, lastField, lastParent = "", "", nil
+				z, zerr := l.mexprEmbedZero(fldIR)
+				if zerr != nil {
+					return zerr
+				}
+				rhs = z
+			}
+			adaptStmts = append(adaptStmts, &ir.Assign{
+				Lhs: []ir.Dest{{Temp: t, Name: t.Name}},
+				Rhs: rhs,
+			})
+			cur = &ir.Name{Raw: t.Name, Temp: t}
+			curTy = fld.Type()
+			ty = fld.Type()
+			if p, ok := types.Unalias(ty).(*types.Pointer); ok {
+				lastOwner, lastField, lastParent = "", "", nil
+				ty = p.Elem()
+			}
+		}
+		recvExpr = cur
+	}
+	// Adapt landed embed / exprRecv → declRecv (pointer MethodExpr of value
+	// method → deref; value MethodExpr of pointer method → addr/cast).
+	needPtr := isPointer(declRecv)
+	havePtr := isPointer(curTy)
+	switch {
+	case !needPtr && havePtr:
+		if isObjectPointer(curTy) {
+			recvExpr = &ir.Instr{Op: ir.OpRefCast, Type: declIR, Args: []ir.Expr{recvExpr}}
+		} else {
+			t := &ir.Temp{Name: "%mexpr.deref", Typ: declIR}
+			adaptStmts = append(adaptStmts, &ir.Assign{
+				Lhs: []ir.Dest{{Temp: t, Name: t.Name}},
+				Rhs: &ir.Instr{Op: ir.OpDeref, Type: declIR, Args: []ir.Expr{recvExpr}},
+			})
+			recvExpr = &ir.Name{Raw: t.Name, Temp: t}
+		}
+	case needPtr && !havePtr:
+		// Pointer method on value embed. Scalars need OpAddr of the field
+		// slot (abi/method_wrapper (*T).M on embedded S int); object embeds
+		// share the struct ref.
+		if isObjectPointer(types.NewPointer(curTy)) {
+			recvExpr = &ir.Instr{Op: ir.OpRefCast, Type: declIR, Args: []ir.Expr{recvExpr}}
+		} else if lastParent != nil && lastField != "" {
+			recvExpr = &ir.Instr{
+				Op:    ir.OpAddr,
+				Args:  []ir.Expr{lastParent},
+				Field: lastField,
+				Str:   lastOwner,
+				Type:  declIR,
+			}
+		} else {
+			// No field slot (plain T.M value→pointer): synthesize addr of a temp.
+			t := &ir.Temp{Name: "%mexpr.addr", Typ: exprIR}
+			adaptStmts = append(adaptStmts, &ir.Assign{
+				Lhs: []ir.Dest{{Temp: t, Name: t.Name}},
+				Rhs: recvExpr,
+			})
+			recvExpr = &ir.Instr{Op: ir.OpRefCast, Type: declIR, Args: []ir.Expr{&ir.Name{Raw: t.Name, Temp: t}}}
+		}
+	default:
+		if !types.Identical(curTy, declRecv) {
+			// Scalar embed → scalar recv (struct{T}.m2 where T is int): field
+			// get already yielded declIR shape; cast refs when needed.
+			if _, ok := declIR.(*ir.Ref); ok {
+				recvExpr = &ir.Instr{Op: ir.OpRefCast, Type: declIR, Args: []ir.Expr{recvExpr}}
+			}
+		} else if _, ok := declIR.(*ir.Ref); ok {
+			recvExpr = &ir.Instr{Op: ir.OpRefCast, Type: declIR, Args: []ir.Expr{recvExpr}}
+		}
+	}
+	callArgs := []ir.Expr{recvExpr}
+	for i := 0; i < msig.Params().Len(); i++ {
+		p := msig.Params().At(i)
+		ty, err := l.mapType(p.Type())
+		if err != nil {
+			return err
+		}
+		name := p.Name()
+		if name == "" {
+			name = "a" + strconv.Itoa(i)
+		}
+		v := &ir.Var{Name: name, Typ: ty}
+		params = append(params, v)
+		callArgs = append(callArgs, &ir.Name{Raw: v.Name, Var: v})
+	}
+	var results []ir.Type
+	for i := 0; i < msig.Results().Len(); i++ {
+		ty, err := l.mapType(msig.Results().At(i).Type())
+		if err != nil {
+			return err
+		}
+		results = append(results, ty)
+	}
+	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	body := wrapperCallBody(call, results)
+	if len(adaptStmts) > 0 {
+		seq, ok := body.(*ir.Seq)
+		if !ok {
+			seq = &ir.Seq{Stmts: []ir.Stmt{body}}
+		}
+		body = &ir.Seq{Stmts: append(adaptStmts, seq.Stmts...)}
+	}
+	l.mod.Funcs = append(l.mod.Funcs, &ir.Func{
+		Name:    wrapper,
+		Params:  params,
+		Results: results,
+		Body:    body,
+	})
+	return nil
+}
+
+func irStructHasField(mod *ir.Module, stName, field string) bool {
+	if mod == nil || stName == "" || field == "" {
+		return false
+	}
+	td := mod.LookupType(stName)
+	if td == nil || td.Kind != ir.TypeStruct {
+		return false
+	}
+	for _, f := range td.Fields {
+		if f.Name == field {
+			return true
+		}
+	}
+	return false
+}
+
+// mexprEmbedZero builds a zero of an embed type omitted from the outer IR
+// struct (zero-sized fields). Empty structs are struct.new with no args.
+func (l *pkgLower) mexprEmbedZero(fldIR ir.Type) (ir.Expr, error) {
+	r, ok := fldIR.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return nil, fmt.Errorf("method expression: cannot synthesize zero for %s", fldIR)
+	}
+	td := l.mod.LookupType(r.Named)
+	if td == nil || td.Kind != ir.TypeStruct {
+		return &ir.Instr{Op: ir.OpRefNull, Type: fldIR}, nil
+	}
+	if len(td.Fields) == 0 {
+		return &ir.Instr{Op: ir.OpStructNew, Type: fldIR, Args: nil}, nil
+	}
+	// Non-empty but somehow missing from parent: prefer struct.new_default.
+	return &ir.Instr{Op: ir.OpStructNewDefault, Type: fldIR}, nil
 }
 
 // ifaceMethodExpr builds a closure for I.M whose wrapper uses OpIfaceCall.

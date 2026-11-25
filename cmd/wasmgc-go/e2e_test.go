@@ -739,7 +739,7 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is) and
 	// array/struct value-clone helpers (docs/design/03). Tighten once clone
 	// is shared/pruned across packages.
-	runM8(t, "m8_fmt_hello", "hello\n", 170*1024)
+	runM8(t, "m8_fmt_hello", "hello\n", 172*1024) // ReflectImplements/PackAny/New(*T) box
 }
 
 func TestM8FmtIntE2E(t *testing.T) {
@@ -1077,8 +1077,8 @@ func TestM7SizeBudgets(t *testing.T) {
 		name string
 		want int
 	}{
-		{"empty_main", 208},
-		{"println", 1278}, // float/complex print helpers live in print.go; +2 from slice-extra n / FatPtrGet ref.test
+		{"empty_main", 369}, // +fat-ptr scalar/class types from ReflectFatPtrGet fill
+		{"println", 1400},   // float/complex print + fat-ptr scalar types
 	} {
 		dir := t.TempDir()
 		srcDir := filepath.Join("testdata", tc.name)
