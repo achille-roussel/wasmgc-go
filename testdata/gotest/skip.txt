@@ -48,7 +48,6 @@ fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/issue10332.go — output mismatch
-fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue15039.go — failed: panic: big != bad

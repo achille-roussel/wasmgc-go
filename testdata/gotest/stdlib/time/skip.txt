@@ -94,7 +94,6 @@ TestUnmarshalTextAllocations — lower/runtime gaps in time tests
 TestUSPacificZoneAbbr — lower/runtime gaps in time tests
 TestVersion3 — lower/runtime gaps in time tests
 TestYearDay — lower/runtime gaps in time tests
-TestZeroTimer — lower/runtime gaps in time tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
 TestMultiWakeupTicker — NewTicker stress; joint -short time hangs/timeouts
