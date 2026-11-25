@@ -242,7 +242,8 @@ func (fl *funcLower) printIRValue(ex ir.Expr, ty types.Type) ([]ir.Stmt, error) 
 			return nil, err
 		}
 		// Unsigned: printuint / printuint64 so ^uint(0) and ^uint64(0) are not
-		// sign-printed (issue 21887).
+		// sign-printed (issue 21887). Signed i64 uses printint64 — WasmGC int
+		// is i32, so wrapping MaxInt64 would print as -1 (issue53600).
 		fn := "runtime.printint"
 		if isUnsigned(ty) {
 			if irNumWidth(want) == ir.I64 {
@@ -251,7 +252,7 @@ func (fl *funcLower) printIRValue(ex ir.Expr, ty types.Type) ([]ir.Stmt, error) 
 				fn = "runtime.printuint"
 			}
 		} else if irNumWidth(want) == ir.I64 {
-			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+			fn = "runtime.printint64"
 		}
 		return []ir.Stmt{
 			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{ex}}},

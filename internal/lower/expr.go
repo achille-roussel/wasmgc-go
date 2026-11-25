@@ -1862,6 +1862,12 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 		ex, st, err := fl.complexConvert(x, src, dst, srcIR, dstIR)
 		return ex, append(stmts, st...), err
 	}
+	// []T → [N]T / *[N]T (Go 1.17+). Slice headers and array refs are both
+	// Ref IR types but not Wasm subtypes — bare ref.cast traps (convert4).
+	if isSlice(src) && (isArray(dst) || isPtrToArray(dst)) {
+		ex, st, err := fl.sliceToArrayConv(x, src, dst, srcIR, dstIR)
+		return ex, append(stmts, st...), err
+	}
 	// *T ↔ *U / named struct refs with convertible underlying types (e.g.
 	// (*marshalersOption)(*Marshalers) in encoding/json/v2).
 	if isRefIR(srcIR) && isRefIR(dstIR) {
@@ -2249,6 +2255,148 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 	default:
 		return nil, nil, fl.errorf(e, "unsupported complex op %v", e.Op)
 	}
+}
+
+// sliceToArrayConv lowers []T → [N]T (copy) and []T → *[N]T (share data when
+// off==0; copy when off!=0). Len < N panics via runtime.panicSliceToArray.
+func (fl *funcLower) sliceToArrayConv(x ir.Expr, src, dst types.Type, srcIR, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {
+	ptr := isPtrToArray(dst)
+	var arr *types.Array
+	if ptr {
+		p := types.Unalias(dst).Underlying().(*types.Pointer)
+		arr = types.Unalias(p.Elem()).Underlying().(*types.Array)
+	} else {
+		arr = types.Unalias(dst).Underlying().(*types.Array)
+	}
+	n := arr.Len()
+	arrIR, err := fl.mapType(arr)
+	if err != nil {
+		return nil, nil, err
+	}
+	arrName := refTypeName(arrIR)
+	if arrName == "" {
+		return nil, nil, fl.errorf(nil, "slice→array: bad array IR type %v", arrIR)
+	}
+	arrRef := &ir.Ref{Named: arrName}
+	arrRefNull := &ir.Ref{Null: true, Named: arrName}
+	// Fresh zero array of length n (handles non-defaultable string/struct elems).
+	newZeroArr := func() ir.Expr {
+		if z, ok := fl.goZeroValue(arr, arrIR); ok {
+			return z
+		}
+		return &ir.Instr{Op: ir.OpArrayNewDefault, Type: arrRefNull, Args: []ir.Expr{fl.i32const(n)}}
+	}
+
+	st := srcIR
+	if _, ok := st.(*ir.Ref); !ok {
+		st = &ir.Ref{Null: true, Named: "$go.slice.i32"}
+	}
+	srcV := fl.newVar("s2a", st)
+	lenV := fl.newVar("s2aLen", ir.TypeI32)
+	offV := fl.newVar("s2aOff", ir.TypeI32)
+	dataV := fl.newVar("s2aData", arrRefNull)
+	resV := fl.newVar("s2aRes", arrRefNull)
+
+	var stmts []ir.Stmt
+	stmts = append(stmts, fl.assignVar(srcV, x))
+	// Default result: nil pointer, or zero-valued array for value conversion.
+	if ptr {
+		stmts = append(stmts, fl.assignVar(resV, &ir.Instr{Op: ir.OpRefNull, Type: arrRefNull}))
+	} else {
+		stmts = append(stmts, fl.assignVar(resV, newZeroArr()))
+	}
+
+	panicTooShort := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpCall, Func: "runtime.panicSliceToArray",
+			Args: []ir.Expr{fl.useVar(lenV), fl.i32const(n)},
+		}},
+		&ir.Unreachable{},
+	}}
+
+	// Non-nil path: load header, check len, produce result.
+	nonNil := &ir.Seq{}
+	nonNil.Stmts = append(nonNil.Stmts,
+		fl.assignVar(lenV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}),
+		fl.assignVar(offV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}}),
+		fl.assignVar(dataV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}}),
+	)
+	if n > 0 {
+		nonNil.Stmts = append(nonNil.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(lenV), fl.i32const(n)}},
+			Then: panicTooShort,
+		})
+	}
+
+	if ptr {
+		// *[N]T is the array ref. off==0 → share data (convert4 aliasing);
+		// off!=0 → copy N elems into a fresh array so indices start at 0.
+		share := &ir.Seq{Stmts: []ir.Stmt{
+			fl.assignVar(resV, fl.useVar(dataV)),
+		}}
+		copySeq := &ir.Seq{}
+		copySeq.Stmts = append(copySeq.Stmts, fl.assignVar(resV, newZeroArr()))
+		if n > 0 {
+			copySeq.Stmts = append(copySeq.Stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpArrayCopy, Type: arrRef, Type2: arrRef,
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(resV)}},
+					fl.i32const(0),
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dataV)}},
+					fl.useVar(offV),
+					fl.i32const(n),
+				},
+			}})
+		}
+		nonNil.Stmts = append(nonNil.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(offV)}},
+			Then: share,
+			Else: copySeq,
+		})
+	} else {
+		// [N]T(s): always allocate + copy (value semantics).
+		nonNil.Stmts = append(nonNil.Stmts, fl.assignVar(resV, newZeroArr()))
+		if n > 0 {
+			nonNil.Stmts = append(nonNil.Stmts, &ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpArrayCopy, Type: arrRef, Type2: arrRef,
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(resV)}},
+					fl.i32const(0),
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dataV)}},
+					fl.useVar(offV),
+					fl.i32const(n),
+				},
+			}})
+		}
+	}
+
+	nilThen := &ir.Seq{}
+	if ptr {
+		if n == 0 {
+			// (*[0]T)(nil) is nil — keep default null.
+		} else {
+			// (*[N]T)(nil) for N>0 panics (len 0 < N).
+			nilThen.Stmts = append(nilThen.Stmts,
+				fl.assignVar(lenV, fl.i32const(0)),
+			)
+			nilThen.Stmts = append(nilThen.Stmts, panicTooShort.Stmts...)
+		}
+	} else {
+		if n > 0 {
+			nilThen.Stmts = append(nilThen.Stmts,
+				fl.assignVar(lenV, fl.i32const(0)),
+			)
+			nilThen.Stmts = append(nilThen.Stmts, panicTooShort.Stmts...)
+		}
+		// [0]T(nil) is a valid empty array — keep default zero array.
+	}
+
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(srcV)}},
+		Then: nilThen,
+		Else: nonNil,
+	})
+	return fl.useVar(resV), stmts, nil
 }
 
 func (fl *funcLower) complexConvert(x ir.Expr, src, dst types.Type, srcIR, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {

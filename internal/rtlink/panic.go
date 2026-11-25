@@ -47,7 +47,8 @@ func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 		}
 		hasPanicSyms = true
 	}
-	if needIndex && mod.LookupFunc("runtime.panicIndex") == nil {
+	needSliceToArr := mod.LookupFunc("runtime.panicSliceToArray") == nil && scanCallsName(mod, "runtime.panicSliceToArray")
+	if (needIndex && mod.LookupFunc("runtime.panicIndex") == nil) || needSliceToArr {
 		if rewriteDir == "" {
 			return fmt.Errorf("rtlink: rewrite dir unset; cannot link runtime panic_index")
 		}
@@ -76,16 +77,16 @@ func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 		if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
 			return fmt.Errorf("rtlink: lower panic_index.go: %w", err)
 		}
-		// Keep prior funcs; add only panicIndex/itoa/digit from the append.
+		// Keep prior funcs; add only panicIndex/panicSliceToArray/itoa/digit.
 		index := map[string]*ir.Func{}
 		for _, f := range mod.Funcs {
 			switch f.Name {
-			case "runtime.panicIndex", "runtime.itoa", "runtime.digit":
+			case "runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit":
 				index[f.Name] = f
 			}
 		}
 		mod.Funcs = prior
-		for _, name := range []string{"runtime.panicIndex", "runtime.itoa", "runtime.digit"} {
+		for _, name := range []string{"runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit"} {
 			if f := index[name]; f != nil && mod.LookupFunc(name) == nil {
 				mod.Funcs = append(mod.Funcs, f)
 			}
@@ -131,7 +132,7 @@ func scanPanicIndex(mod *ir.Module) bool {
 	need := false
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
-			if name == "runtime.panicIndex" {
+			if name == "runtime.panicIndex" || name == "runtime.panicSliceToArray" {
 				need = true
 			}
 		})
@@ -180,6 +181,7 @@ var panicSyms = []string{
 	"runtime.goexit",
 	"runtime.unrecoveredPanic",
 	"runtime.panicIndex",
+	"runtime.panicSliceToArray",
 	"runtime.panicSliceB",
 	"runtime.panicNil",
 	"runtime.panicDivide",
@@ -238,11 +240,24 @@ func stripPanicFuncs(mod *ir.Module) {
 	mod.Funcs = out
 }
 
+func scanCallsName(mod *ir.Module, want string) bool {
+	found := false
+	for _, f := range mod.Funcs {
+		walkCalls(f.Body, func(name string) {
+			if name == want {
+				found = true
+			}
+		})
+	}
+	return found
+}
+
 func stripPanicIndexFuncs(mod *ir.Module) {
 	names := map[string]bool{
-		"runtime.panicIndex": true,
-		"runtime.itoa":       true,
-		"runtime.digit":      true,
+		"runtime.panicIndex":       true,
+		"runtime.panicSliceToArray": true,
+		"runtime.itoa":             true,
+		"runtime.digit":            true,
 	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {

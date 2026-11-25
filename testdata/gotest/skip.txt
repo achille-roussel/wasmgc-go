@@ -26,7 +26,6 @@ cmplxdivide.go — compile error: build: load: typecheck
 const4.go — output mismatch
 const7.go — could not import os/exec
 convT2X.go — codegen: missing struct field
-convert4.go — runtime error
 convert5.go — failed: build: pipeline: IR verify: duplicate var v_0 in main.main pipeline: IR verify: duplicate var v_0 in…
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 deferfin.go — unsupported: unsafe
@@ -37,7 +36,6 @@ escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug114.go — compile error: build: load: typecheck
-fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug177.go — output mismatch
 fixedbugs/bug196.go — wasm validate/compile error
 fixedbugs/bug242.go — runtime error
@@ -54,7 +52,6 @@ fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug512.go — unsupported: unsafe
-fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue14553.go — wasm validate/compile error
@@ -64,7 +61,6 @@ fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
 fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
-fixedbugs/issue16095.go — runtime error
 fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3df8cf8e0380 stack=[0x3d…
 fixedbugs/issue17381.go — unsupported: unsafe
@@ -103,7 +99,6 @@ fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type
 fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30977.go — compile error: codegen
 fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
-fixedbugs/issue32187.go — runtime error: interface conversion type assertion failed
 fixedbugs/issue32477.go — compile error: codegen
 fixedbugs/issue33724.go — runtime error: null deref / stub stack
 fixedbugs/issue34123.go — compile error: codegen
@@ -111,13 +106,11 @@ fixedbugs/issue34395.go — timeout
 fixedbugs/issue35027.go — unsupported: unsafe
 fixedbugs/issue35073a.go — unsupported: unsafe
 fixedbugs/issue38093.go — compile error: build: load: typecheck
-fixedbugs/issue38496.go — runtime error
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue43292.go — compile error: codegen
-fixedbugs/issue43835.go — failed: build: pipeline: IR verify: duplicate var _ in main.h pipeline: IR verify: duplicate var _ in main.h
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
@@ -131,8 +124,6 @@ fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 val
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
-fixedbugs/issue53600.go — output mismatch
-fixedbugs/issue53653.go — output mismatch
 fixedbugs/issue5373.go — wasm validate/compile error
 fixedbugs/issue54220.go — unsupported: unsafe
 fixedbugs/issue54343.go — compile error: codegen
@@ -154,7 +145,6 @@ fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported fun
 fixedbugs/issue70189.go — runtime error
 fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
-fixedbugs/issue72860.go — runtime error
 fixedbugs/issue73916.go — output mismatch
 fixedbugs/issue73917.go — runtime error
 fixedbugs/issue73920.go — runtime error
@@ -172,7 +162,6 @@ fixedbugs/issue80127.go — runtime error
 fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
-fixedbugs/issue8132.go — compile error: codegen
 fixedbugs/issue81863.go — runtime error
 fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
@@ -229,7 +218,6 @@ typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer
 typeparam/issue48253.go — compile error: codegen
 typeparam/issue48318.go — could not import encoding/xml
 typeparam/issue48645a.go — output mismatch
-typeparam/issue49295.go — runtime error
 typeparam/issue49547.go — output mismatch
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
 typeparam/issue51521.go — compile error: codegen

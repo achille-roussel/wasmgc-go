@@ -7,6 +7,12 @@ func panicIndex(x, y int) {
 	throwPanic(panicErr("runtime error: index out of range [" + itoa(x) + "] with length " + itoa(y)))
 }
 
+// panicSliceToArray reports a failed []T → [N]T / *[N]T conversion (Go 1.17+).
+func panicSliceToArray(slen, alen int) {
+	throwPanic(panicErr("runtime error: cannot convert slice with length " + itoa(slen) +
+		" to array or pointer to array with length " + itoa(alen)))
+}
+
 func itoa(v int) string {
 	if v == 0 {
 		return "0"
