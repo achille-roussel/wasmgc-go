@@ -79,6 +79,18 @@ func Unix(sec int64, nsec int64) Time {
 	return Time{ext: sec*1e9 + nsec}
 }
 
+// UnixMilli returns the local Time corresponding to the given Unix time
+// in milliseconds since January 1, 1970 UTC.
+func UnixMilli(msec int64) Time {
+	return Unix(msec/1e3, (msec%1e3)*1e6)
+}
+
+// UnixMicro returns the local Time corresponding to the given Unix time
+// in microseconds since January 1, 1970 UTC.
+func UnixMicro(usec int64) Time {
+	return Unix(usec/1e6, (usec%1e6)*1e3)
+}
+
 // After reports whether the time instant t is after u.
 func (t Time) After(u Time) bool { return t.ext > u.ext }
 
@@ -107,6 +119,12 @@ func (t Time) String() string {
 
 // Unix returns t as a Unix time (seconds since January 1, 1970 UTC).
 func (t Time) Unix() int64 { return t.ext / 1e9 }
+
+// UnixMilli returns t as a Unix time in milliseconds.
+func (t Time) UnixMilli() int64 { return t.ext / 1e6 }
+
+// UnixMicro returns t as a Unix time in microseconds.
+func (t Time) UnixMicro() int64 { return t.ext / 1e3 }
 
 // UnixNano returns t as a Unix time in nanoseconds.
 func (t Time) UnixNano() int64 { return t.ext }
@@ -151,9 +169,101 @@ func Parse(layout, value string) (Time, error) {
 	return Time{ext: n}, nil
 }
 
-// String returns a decimal nanosecond count (enough for json duration format).
+const (
+	minDuration Duration = -1 << 63
+	maxDuration Duration = 1<<63 - 1
+)
+
+// String returns a string representing the duration in the form "72h3m0.5s".
+// Leading zero units are omitted. As a special case, durations less than one
+// second format with a smaller unit (ms, µs, or ns) to avoid zeros.
 func (d Duration) String() string {
-	return strconv.FormatInt(int64(d), 10) + "ns"
+	var buf [32]byte
+	w := len(buf)
+	u := uint64(d)
+	neg := d < 0
+	if neg {
+		u = -u
+	}
+	if u < uint64(Second) {
+		var prec int
+		w--
+		buf[w] = 's'
+		w--
+		switch {
+		case u == 0:
+			buf[w] = '0'
+			return string(buf[w:])
+		case u < uint64(Microsecond):
+			prec = 0
+			buf[w] = 'n'
+		case u < uint64(Millisecond):
+			prec = 3
+			w--
+			copy(buf[w:], "µ")
+		default:
+			prec = 6
+			buf[w] = 'm'
+		}
+		w, u = fmtFrac(buf[:w], u, prec)
+		w = fmtInt(buf[:w], u)
+	} else {
+		w--
+		buf[w] = 's'
+		w, u = fmtFrac(buf[:w], u, 9)
+		w = fmtInt(buf[:w], u%60)
+		u /= 60
+		if u > 0 {
+			w--
+			buf[w] = 'm'
+			w = fmtInt(buf[:w], u%60)
+			u /= 60
+			if u > 0 {
+				w--
+				buf[w] = 'h'
+				w = fmtInt(buf[:w], u)
+			}
+		}
+	}
+	if neg {
+		w--
+		buf[w] = '-'
+	}
+	return string(buf[w:])
+}
+
+func fmtFrac(buf []byte, v uint64, prec int) (nw int, nv uint64) {
+	w := len(buf)
+	print := false
+	for i := 0; i < prec; i++ {
+		digit := v % 10
+		print = print || digit != 0
+		if print {
+			w--
+			buf[w] = byte(digit) + '0'
+		}
+		v /= 10
+	}
+	if print {
+		w--
+		buf[w] = '.'
+	}
+	return w, v
+}
+
+func fmtInt(buf []byte, v uint64) int {
+	w := len(buf)
+	if v == 0 {
+		w--
+		buf[w] = '0'
+	} else {
+		for v > 0 {
+			w--
+			buf[w] = byte(v%10) + '0'
+			v /= 10
+		}
+	}
+	return w
 }
 
 func (d Duration) Nanoseconds() int64 { return int64(d) }
@@ -162,6 +272,55 @@ func (d Duration) Milliseconds() int64 { return int64(d) / 1e6 }
 func (d Duration) Seconds() float64    { return float64(d) / float64(Second) }
 func (d Duration) Minutes() float64    { return float64(d) / float64(Minute) }
 func (d Duration) Hours() float64      { return float64(d) / float64(Hour) }
+
+// Truncate returns the result of rounding d toward zero to a multiple of m.
+func (d Duration) Truncate(m Duration) Duration {
+	if m <= 0 {
+		return d
+	}
+	return d - d%m
+}
+
+func lessThanHalf(x, y Duration) bool {
+	return uint64(x)+uint64(x) < uint64(y)
+}
+
+// Round returns the result of rounding d to the nearest multiple of m.
+func (d Duration) Round(m Duration) Duration {
+	if m <= 0 {
+		return d
+	}
+	r := d % m
+	if d < 0 {
+		r = -r
+		if lessThanHalf(r, m) {
+			return d + r
+		}
+		if d1 := d - m + r; d1 < d {
+			return d1
+		}
+		return minDuration
+	}
+	if lessThanHalf(r, m) {
+		return d - r
+	}
+	if d1 := d + m - r; d1 > d {
+		return d1
+	}
+	return maxDuration
+}
+
+// Abs returns the absolute value of d.
+func (d Duration) Abs() Duration {
+	switch {
+	case d >= 0:
+		return d
+	case d == minDuration:
+		return maxDuration
+	default:
+		return -d
+	}
+}
 
 // Tick is a convenience wrapper for NewTicker(d).C. Stub ticker.
 func Tick(d Duration) <-chan Time {
@@ -193,41 +352,153 @@ func (t *Ticker) Stop() {
 	// stub: goroutine keeps running (language tests rarely require stop)
 }
 
-// ParseDuration parses a duration string.
-// Stub: accepts an integer with optional "ns"/"us"/"µs"/"ms"/"s"/"m"/"h" suffix.
+type parseDurationError struct {
+	message string
+	value   string
+}
+
+func (e *parseDurationError) Error() string {
+	return "time: " + e.message + " " + strconv.Quote(e.value)
+}
+
+var unitMap = map[string]uint64{
+	"ns": uint64(Nanosecond),
+	"us": uint64(Microsecond),
+	"µs": uint64(Microsecond),
+	"μs": uint64(Microsecond),
+	"ms": uint64(Millisecond),
+	"s":  uint64(Second),
+	"m":  uint64(Minute),
+	"h":  uint64(Hour),
+}
+
+func leadingInt(s string) (x uint64, rem string, err error) {
+	i := 0
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		if x > (1<<63-1)/10 {
+			return 0, s[:], errors.New("time: bad [0-9]*")
+		}
+		y := x*10 + uint64(c-'0')
+		if y < x {
+			return 0, s[:], errors.New("time: bad [0-9]*")
+		}
+		x = y
+	}
+	return x, s[i:], nil
+}
+
+func leadingFraction(s string) (x uint64, scale float64, rem string) {
+	i := 0
+	scale = 1
+	overflow := false
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		if overflow {
+			continue
+		}
+		if x > (1<<63-1)/10 {
+			overflow = true
+			continue
+		}
+		y := x*10 + uint64(c-'0')
+		if y > 1<<63 {
+			overflow = true
+			continue
+		}
+		x = y
+		scale *= 10
+	}
+	return x, scale, s[i:]
+}
+
+// ParseDuration parses a duration string such as "300ms", "-1.5h" or "2h45m".
 func ParseDuration(s string) (Duration, error) {
+	orig := s
+	var d uint64
+	neg := false
+	if s != "" {
+		c := s[0]
+		if c == '-' || c == '+' {
+			neg = c == '-'
+			s = s[1:]
+		}
+	}
+	if s == "0" {
+		return 0, nil
+	}
 	if s == "" {
-		return 0, errors.New("time: invalid duration")
+		return 0, &parseDurationError{"invalid duration", orig}
 	}
-	// Try plain integer nanoseconds first.
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return Duration(n), nil
+	for s != "" {
+		var (
+			v, f  uint64
+			scale float64 = 1
+		)
+		if !(s[0] == '.' || '0' <= s[0] && s[0] <= '9') {
+			return 0, &parseDurationError{"invalid duration", orig}
+		}
+		pl := len(s)
+		var err error
+		v, s, err = leadingInt(s)
+		if err != nil {
+			return 0, &parseDurationError{"invalid duration", orig}
+		}
+		pre := pl != len(s)
+		post := false
+		if s != "" && s[0] == '.' {
+			s = s[1:]
+			pl := len(s)
+			f, scale, s = leadingFraction(s)
+			post = pl != len(s)
+		}
+		if !pre && !post {
+			return 0, &parseDurationError{"invalid duration", orig}
+		}
+		i := 0
+		for ; i < len(s); i++ {
+			c := s[i]
+			if c == '.' || '0' <= c && c <= '9' {
+				break
+			}
+		}
+		if i == 0 {
+			return 0, &parseDurationError{"missing unit in duration", orig}
+		}
+		u := s[:i]
+		s = s[i:]
+		unit, ok := unitMap[u]
+		if !ok {
+			return 0, &parseDurationError{"unknown unit " + strconv.Quote(u) + " in duration", orig}
+		}
+		if v > 1<<63/unit {
+			return 0, &parseDurationError{"invalid duration", orig}
+		}
+		v *= unit
+		if f > 0 {
+			v += uint64(float64(f) * (float64(unit) / scale))
+			if v > 1<<63 {
+				return 0, &parseDurationError{"invalid duration", orig}
+			}
+		}
+		d += v
+		if d > 1<<63 {
+			return 0, &parseDurationError{"invalid duration", orig}
+		}
 	}
-	unit := Nanosecond
-	num := s
-	switch {
-	case len(s) > 2 && s[len(s)-2:] == "ns":
-		num, unit = s[:len(s)-2], Nanosecond
-	case len(s) > 2 && s[len(s)-2:] == "us":
-		num, unit = s[:len(s)-2], Microsecond
-	case len(s) > 3 && s[len(s)-3:] == "µs":
-		num, unit = s[:len(s)-3], Microsecond
-	case len(s) > 2 && s[len(s)-2:] == "ms":
-		num, unit = s[:len(s)-2], Millisecond
-	case len(s) > 1 && s[len(s)-1:] == "s":
-		num, unit = s[:len(s)-1], Second
-	case len(s) > 1 && s[len(s)-1:] == "m":
-		num, unit = s[:len(s)-1], Minute
-	case len(s) > 1 && s[len(s)-1:] == "h":
-		num, unit = s[:len(s)-1], Hour
-	default:
-		return 0, errors.New("time: invalid duration " + strconv.Quote(s))
+	if neg {
+		return -Duration(d), nil
 	}
-	n, err := strconv.ParseInt(num, 10, 64)
-	if err != nil {
-		return 0, errors.New("time: invalid duration " + strconv.Quote(s))
+	if d > 1<<63-1 {
+		return 0, &parseDurationError{"invalid duration", orig}
 	}
-	return Duration(n) * unit, nil
+	return Duration(d), nil
 }
 
 // Sleep pauses the current goroutine for at least duration d.
@@ -326,7 +597,7 @@ func (m Month) String() string {
 	if January <= m && m <= December {
 		return monthNames[m-1]
 	}
-	return "Month(" + strconv.Itoa(int(m)) + ")"
+	return "%!Month(" + strconv.Itoa(int(m)) + ")"
 }
 
 // Month returns the month of the year specified by t (UTC stub).
@@ -357,7 +628,7 @@ func (d Weekday) String() string {
 	if Sunday <= d && d <= Saturday {
 		return weekdayNames[d]
 	}
-	return "Weekday(" + strconv.Itoa(int(d)) + ")"
+	return "%!Weekday(" + strconv.Itoa(int(d)) + ")"
 }
 
 // IsZero reports whether t represents the zero time instant.

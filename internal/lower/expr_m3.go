@@ -203,8 +203,40 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 		// &*p → p
 		return fl.expr(x.X, want)
 	case *ast.CompositeLit:
-		// &T{...} — composite is already a heap object; *Struct is the same ref.
-		return fl.compositeLit(x, want)
+		xt := fl.typeOf(x)
+		// &Struct{...} / &[N]T{...}: composite object ref is the pointer.
+		if xt != nil && isObjectPointer(types.NewPointer(xt)) {
+			return fl.compositeLit(x, ptrTy)
+		}
+		// &[]T{...} / &map{...}: spill the value into a cell and address cell.v
+		// (bug119 &[]int{12}; issue68227). Want is $go.ptr.ref, not the slice.
+		lit, stmts, err := fl.compositeLit(x, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		elemIR, err := fl.mapType(xt)
+		if err != nil {
+			return nil, nil, err
+		}
+		cellName, err := fl.pkg.ensureCellType(elemIR)
+		if err != nil {
+			return nil, nil, err
+		}
+		cellTy := &ir.Ref{Named: cellName}
+		// newVar registers an extra local (function-scoped); do not also emit
+		// VarDef or verify sees a duplicate name.
+		cv := fl.newVar("addrLit", cellTy)
+		stmts = append(stmts, fl.assignVar(cv, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: cellTy,
+			Args: []ir.Expr{lit},
+		}))
+		return &ir.Instr{
+			Op:    ir.OpAddr,
+			Args:  []ir.Expr{fl.useVar(cv)},
+			Field: "v",
+			Type:  ptrTy,
+		}, stmts, nil
 	case *ast.UnaryExpr:
 		if x.Op == token.AND {
 			return fl.addrOf(x.X, want)

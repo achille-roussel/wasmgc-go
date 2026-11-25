@@ -424,6 +424,20 @@ func (fl *funcLower) boolExpr(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
 		}
 	}
 	ty := fl.typeOf(e)
+	// Untagged switch case with an interface value (issue 3980): compare to
+	// boxed true rather than treating the iface ref as an i32 condition.
+	if ty != nil && isIface(ty) && !isBoolean(ty) {
+		want, err := fl.mapType(ty)
+		if err != nil {
+			return nil, nil, err
+		}
+		x, stmts, err := fl.expr(e, want)
+		if err != nil {
+			return nil, nil, err
+		}
+		tru := fl.boxIRToIface(fl.i32const(1), types.Typ[types.Bool], ty)
+		return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{x, tru}}, stmts, nil
+	}
 	want := ir.TypeI32
 	if ty != nil && !isBoolean(ty) {
 		// Comparisons produce i32 already via binary.

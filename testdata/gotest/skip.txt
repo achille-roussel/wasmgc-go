@@ -23,7 +23,6 @@ closedchan.go — wasm validate/compile error
 closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
-const.go — IR verify: cannot assign f64 to var i of type i32 in main.ints
 const4.go — output mismatch
 const7.go — could not import os/exec
 convT2X.go — codegen: missing struct field
@@ -38,7 +37,6 @@ escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug114.go — compile error: build: load: typecheck
-fixedbugs/bug119.go — wasm validate/compile error
 fixedbugs/bug130.go — wasm validate/compile error: itab wrapper send arg type
 fixedbugs/bug177.go — output mismatch
 fixedbugs/bug196.go — wasm validate/compile error
@@ -55,7 +53,6 @@ fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 10000000
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug461.go — failed: panic: int should be unexported
-fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/issue10332.go — output mismatch
@@ -98,7 +95,6 @@ fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
 fixedbugs/issue28748.go — compile error: build: load: typecheck
 fixedbugs/issue29190.go — runtime error
-fixedbugs/issue29312.go — runtime error: illegal cast (deep slicetype / String)
 fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
 fixedbugs/issue29504.go — compile error: codegen
@@ -152,7 +148,6 @@ fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice o
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
 fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
-fixedbugs/issue68227.go — wasm validate/compile error
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
@@ -222,8 +217,6 @@ stackobj.go — compile error: codegen
 stackobj2.go — compile error: codegen
 stackobj3.go — compile error: codegen
 strcopy.go — runtime error
-string_lit.go — failed: panic: syscall.Exit
-switch.go — IR verify: temp used outside defining region in main.main
 tinyfin.go — output mismatch
 typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
@@ -257,5 +250,4 @@ uintptrescapes3.go — unsupported: unsafe
 unsafe_slice_data.go — unsupported: unsafe
 unsafe_string_data.go — unsupported: unsafe
 unsafebuiltins.go — unsupported: unsafe
-winbatch.go — runtime error: no host FS / syscall.Exit stub
 zerosize.go — output mismatch: zerobase pointer identity

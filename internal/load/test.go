@@ -87,6 +87,14 @@ func LoadTest(cfg TestConfig) (*TestProgram, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Thin rewrite packages (e.g. time) ship far fewer production .go files than
+	// upstream. Their export_test.go references unexported symbols we do not
+	// provide; keeping it blocks every external test. Drop it so public-API
+	// tests can compile; tests that need export helpers fail typecheck and stay
+	// skipped.
+	if thinRewritePackage(prodDir, upDir, filter) {
+		scan.Internal = dropExportTestFiles(scan.Internal)
+	}
 
 	// Materialize stripped test sources into work dir.
 	var internalPaths, externalPaths []string
@@ -186,6 +194,30 @@ func LoadTest(cfg TestConfig) (*TestProgram, error) {
 		WorkDir: work,
 		MainSrc: mainSrc,
 	}, nil
+}
+
+// thinRewritePackage reports whether the materialized production package is a
+// thin rewrite of upstream (far fewer .go files), so export_test cannot work.
+func thinRewritePackage(prodDir, upDir string, filter FilterConfig) bool {
+	prod, err1 := filter.ListGoFiles(prodDir)
+	up, err2 := filter.ListGoFiles(upDir)
+	if err1 != nil || err2 != nil || len(up) == 0 {
+		return false
+	}
+	// Rewrite packages typically keep a handful of files; upstream time has ~20+.
+	return len(prod)*2 < len(up)
+}
+
+func dropExportTestFiles(files []testmain.FileInfo) []testmain.FileInfo {
+	var kept []testmain.FileInfo
+	for _, fi := range files {
+		base := filepath.Base(fi.Path)
+		if base == "export_test.go" || strings.HasPrefix(base, "export_") {
+			continue
+		}
+		kept = append(kept, fi)
+	}
+	return kept
 }
 
 // ListTestGoFiles returns *_test.go files in dir that pass the wasmgc filter.

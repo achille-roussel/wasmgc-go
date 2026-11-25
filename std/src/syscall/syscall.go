@@ -87,7 +87,15 @@ func Getwd() (string, error) { return "", ENOSYS }
 
 // Exit terminates the process. v1 panics with a marker the host may map to
 // process.exit; prefer returning from main when possible.
-func Exit(code int) { panic("syscall.Exit") }
+func Exit(code int) {
+	// Prefer the host exit import (lib/wasmgc.js go.runtime.exit) so os.Exit(0)
+	// terminates cleanly. The old panic stub failed every //run test that
+	// calls os.Exit on success (switch.go, string_lit.go, …).
+	runtimeExit(int32(code))
+}
+
+//go:wasmimport go runtime.exit
+func runtimeExit(code int32)
 
 func Getpid() int  { return 1 }
 func Getppid() int { return 0 }
