@@ -956,7 +956,9 @@ func (fl *funcLower) stringConcat(e *ast.BinaryExpr) (ir.Expr, []ir.Stmt, error)
 		return nil, nil, err
 	}
 	stmts := append(xstmts, ystmts...)
-	return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Args: []ir.Expr{x, y}}, stmts, nil
+	// Type must be set: len(a+b) / (a+b)[i:] expand OpLen via lenCapArgType,
+	// which otherwise defaults to $go.slice.i32 and fails IR verify.
+	return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{x, y}}, stmts, nil
 }
 
 func (fl *funcLower) stringCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, []ir.Stmt, error) {

@@ -80,6 +80,9 @@ func (g *gen) ensureExtraShapes() {
 		{Name: "index", Type: &ir.Ref{Named: "$go.fn.index"}},
 		{Name: "setIndex", Type: &ir.Ref{Named: "$go.fn.setIndex"}},
 		{Name: "len", Type: &ir.Ref{Named: "$go.fn.len"}},
+		// Fixed length for KindArray (0 for slices). Used by reflect.Type.Len
+		// / Type.String so fmt %#v can print [N]T instead of bare "array".
+		{Name: "n", Type: ir.TypeI32},
 	}
 	if td := g.mod.LookupType("$go.extra.slice"); td != nil {
 		td.Fields = sliceExtraFields
@@ -598,6 +601,12 @@ func (g *gen) emitSliceExtra(tr *typeRec) ir.Expr {
 	indexFn := g.emitIndexFunc(tr)
 	setIdxFn := g.emitSetIndexFunc(tr)
 	lenFn := g.emitLenFunc(tr)
+	var fixedN int64
+	if tr.kind == KindArray && tr.goType != nil {
+		if a, ok := tr.goType.Underlying().(*types.Array); ok {
+			fixedN = a.Len()
+		}
+	}
 	return &ir.Instr{
 		Op:   ir.OpStructNew,
 		Type: &ir.Ref{Named: "$go.extra.slice"},
@@ -606,6 +615,7 @@ func (g *gen) emitSliceExtra(tr *typeRec) ir.Expr {
 			&ir.Instr{Op: ir.OpRefFunc, Func: indexFn},
 			&ir.Instr{Op: ir.OpRefFunc, Func: setIdxFn},
 			&ir.Instr{Op: ir.OpRefFunc, Func: lenFn},
+			&ir.Const{Op: ir.OpI32Const, I64: fixedN},
 		},
 	}
 }

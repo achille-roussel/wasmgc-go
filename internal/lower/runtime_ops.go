@@ -1602,6 +1602,12 @@ func lenCapArgType(mod *ir.Module, e ir.Expr) ir.Type {
 		if e.Type != nil {
 			return e.Type
 		}
+		// Call with no Type: use the callee's first result (concatstrings → string).
+		if e.Op == ir.OpCall && e.Func != "" && mod != nil {
+			if f := mod.LookupFunc(e.Func); f != nil && len(f.Results) > 0 {
+				return f.Results[0]
+			}
+		}
 	}
 	return nil
 }

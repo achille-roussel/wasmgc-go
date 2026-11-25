@@ -256,7 +256,11 @@ func pruneFmtRegion(r Region, boxed map[string]bool, typeOfVar map[string]string
 			r.Then = &Seq{}
 			cleared = true
 		} else if liveKinds != nil {
-			if kind, ok := condKindEq(r.Cond); ok && !liveKinds[kind] {
+			// Only blank arms whose tags are real reflect.Kind values
+			// (1..kindUnsafePtr). Verb runes ('s'=115, 'q'=113, …) share the
+			// same i32.eq / i32.or shape inside printValue; treating them as
+			// kinds blanks the byte-array %s/%q/%x/%X path (TestSprintf).
+			if kind, ok := condKindEq(r.Cond); ok && isReflectKind(kind) && !liveKinds[kind] {
 				r.Then = &Seq{}
 				cleared = true
 			} else if allOrKindsDead(r.Cond, liveKinds) {
@@ -435,12 +439,26 @@ func allOrKindsDead(cond Expr, liveKinds map[int64]bool) bool {
 	if len(kinds) == 0 {
 		return false
 	}
+	// Verb/int switches use the same i32.or(eq…) shape. If any tag is
+	// outside the reflect.Kind range, this is not a kind cascade — keep it.
+	for _, k := range kinds {
+		if !isReflectKind(k) {
+			return false
+		}
+	}
 	for _, k := range kinds {
 		if liveKinds[k] {
 			return false
 		}
 	}
 	return true
+}
+
+// isReflectKind reports whether n is a reflect.Kind discriminant (Invalid=0
+// through UnsafePointer=26). Fmt verb runes and other int switches use larger
+// constants and must not be pruned as dead kinds.
+func isReflectKind(n int64) bool {
+	return n >= 0 && n <= kindUnsafePtr
 }
 
 func collectOrKinds(in *Instr) []int64 {
