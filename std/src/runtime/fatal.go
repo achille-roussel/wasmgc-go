@@ -9,6 +9,8 @@ type panicObj struct {
 }
 
 // throw panics with s (recoverable channel/runtime errors).
+// Prefer panicErr/throwPanic from panic.go when that file is linked; keep a
+// string panic here so sched-only typecheck of fatal.go stays self-contained.
 func throw(s string) { panic(s) }
 
 // fatal prints "fatal error: " + s and exits with status 2 (deadlock).

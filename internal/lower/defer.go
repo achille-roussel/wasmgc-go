@@ -869,6 +869,35 @@ func (fl *funcLower) recoverPrologue() []ir.Stmt {
 	}
 }
 
+// clearRecoverOk zeros $g.recoverOk at function entry. recover() is only
+// valid when called directly by a deferred function (Go spec); deferRun sets
+// recoverOk around the deferred trampoline, and that function's
+// recoverPrologue captures it. Callees of a deferred frame must not see
+// recoverOk still set (issue73916: defer F where F calls recover via helper).
+// No-op when $g is still null (packages that never panic/defer).
+func (fl *funcLower) clearRecoverOk() []ir.Stmt {
+	fl.pkg.ensureDeferTypes()
+	gTy := &ir.Ref{Named: "$go.g"}
+	gGet := &ir.Instr{Op: ir.OpGlobalGet, Global: "$g"}
+	return []ir.Stmt{
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{gGet}},
+			Then: &ir.Seq{},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{
+					Op:    ir.OpStructSet,
+					Type:  gTy,
+					Field: "recoverOk",
+					Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{gGet}},
+						fl.i32const(0),
+					},
+				}},
+			}},
+		},
+	}
+}
+
 func (fl *funcLower) builtinPanic(e *ast.CallExpr) ([]ir.Stmt, error) {
 	fl.pkg.ensureDeferTypes()
 	fl.mayPanic = true
@@ -1015,8 +1044,21 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	// may observe a panic or has recover.
 	needTry := fl.mayPanic || fl.needsRecoverPrologue || fl.hasDefer
 
+	// Snapshot the defer list, then null defersVar before deferRun. The try
+	// body wraps this call: an unrecovered rethrow from deferRun is caught by
+	// the same function's handler. If defersVar still pointed at the list, the
+	// handler would walk it again (double-fire + panic chain) and then clear
+	// $g.panic / return — swallowing the panic (breaks defernil / nested recover).
+	// newVar puts deferSnap in extraLocals (single VarDef in the preamble).
+	// Do not VarDef inside runDefers — rewriteReturns copies that block to
+	// every return site and duplicate defs fail IR verify.
+	// Empty name → newVar auto-uniques (nested wrapDeferBody / MakeFunc
+	// paths must not emit two VarDefs named defersSnap in one IR func).
+	deferSnap := fl.newVar("", &ir.Ref{Null: true, Named: deferTypeName})
 	runDefers := []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
+		fl.assignVar(deferSnap, fl.useVar(fl.defersVar)),
+		fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}),
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(deferSnap)}}},
 	}
 
 	// Rewrite returns to run defers first. With named results, re-read them

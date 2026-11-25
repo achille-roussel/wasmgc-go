@@ -1,7 +1,5 @@
 # fmt — wasmgc-go test skips
 TestCountMallocs — alloc-counting: testing.AllocsPerRun always 0 under host GC
-TestFormatterFlags — scan/regexp, tables, or reflect gaps
-TestNilDoesNotBecomeTyped — scan/regexp, tables, or reflect gaps
 TestPanics — scan/regexp, tables, or reflect gaps
 TestScan — scan/regexp, tables, or reflect gaps
 TestScanInts — scan/regexp, tables, or reflect gaps
@@ -9,4 +7,3 @@ TestScanf — scan/regexp, tables, or reflect gaps
 TestScanfMulti — scan/regexp, tables, or reflect gaps
 TestScanln — scan/regexp, tables, or reflect gaps
 TestSprintf — scan/regexp, tables, or reflect gaps
-TestStructPrinter — scan/regexp, tables, or reflect gaps

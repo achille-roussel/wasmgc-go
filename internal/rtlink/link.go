@@ -152,6 +152,7 @@ func stripPrintFuncs(mod *ir.Module) {
 		"runtime.printbool":        true,
 		"runtime.printpointer":     true,
 		"runtime.printiface":       true,
+		"runtime.panicIfaceString": true,
 		"runtime.printslice":       true,
 		"runtime.printF64bits":     true,
 		"runtime.printFloatUint":   true,

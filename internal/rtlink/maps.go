@@ -29,18 +29,15 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	}
 	// TypeCheckFiles is isolated — include every dep map.go needs even when
 	// those symbols are already linked into the module (sched/select/print).
-	files := []string{"map.go", "rand.go", "fatal.go", "bridge.go", "print.go", "stringeq.go"}
+	// rtype.go: mapKeyHash uses ReflectType/ReflectTypeName for unhashable keys.
+	// panic.go: mapKeyHash uses throwPanic/panicErr (and panic_index may need it).
+	files := []string{"map.go", "rand.go", "fatal.go", "bridge.go", "print.go", "stringeq.go", "rtype.go", "panic.go"}
 	needPanic := mod.LookupFunc("runtime.panicUncomparable") == nil &&
 		mod.LookupFunc("runtime.deferRun") == nil
 	needPanicIndex := mod.LookupFunc("runtime.panicIndex") == nil
-	// panic_index.go calls throwPanic from panic.go — include panic.go in the
-	// isolated typecheck set whenever the index file is linked (mirror EnsurePanic).
-	// If panic symbols are already in the module, keep panic.go for typecheck only
-	// and drop its funcs after AppendFiles so we do not duplicate them.
-	panicTypecheckOnly := needPanicIndex && !needPanic
-	if needPanic || needPanicIndex {
-		files = append(files, "panic.go")
-	}
+	// panic.go is always typechecked with map.go; if panic symbols are already
+	// in the module, drop re-linked panic funcs after AppendFiles (keep index).
+	panicTypecheckOnly := !needPanic
 	if needPanicIndex {
 		files = append(files, "panic_index.go")
 	}
@@ -68,6 +65,7 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 	stripMapRand(mod)
 	stripPrintFuncs(mod)
 	stripMapSupport(mod)
+	stripReflectDecls(mod)
 	prior := append([]*ir.Func(nil), mod.Funcs...)
 	if err := lower.AppendFiles(mod, fset, astFiles, pkg, info); err != nil {
 		return fmt.Errorf("rtlink: lower map runtime: %w", err)
@@ -195,6 +193,22 @@ func stripMapSupport(mod *ir.Module) {
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
 		if drop[f.Name] {
+			continue
+		}
+		out = append(out, f)
+	}
+	mod.Funcs = out
+}
+
+// stripReflectDecls drops Reflect* / Rtype methods so EnsureMaps can re-link
+// rtype.go (mapKeyHash needs ReflectTypeName) without duplicate funcs.
+func stripReflectDecls(mod *ir.Module) {
+	out := mod.Funcs[:0]
+	for _, f := range mod.Funcs {
+		if len(f.Name) >= 16 && f.Name[:16] == "runtime.Reflect" {
+			continue
+		}
+		if f.Name == "runtime.(*Rtype).Kind" || f.Name == "runtime.(*Rtype).ID" {
 			continue
 		}
 		out = append(out, f)

@@ -177,9 +177,8 @@ func (t Time) Format(layout string) string {
 }
 
 // AppendFormat appends a textual representation of t to b.
-// Thin: Kitchen / "3:04PM" / "03:04PM" only; other layouts (incl. RFC3339)
-// fall back to UnixNano decimal so fat layout parsing stays out of the
-// joint time test binary (Node StackMemory OOM).
+// Thin subset: Kitchen, DateOnly, TimeOnly, RFC3339/RFC3339Nano (always Z).
+// Other layouts fall back to UnixNano decimal (keeps joint time binary small).
 func (t Time) AppendFormat(b []byte, layout string) []byte {
 	switch layout {
 	case Kitchen, "03:04PM": // Kitchen == "3:04PM"
@@ -202,9 +201,72 @@ func (t Time) AppendFormat(b []byte, layout string) []byte {
 		}
 		b = strconv.AppendInt(b, int64(m), 10)
 		return append(b, ap...)
+	case TimeOnly:
+		h, m, s := t.Clock()
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, m)
+		b = append(b, ':')
+		return append2(b, s)
+	case DateOnly:
+		y, mo, d := t.Date()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		return append2(b, d)
+	case RFC3339, RFC3339Nano:
+		y, mo, d := t.Date()
+		h, mi, s := t.Clock()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		b = append2(b, d)
+		b = append(b, 'T')
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, mi)
+		b = append(b, ':')
+		b = append2(b, s)
+		if layout == RFC3339Nano {
+			b = append(b, '.')
+			ns := t.Nanosecond()
+			for div := 100000000; div >= 1; div /= 10 {
+				b = append(b, byte('0'+ns/div%10))
+			}
+		}
+		return append(b, 'Z')
 	default:
 		return strconv.AppendInt(b, t.ext, 10)
 	}
+}
+
+func append2(b []byte, n int) []byte {
+	if n < 0 {
+		n = 0
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
+}
+
+func append4(b []byte, n int) []byte {
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	if n < 1000 {
+		b = append(b, '0')
+	}
+	if n < 100 {
+		b = append(b, '0')
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
 }
 
 // AppendText appends RFC3339 text of t to b (stub via AppendFormat).
@@ -1086,12 +1148,37 @@ func (t Time) GoString() string {
 	if l := t.Location(); l == Local {
 		loc = "time.Local"
 	} else if l != nil && l != UTC && l.name != "" && l.name != "UTC" {
-		loc = "time.Location(" + strconv.Quote(l.name) + ")"
+		loc = "time.Location(" + quoteGoString(l.name) + ")"
 	}
 	return "time.Date(" + strconv.Itoa(t.Year()) + ", " + ms +
 		", " + strconv.Itoa(t.Day()) + ", " + strconv.Itoa(t.Hour()) + ", " +
 		strconv.Itoa(t.Minute()) + ", " + strconv.Itoa(t.Second()) + ", " +
 		strconv.Itoa(t.Nanosecond()) + ", " + loc + ")"
+}
+
+// quoteGoString quotes s like strconv.Quote but escapes every non-ASCII byte
+// as \xHH (matches upstream time.GoString expectations for Location names).
+func quoteGoString(s string) string {
+	b := make([]byte, 0, len(s)+2)
+	b = append(b, '"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' || c == '"':
+			b = append(b, '\\', c)
+		case c == '\n':
+			b = append(b, '\\', 'n')
+		case c == '\t':
+			b = append(b, '\\', 't')
+		case c >= 0x20 && c < 0x7f:
+			b = append(b, c)
+		default:
+			const hex = "0123456789abcdef"
+			b = append(b, '\\', 'x', hex[c>>4], hex[c&0xf])
+		}
+	}
+	b = append(b, '"')
+	return string(b)
 }
 
 // YearDay returns the day of the year in [1,365] (or 366 for leap years).
@@ -1101,22 +1188,13 @@ func (t Time) YearDay() int {
 }
 
 // ISOWeek returns the ISO 8601 year and week number.
+// Uses the Thursday of the current week to determine year and week.
 func (t Time) ISOWeek() (year, week int) {
-	// Approximate via year-day and weekday (Mon=0..Sun=6 in ISO).
-	y, _, _ := t.Date()
-	yd := t.YearDay()
-	// Weekday(): Sunday=0 … Saturday=6. ISO Monday=0.
-	wd := int(t.Weekday())
-	isoWD := (wd + 6) % 7
-	week = (yd - isoWD + 10) / 7
-	year = y
-	if week < 1 {
-		year--
-		week = 52
-	} else if week > 52 {
-		year++
-		week = 1
-	}
+	wd := int(t.Weekday()) // Sunday=0 … Saturday=6
+	isoWD := (wd + 6) % 7  // Monday=0 … Sunday=6
+	thu := t.Add(Duration(3-isoWD) * 24 * Hour)
+	year = thu.Year()
+	week = (thu.YearDay()-1)/7 + 1
 	return year, week
 }
 

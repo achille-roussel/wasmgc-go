@@ -16,7 +16,6 @@ chan/doubleselect.go — failed: panic: runtime error: slice bounds out of range
 chan/powser1.go — compile error: lower: copy: unsupported dst type
 chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
 chan/sieve2.go — output mismatch
-chancap.go — failed: build: pipeline: IR verify: cannot assign refnull $go.chan to var h14768 of type i32 in main.clos.29…
 closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
@@ -26,7 +25,6 @@ convT2X.go — codegen: missing struct field
 convert5.go — failed: build: pipeline: IR verify: duplicate var v_0 in main.main pipeline: IR verify: duplicate var v_0 in…
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 deferfin.go — unsupported: unsafe
-defernil.go — runtime error
 devirtualization_nil_panics.go — compile error: codegen
 env.go — output mismatch
 escape.go — wasm validate/compile error
@@ -63,7 +61,6 @@ fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000
 fixedbugs/issue17381.go — unsupported: unsafe
 fixedbugs/issue18149.go — compile error: codegen
 fixedbugs/issue18636.go — wasm module missing export run (large stack array)
-fixedbugs/issue18725.go — failed: panic: syscall.Exit
 fixedbugs/issue19040.go — compile error: codegen
 fixedbugs/issue19078.go — unsupported: unsafe
 fixedbugs/issue21221.go — unsupported: unsafe
@@ -141,9 +138,6 @@ fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported fun
 fixedbugs/issue70189.go — runtime error
 fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
-fixedbugs/issue73916.go — output mismatch
-fixedbugs/issue73917.go — runtime error
-fixedbugs/issue73920.go — runtime error
 fixedbugs/issue75365.go — output mismatch
 fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.outer not in scope pipeline: IR verify: br target $goto.…
 fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ratio loop
@@ -173,7 +167,6 @@ initialize.go — failed: build: pipeline: IR verify: return value 0: have refnu
 inline_caller.go — compile error: codegen
 inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
-ken/chan.go — timeout
 ken/chan1.go — output mismatch
 mallocfin.go — compile error: codegen
 maymorestack.go — compile error: codegen
@@ -186,7 +179,6 @@ printbig.go — compile error: build: load: typecheck
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
 recover1.go — wasm validate/compile error
-recover2.go — wasm validate/compile error
 recover3.go — compile error: IR verify: temp used outside defining region
 reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod2.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value

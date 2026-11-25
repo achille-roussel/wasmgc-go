@@ -8,6 +8,34 @@ import (
 
 // fillReflectHelpers replaces empty bodies of runtime.Reflect* unpack helpers
 // that reflect/reflectlite call (docs/design/05).
+// typeDisplayName returns a gc-like reflect.Type.String for a descriptor:
+// "main.T" for package main (even when the module path is gotestcase), else
+// "pkg.T" using the package name, else the go/types String / stored name.
+func typeDisplayName(tr *typeRec) string {
+	if tr == nil {
+		return ""
+	}
+	if tr.goType != nil {
+		if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
+			obj := n.Obj()
+			if obj == nil {
+				return tr.goType.String()
+			}
+			if pkg := obj.Pkg(); pkg != nil {
+				if pkg.Name() == "main" {
+					return "main." + obj.Name()
+				}
+				if pkg.Name() != "" {
+					return pkg.Name() + "." + obj.Name()
+				}
+			}
+			return obj.Name()
+		}
+		return tr.goType.String()
+	}
+	return tr.name
+}
+
 func (g *gen) fillReflectHelpers() error {
 	g.fillReflectType()
 	g.fillReflectData()
@@ -137,24 +165,57 @@ func (g *gen) fillReflectTypeName() {
 	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
 	strTy := &ir.Ref{Named: "$go.string"}
 	t := &ir.Var{Name: "t", Typ: typeTy}
-	nameV := &ir.Var{Name: "n", Typ: &ir.Ref{Null: true, Named: "$go.string"}}
+	id := &ir.Var{Name: "id", Typ: ir.TypeI32}
+
+	// Descriptor .name is always null (global init cannot embed string data).
+	// Dispatch on type id → String()-style name so %T / unhashable panics work.
+	type idName struct {
+		id   int32
+		name string
+	}
+	var entries []idName
+	for _, tr := range g.types {
+		if tr == nil || tr.id < 0 {
+			continue
+		}
+		n := typeDisplayName(tr)
+		if n == "" {
+			continue
+		}
+		entries = append(entries, idName{id: tr.id, name: n})
+	}
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].id < entries[i].id {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+	cases := make([]ir.Stmt, 0, len(entries)+1)
+	for _, e := range entries {
+		e := e
+		cases = append(cases, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "id", Var: id},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(e.id)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{g.stringConstExpr(e.name)}}}},
+			Else: &ir.Seq{},
+		})
+	}
+	cases = append(cases, &ir.Return{Results: []ir.Expr{g.stringConstExpr("")}})
+
 	body := &ir.Seq{Stmts: []ir.Stmt{
-		&ir.VarDef{Var: nameV},
+		&ir.VarDef{Var: id},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{g.stringConstExpr("")}}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Assign{Lhs: []ir.Dest{{Name: "n", Var: nameV}}, Rhs: &ir.Instr{
-					Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "name",
+				&ir.Assign{Lhs: []ir.Dest{{Name: "id", Var: id}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id",
 					Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
 				}},
-				&ir.If{
-					Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "n", Var: nameV}}},
-					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{g.stringConstExpr("")}}}},
-					Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
-						Op: ir.OpRefCast, Type: strTy, Args: []ir.Expr{&ir.Name{Raw: "n", Var: nameV}},
-					}}}}},
-				},
+				&ir.Seq{Stmts: cases},
 			}},
 		},
 		&ir.Unreachable{},

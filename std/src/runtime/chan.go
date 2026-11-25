@@ -86,9 +86,16 @@ type chanOps struct {
 	zero       func() any                      // closed-recv zero
 }
 
+// makechanError implements error for makechan capacity failures so
+// recover().(error) works in GOROOT tests (chancap.go).
+type makechanError struct{ msg string }
+
+func (e makechanError) Error() string { return e.msg }
+
 func makechan(size int32) *hchan {
-	if size < 0 {
-		throw("makechan: negative cap")
+	// Match upstream wording: "makechan: size out of range".
+	if size < 0 || size > 1<<30 {
+		panic(makechanError{msg: "makechan: size out of range"})
 	}
 	var buf any
 	if size > 0 {

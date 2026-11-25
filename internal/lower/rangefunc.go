@@ -553,6 +553,8 @@ func (fl *funcLower) emitRangeYieldBody(name string, s *ast.RangeStmt, yieldSig 
 	}
 	if child.needsRecoverPrologue {
 		preamble = append(preamble, child.recoverPrologue()...)
+	} else {
+		preamble = append(preamble, child.clearRecoverOk()...)
 	}
 	bodySeq.Stmts = append(preamble, bodySeq.Stmts...)
 	if child.hasDefer {

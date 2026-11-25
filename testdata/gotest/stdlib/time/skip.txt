@@ -2,7 +2,6 @@
 TestAdjustTimers — lower/runtime gaps in time tests
 TestAfter — lower/runtime gaps in time tests
 TestAfterFuncStarvation — lower/runtime gaps in time tests
-TestAfterStop — lower/runtime gaps in time tests
 TestAfterTimes — Node OOM in joint time package after many timer tests
 TestAndroidTzdata — lower/runtime gaps in time tests
 TestAppendInt — lower/runtime gaps in time tests
@@ -23,11 +22,9 @@ TestFormatFractionalSecondSeparators — lower/runtime gaps in time tests
 TestFormatSecondsInTimeZone — lower/runtime gaps in time tests
 TestFormatShortYear — lower/runtime gaps in time tests
 TestFormatSingleDigits — lower/runtime gaps in time tests
-TestGoString — lower/runtime gaps in time tests
 TestHasMonotonicClock — lower/runtime gaps in time tests
 TestInternal — lower/runtime gaps in time tests
 TestInvalidTimeGob — lower/runtime gaps in time tests
-TestISOWeek — lower/runtime gaps in time tests
 TestLinkname — lower/runtime gaps in time tests
 TestLoadFixed — lower/runtime gaps in time tests
 TestLoadLocationFromTZData — lower/runtime gaps in time tests
@@ -70,13 +67,13 @@ TestSleep — lower/runtime gaps in time tests
 TestStd0xParseError — lower/runtime gaps in time tests
 TestSub — lower/runtime gaps in time tests
 TestTickTimes — Node OOM in joint time package
-TestTicker — lower/runtime gaps in time tests
+TestTicker — NewTicker loop; joint short time hangs/timeouts with many live timer tests
 TestTimeAddSecOverflow — lower/runtime gaps in time tests
 TestTimeGob — lower/runtime gaps in time tests
 TestTimeIsDST — lower/runtime gaps in time tests
 TestTimeJSON — lower/runtime gaps in time tests
 TestTimerModifiedEarlier — lower/runtime gaps in time tests
-TestTimerStopStress — lower/runtime gaps in time tests
+TestTimerStopStress — stress Stop; joint short time hangs/timeouts
 TestTimeWithZoneTransition — lower/runtime gaps in time tests
 TestToEnglishName — lower/runtime gaps in time tests
 TestTruncateRound — lower/runtime gaps in time tests
@@ -100,5 +97,7 @@ TestYearDay — lower/runtime gaps in time tests
 TestZeroTimer — lower/runtime gaps in time tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
+TestMultiWakeupTicker — NewTicker stress; joint -short time hangs/timeouts
+TestMultiWakeupTimer — timer stress; joint -short time hangs/timeouts
 TestTick — Tick() leaves an uncancellable ticker goroutine; joint OOM before ConcurrentTimerReset
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset

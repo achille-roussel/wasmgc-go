@@ -332,6 +332,21 @@ func mapKeyHash(key any, seed uint32) uint32 {
 	if h, ok := hashString(key, seed); ok {
 		return h
 	}
+	// Comparable-but-unspecialized keys: key==key succeeds → seed mix.
+	// Uncomparable keys panic via ==; rewrite message for recover2.
+	return mapKeyHashFallthrough(key, seed)
+}
+
+func mapKeyHashFallthrough(key any, seed uint32) (h uint32) {
+	defer func() {
+		if recover() != nil {
+			name := ReflectTypeName(ReflectType(key))
+			if name == "" {
+				name = "<unknown>"
+			}
+			throwPanic(panicErr("runtime error: hash of unhashable type " + name))
+		}
+	}()
 	_ = key == key
 	return seed ^ 0x9e3779b9
 }

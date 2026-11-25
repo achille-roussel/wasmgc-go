@@ -546,6 +546,8 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 	}
 	if child.needsRecoverPrologue {
 		preamble = append(preamble, child.recoverPrologue()...)
+	} else {
+		preamble = append(preamble, child.clearRecoverOk()...)
 	}
 	seq.Stmts = append(preamble, seq.Stmts...)
 	if child.hasDefer {

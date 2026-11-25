@@ -109,6 +109,13 @@ func PruneUnreachable(m *Module) {
 			seedGetArg = true
 			markFn("runtime.getArg")
 		}
+		// unrecoveredPanic's EH fill calls panicIfaceString (not visible in IR).
+		// unrecoveredPanic itself is often only referenced after codegen wraps
+		// main.run, so also seed from throwPanic / panicNil which are live in IR.
+		if liveFn["runtime.unrecoveredPanic"] || liveFn["runtime.throwPanic"] || liveFn["runtime.panicNil"] {
+			markFn("runtime.panicIfaceString")
+			markFn("runtime.unrecoveredPanic")
+		}
 		// JS string bridge fills call host imports that empty IR bodies omit.
 		if liveFn["syscall.js.valueOfString"] {
 			markFn("syscall.js.jsValue")
