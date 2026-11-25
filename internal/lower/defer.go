@@ -1027,10 +1027,30 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	// Sync cell-boxed named results into plain locals after deferRun so a
 	// recover defer that wrote `b = true` through the cell is visible
 	// (panics() helper). Cell allocs are hoisted outside try above.
+	// Re-install the caught panic on $g before walking defers so recover()
+	// sees it. After deferRun returns (recovered — else it would have
+	// rethrown), clear $g.panic so an outer unrecoveredPanic wrapper cannot
+	// observe a stale panicObj from this frame.
+	gTy := &ir.Ref{Named: "$go.g"}
+	gNonNull := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
+	}}
 	handler := &ir.Seq{Stmts: []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(payload)}}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
+		&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpStructSet, Type: gTy, Field: "panic",
+			Args: []ir.Expr{gNonNull, fl.useVar(payload)},
+		}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
+		&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpStructSet, Type: gTy, Field: "panic",
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
+				}},
+				&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: panicObjName}},
+			},
+		}},
 	}}
 	handler.Stmts = append(handler.Stmts, fl.syncNamedResultCells()...)
 	handler.Stmts = append(handler.Stmts, fl.resultReturn())

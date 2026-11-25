@@ -168,10 +168,21 @@ func (g *gen) emitMemory() {
 }
 
 func (g *gen) emitGlobals() error {
+	// Pre-register indices for globals we are about to emit so const exprs
+	// can global.get siblings later in the list and self-refs for recursive
+	// types (encoding/json RecursiveSlice). Indices match AddGlobal order.
+	var pending []*ir.Global
 	for _, gl := range g.m.Globals {
 		if _, exists := g.globals[gl.Name]; exists {
 			continue // e.g. $memBump already added
 		}
+		pending = append(pending, gl)
+	}
+	base := g.wm.NextGlobalIndex()
+	for i, gl := range pending {
+		g.globals[gl.Name] = base + uint32(i)
+	}
+	for _, gl := range pending {
 		vt, err := g.valType(gl.Typ)
 		if err != nil {
 			return fmt.Errorf("codegen: global %s: %w", gl.Name, err)
@@ -181,7 +192,9 @@ func (g *gen) emitGlobals() error {
 			return fmt.Errorf("codegen: global %s init: %w", gl.Name, err)
 		}
 		idx := g.wm.AddGlobal(wasm.GlobalType{Type: vt, Mutable: gl.Mut}, init)
-		g.globals[gl.Name] = idx
+		if idx != g.globals[gl.Name] {
+			return fmt.Errorf("codegen: global %s index mismatch (got %d want %d)", gl.Name, idx, g.globals[gl.Name])
+		}
 	}
 	return nil
 }

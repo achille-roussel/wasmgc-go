@@ -202,6 +202,15 @@ func stripMapSupport(mod *ir.Module) {
 	mod.Funcs = out
 }
 
+// EnsureFloatBits rewrites math.Float*bits / Float*frombits (and runtime /
+// internal/strconv helpers) to Wasm reinterpret ops. The std math bodies use
+// unsafe.Pointer casts that lower to fat-pointer loads and trap with
+// "illegal cast" on Wasm GC when maps/reflect were never linked — so this
+// must run for every program that imports math, not only EnsureMaps/Reflect.
+func EnsureFloatBits(mod *ir.Module) {
+	fillFloatBits(mod)
+}
+
 // fillFloatBits replaces empty f32bits/f64bits bodies with reinterpret.
 // Also fills internal.strconv.float*bits / float*frombits (deps.go overlay)
 // and math.Float*bits / Float*frombits (unsafe pointer cast is not valid on

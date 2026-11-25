@@ -327,11 +327,26 @@ func (g *gen) wrapEntryForUnrecovered(name string) {
 	payload := &ir.Var{Name: "pobj", Typ: &ir.Ref{Named: "$go.panicObj"}}
 	exn := &ir.Var{Name: "exn", Typ: ir.TypeExn}
 	// Try params bind pobj/exn in the handler; do not VarDef them again.
+	// Skip unrecoveredPanic when the payload was already recover()'d — a
+	// recovered panic can still reach this wrapper after cross-frame defer
+	// rethrows; printing/exiting would fail a successful recover.
+	rec := &ir.Var{Name: "rec", Typ: ir.TypeI32}
 	handler := &ir.Seq{Stmts: []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.unrecoveredPanic", Args: []ir.Expr{
-			&ir.Name{Raw: payload.Name, Var: payload},
-		}}},
-		&ir.Unreachable{},
+		&ir.VarDef{Var: rec},
+		&ir.Assign{Lhs: []ir.Dest{{Name: "rec", Var: rec}}, Rhs: &ir.Instr{
+			Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.panicObj"}, Field: "recovered",
+			Args: []ir.Expr{&ir.Name{Raw: payload.Name, Var: payload}},
+		}},
+		&ir.If{
+			Cond: &ir.Name{Raw: "rec", Var: rec},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.unrecoveredPanic", Args: []ir.Expr{
+					&ir.Name{Raw: payload.Name, Var: payload},
+				}}},
+				&ir.Unreachable{},
+			}},
+		},
 	}}
 	try := &ir.Try{
 		Body:    fn.Body,
@@ -537,6 +552,8 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.End() // $done
 	// After the walk: if the current panic was never recovered, rethrow so
 	// the caller's try handler can decide (unrecovered vs return).
+	// If it was recovered, clear $g.panic so a later frame does not observe
+	// a stale recovered panicObj.
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
 	enc.RefIsNull()
@@ -547,6 +564,9 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.RefAsNonNull()
 	enc.StructGet(panicObj, 1) // recovered?
 	enc.If(wasm.BlockEmpty())
+	enc.GlobalGet(g.globals["$g"])
+	enc.RefNull(wasm.TypeIndexHeap(panicObj))
+	enc.StructSet(gTy, 2)
 	enc.Else()
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
@@ -682,12 +702,23 @@ func (g *gen) bodyUnrecoveredPanic() wasm.Code {
 	enc.If(wasm.BlockEmpty())
 	printLit("<panic>")
 	enc.Else()
+	// Only string payloads can be written via the linear bridge. Other
+	// concrete panic values (runtime.errorString boxed as named type,
+	// ints, …) used to ref.cast to $go.string and trap — hide them.
+	enc.LocalGet(0)
+	enc.StructGet(panicObj, 0)
+	enc.StructGet(iface, 1)
+	enc.RefTest(wasm.TypeIndexHeap(strTy))
+	enc.If(wasm.BlockEmpty())
 	enc.LocalGet(0)
 	enc.StructGet(panicObj, 0)
 	enc.StructGet(iface, 1)
 	enc.RefCast(wasm.TypeIndexHeap(strTy))
 	enc.LocalSet(locStr)
 	writeStr()
+	enc.Else()
+	printLit("<non-string>")
+	enc.End()
 	enc.End()
 	enc.End()
 	printLit("\n\n")

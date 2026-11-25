@@ -118,6 +118,9 @@ type gen struct {
 	boxes        map[string]bool
 	nointerface  map[string]bool // //go:nointerface methods (fn.String() keys)
 	nextID       int32
+	// emitting tracks type globals currently being built so recursive /
+	// cyclic types (type T []T) do not re-enter emitTypeGlobal forever.
+	emitting map[string]bool
 }
 
 func (g *gen) ensurePreludeShapes() {
@@ -763,6 +766,18 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 	if g.mod.LookupGlobal(tr.global) != nil {
 		return nil
 	}
+	if g.emitting[tr.global] {
+		// Cycle: reserve a placeholder so callers can global.get us, then
+		// return. The outermost frame fills Init once extras are ready.
+		g.mod.Globals = append(g.mod.Globals, g.typeGlobalStub(tr))
+		return nil
+	}
+	if g.emitting == nil {
+		g.emitting = map[string]bool{}
+	}
+	g.emitting[tr.global] = true
+	defer delete(g.emitting, tr.global)
+
 	// Slice/map/pointer extras embed global.get of element descriptors in their
 	// init, so those deps must appear earlier in the globals list.
 	switch tr.kind {
@@ -801,6 +816,11 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 			extra,
 		},
 	}
+	if existing := g.mod.LookupGlobal(tr.global); existing != nil {
+		// Placeholder reserved by a cyclic re-entry — fill real init.
+		existing.Init = init
+		return nil
+	}
 	g.mod.Globals = append(g.mod.Globals, &ir.Global{
 		Name: tr.global,
 		Typ:  &ir.Ref{Named: "$go.type"},
@@ -808,6 +828,24 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 		Init: init,
 	})
 	return nil
+}
+
+func (g *gen) typeGlobalStub(tr *typeRec) *ir.Global {
+	return &ir.Global{
+		Name: tr.global,
+		Typ:  &ir.Ref{Named: "$go.type"},
+		Mut:  false,
+		Init: &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: "$go.type"},
+			Args: []ir.Expr{
+				&ir.Const{Op: ir.OpI32Const, I64: int64(tr.id)},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(tr.kind)},
+				&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.string"}},
+				&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}},
+			},
+		},
+	}
 }
 
 // discoverExtraDeps registers type keys that extras will need, without emitting.

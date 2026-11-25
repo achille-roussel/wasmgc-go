@@ -47,7 +47,6 @@ fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
 fixedbugs/bug257.go — compile error: sync/atomic fat pointer to unsafe.Pointer
-fixedbugs/bug258.go — runtime error
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug262.go — output mismatch
 fixedbugs/bug265.go — failed: build: pipeline: IR verify: cannot assign ref $go.ptr.i32 to var h997 of type i32 in main.f pipeline…
@@ -57,7 +56,6 @@ fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
-fixedbugs/bug434.go — runtime error
 fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug491.go — compile error: IR verify: temp used outside defining region
 fixedbugs/bug512.go — unsupported: unsafe
@@ -65,8 +63,6 @@ fixedbugs/dse_move_auxint.go — runtime error
 fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue11256.go — unsupported: unsafe
 fixedbugs/issue11286.go — compile error: codegen
-fixedbugs/issue12577.go — wasm validate/compile error
-fixedbugs/issue12621.go — runtime error
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue15039.go — failed: panic: big != bad
@@ -92,7 +88,6 @@ fixedbugs/issue22662.go — compile error: codegen
 fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
 fixedbugs/issue23017.go — compile error: lower: field index 0 out of range for gotestcase.T
 fixedbugs/issue23305.go — compile error: build: load: typecheck
-fixedbugs/issue23522.go — runtime error
 fixedbugs/issue23837.go — compile error: codegen
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
@@ -143,7 +138,6 @@ fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign re
 fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
-fixedbugs/issue49665.go — output mismatch
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
@@ -165,10 +159,8 @@ fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubs
 fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue68227.go — wasm validate/compile error
-fixedbugs/issue68322.go — runtime error
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
-fixedbugs/issue6899.go — output mismatch
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
 fixedbugs/issue70189.go — runtime error
 fixedbugs/issue71675.go — output mismatch
@@ -198,7 +190,6 @@ fixedbugs/issue81863.go — runtime error
 fixedbugs/issue8336.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
-floatcmp.go — runtime error
 gcgort.go — compile error: IR verify complex64 nullability
 genmeth.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
 genmeth1.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …

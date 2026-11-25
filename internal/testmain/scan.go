@@ -56,6 +56,24 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 		res.Skipped = map[string]string{}
 	}
 	fset := token.NewFileSet()
+	// Helper-only files (all Test* stripped) are stashed. After live tests are
+	// known, reattach only the helper decls that live tests actually reference
+	// (e.g. encoding/json indentNewlines). Blindly keeping every leftover
+	// helper (initBig/genValue/…) overflows the host typechecker.
+	var helperInternal, helperExternal []FileInfo
+	// Phase 1: parse, strip skipped tests, classify live vs helper — but do
+	// not stripVarAndInit yet. Types like fmt.renamedBool / json.Loop are
+	// defined in one file and referenced from another; stripping per-file
+	// would drop them before package-wide uses are known.
+	type pendingFile struct {
+		fi           FileInfo
+		live         bool
+		keepExport   bool
+		keepImport   bool
+		fileTests    []TestFunc
+		fileMain     *TestFunc
+	}
+	var pending []pendingFile
 	for _, f := range testFiles {
 		base := filepath.Base(f)
 		// example*_test.go is examples-only; strip entirely for v1.
@@ -90,16 +108,6 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 		if !fileHasFuncs(af) && !keepExport && !keepImportHelper {
 			continue
 		}
-		// Drop package-level var/init baggage that remaining tests do not
-		// reference. Large composite literals (fmtTests, etc.) often fail
-		// wasm codegen (array.new_fixed) when left in init for skipped-only
-		// tables. used-analysis keeps vars still referenced by live tests.
-		if countTestFuncs(af) >= 1 {
-			stripVarAndInit(af)
-			pruneUnusedImports(af)
-		}
-		// Collect remaining tests in this file first; helpers-only leftovers from
-		// skipped tests are dropped so they cannot break lowering/codegen.
 		var fileTests []TestFunc
 		var fileMain *TestFunc
 		for _, d := range af.Decls {
@@ -121,9 +129,6 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 			}
 			fileTests = append(fileTests, TestFunc{Name: name, PkgName: pkgName, File: f, External: ext})
 		}
-		if fileMain == nil && len(fileTests) == 0 && !keepExport && !keepImportHelper {
-			continue
-		}
 		fi := FileInfo{
 			Path:     f,
 			PkgName:  pkgName,
@@ -131,15 +136,75 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 			Syntax:   af,
 			Fset:     fset,
 		}
-		if ext {
-			res.External = append(res.External, fi)
+		live := fileMain != nil || len(fileTests) > 0 || keepExport || keepImportHelper
+		if !live {
+			if !fileHasFuncs(af) && !fileHasTypeOrValueDecls(af) {
+				continue
+			}
+		}
+		pending = append(pending, pendingFile{
+			fi:         fi,
+			live:       live,
+			keepExport: keepExport,
+			keepImport: keepImportHelper,
+			fileTests:  fileTests,
+			fileMain:   fileMain,
+		})
+	}
+	// Package-wide uses from live files (both sides), so stripVarAndInit keeps
+	// cross-file type/var refs (renamedBool, Loop, …). Seed from live funcs,
+	// then expand through var/type decls across all live files on that side
+	// (scan_test tables reference renamedBool defined in fmt_test.go).
+	pkgUsedInternal := map[string]bool{}
+	pkgUsedExternal := map[string]bool{}
+	var liveInternal, liveExternal []*ast.File
+	for i := range pending {
+		p := &pending[i]
+		if !p.live {
+			continue
+		}
+		if p.fi.External {
+			collectLiveFuncIdents(p.fi.Syntax, pkgUsedExternal)
+			liveExternal = append(liveExternal, p.fi.Syntax)
 		} else {
-			res.Internal = append(res.Internal, fi)
+			collectLiveFuncIdents(p.fi.Syntax, pkgUsedInternal)
+			liveInternal = append(liveInternal, p.fi.Syntax)
 		}
-		if fileMain != nil {
-			res.TestMain = fileMain
+	}
+	expandPkgUsed(pkgUsedInternal, liveInternal)
+	expandPkgUsed(pkgUsedExternal, liveExternal)
+	// Phase 2: stripVarAndInit on live files with package-wide seeds; stash helpers.
+	for _, p := range pending {
+		af := p.fi.Syntax
+		ext := p.fi.External
+		if p.live && countTestFuncs(af) >= 1 {
+			extra := pkgUsedInternal
+			if ext {
+				extra = pkgUsedExternal
+			}
+			stripVarAndInit(af, extra)
+			pruneUnusedImports(af)
 		}
-		for _, tf := range fileTests {
+		if !p.live {
+			// Do NOT stripVarAndInit: helpers like CaseName/Name are only
+			// referenced from other live files; filterReferencedHelpers picks
+			// them up later.
+			if ext {
+				helperExternal = append(helperExternal, p.fi)
+			} else {
+				helperInternal = append(helperInternal, p.fi)
+			}
+			continue
+		}
+		if ext {
+			res.External = append(res.External, p.fi)
+		} else {
+			res.Internal = append(res.Internal, p.fi)
+		}
+		if p.fileMain != nil {
+			res.TestMain = p.fileMain
+		}
+		for _, tf := range p.fileTests {
 			if tf.External {
 				res.XTests = append(res.XTests, tf)
 			} else {
@@ -147,6 +212,18 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 			}
 		}
 	}
+	// Reattach helpers referenced by live tests on the same package side.
+	if len(res.Tests) > 0 || (res.TestMain != nil && !res.TestMain.External) {
+		res.Internal = append(res.Internal, filterReferencedHelpers(res.Internal, helperInternal)...)
+	}
+	if len(res.XTests) > 0 || (res.TestMain != nil && res.TestMain.External) {
+		res.External = append(res.External, filterReferencedHelpers(res.External, helperExternal)...)
+	}
+	// Live files (not only helper-only ones) may keep or strip jsontest
+	// CaseName/Name aliases depending on which tests survived. Normalize:
+	// strip jsontest-backed decls everywhere, then ensure local stubs exist
+	// when any live file still references CaseName/Name.
+	ensureLocalCaseNameHelpers(res)
 	// Drop export_test.go when no external tests remain (avoids rewrite packages
 	// whose upstream export_test references symbols we do not provide).
 	if len(res.XTests) == 0 {
@@ -172,6 +249,461 @@ func Scan(importPath string, testFiles []string, skip map[string]string) (*ScanR
 		res.External = kept
 	}
 	return res, nil
+}
+
+// filterReferencedHelpers keeps decls from helper-only files that are
+// referenced (transitively) by live test files. Unreferenced leftovers such
+// as initBig/genValue are dropped so they cannot blow up typecheck/codegen.
+func filterReferencedHelpers(live, helpers []FileInfo) []FileInfo {
+	if len(helpers) == 0 || len(live) == 0 {
+		return nil
+	}
+	used := map[string]bool{}
+	for _, fi := range live {
+		collectIdents(fi.Syntax, used)
+	}
+	// Package-level defs available from helpers.
+	type defKind int
+	const (
+		defFunc defKind = iota
+		defOther
+	)
+	type def struct {
+		kind defKind
+		fi   int
+		decl ast.Decl
+		name string
+	}
+	var defs []def
+	for i, fi := range helpers {
+		for _, d := range fi.Syntax.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Name == nil {
+					continue
+				}
+				if d.Recv != nil {
+					// Methods: keep keyed by receiver type name when possible.
+					continue
+				}
+				defs = append(defs, def{kind: defFunc, fi: i, decl: d, name: d.Name.Name})
+			case *ast.GenDecl:
+				for _, s := range d.Specs {
+					switch s := s.(type) {
+					case *ast.TypeSpec:
+						if s.Name != nil {
+							defs = append(defs, def{kind: defOther, fi: i, decl: d, name: s.Name.Name})
+						}
+					case *ast.ValueSpec:
+						for _, n := range s.Names {
+							defs = append(defs, def{kind: defOther, fi: i, decl: d, name: n.Name})
+						}
+					}
+				}
+			}
+		}
+	}
+	// Expand used set through helper bodies that are themselves used.
+	for {
+		added := false
+		for _, d := range defs {
+			if !used[d.name] {
+				continue
+			}
+			before := len(used)
+			collectIdents(d.decl, used)
+			if len(used) > before {
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	keptByFile := map[int][]ast.Decl{}
+	seenDecl := map[ast.Decl]bool{}
+	for _, d := range defs {
+		if !used[d.name] || d.name == "init" {
+			continue
+		}
+		if seenDecl[d.decl] {
+			continue
+		}
+		seenDecl[d.decl] = true
+		keptByFile[d.fi] = append(keptByFile[d.fi], d.decl)
+	}
+	var out []FileInfo
+	for i, fi := range helpers {
+		decls := keptByFile[i]
+		if len(decls) == 0 {
+			continue
+		}
+		// Preserve imports; prune after rewrite.
+		var newDecls []ast.Decl
+		for _, d := range fi.Syntax.Decls {
+			if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
+				newDecls = append(newDecls, d)
+			}
+		}
+		newDecls = append(newDecls, decls...)
+		fi.Syntax.Decls = newDecls
+		pruneUnusedImports(fi.Syntax)
+		// Helper files may contribute only types/vars (e.g. CaseName alias +
+		// Name var) with no funcs — still needed for typecheck.
+		if !fileHasFuncs(fi.Syntax) && !fileHasTypeOrValueDecls(fi.Syntax) {
+			continue
+		}
+		out = append(out, fi)
+	}
+	return out
+}
+
+// ensureLocalCaseNameHelpers strips jsontest-backed CaseName/CasePos/Name
+// decls from every file and, when live tests still reference those names,
+// injects thin local stubs. The real jsontest package embeds large .json.zst
+// fixtures (internal/zstd) and panics under wasmgc; we only need Name() for
+// table-driven case labels.
+func ensureLocalCaseNameHelpers(res *ScanResult) {
+	if res == nil {
+		return
+	}
+	stripJsontestCaseDecls := func(files []FileInfo) {
+		for i := range files {
+			stripJsontestCaseDeclsFromFile(files[i].Syntax)
+			pruneUnusedImports(files[i].Syntax)
+		}
+	}
+	stripJsontestCaseDecls(res.Internal)
+	stripJsontestCaseDecls(res.External)
+
+	need := false
+	defined := false
+	check := func(files []FileInfo) {
+		for _, fi := range files {
+			if fi.Syntax == nil {
+				continue
+			}
+			ast.Inspect(fi.Syntax, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.Ident:
+					if x.Name == "CaseName" || x.Name == "Name" || x.Name == "CasePos" {
+						need = true
+					}
+				case *ast.FuncDecl:
+					if x.Name != nil && x.Name.Name == "Name" && x.Recv == nil {
+						defined = true
+					}
+				case *ast.TypeSpec:
+					if x.Name != nil && (x.Name.Name == "CaseName" || x.Name.Name == "CasePos") {
+						defined = true
+					}
+				case *ast.ValueSpec:
+					for _, n := range x.Names {
+						if n.Name == "Name" {
+							defined = true
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	check(res.Internal)
+	check(res.External)
+	if !need || defined {
+		return
+	}
+	stubs := jsontestCaseHelperStubs()
+	if len(stubs) == 0 {
+		return
+	}
+	// Prefer attaching to an existing internal file; else synthesize one.
+	if len(res.Internal) > 0 {
+		fi := &res.Internal[0]
+		fi.Syntax.Decls = append(fi.Syntax.Decls, stubs...)
+		return
+	}
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "case_name_stubs.go", "package "+res.PkgName+"\n", 0)
+	if err != nil {
+		return
+	}
+	af.Decls = append(af.Decls, stubs...)
+	res.Internal = append(res.Internal, FileInfo{
+		Path:    "case_name_stubs.go",
+		PkgName: res.PkgName,
+		Syntax:  af,
+		Fset:    fset,
+	})
+}
+
+func stripJsontestCaseDeclsFromFile(f *ast.File) {
+	if f == nil {
+		return
+	}
+	var keep []ast.Decl
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || (gd.Tok != token.TYPE && gd.Tok != token.VAR) {
+			keep = append(keep, d)
+			continue
+		}
+		var specs []ast.Spec
+		for _, s := range gd.Specs {
+			if declRefsJsontest(s) {
+				continue
+			}
+			// Also drop leftover local CaseName/Name/CasePos so we can
+			// re-inject a single consistent stub set.
+			switch s := s.(type) {
+			case *ast.TypeSpec:
+				if s.Name != nil && (s.Name.Name == "CaseName" || s.Name.Name == "CasePos") {
+					continue
+				}
+			case *ast.ValueSpec:
+				drop := false
+				for _, n := range s.Names {
+					if n.Name == "Name" {
+						drop = true
+						break
+					}
+				}
+				if drop {
+					continue
+				}
+			}
+			specs = append(specs, s)
+		}
+		if len(specs) == 0 {
+			continue
+		}
+		if len(specs) == len(gd.Specs) {
+			keep = append(keep, d)
+			continue
+		}
+		cp := *gd
+		cp.Specs = specs
+		keep = append(keep, &cp)
+	}
+	// Also drop func Name if it was a prior stub inject or jsontest wrapper.
+	var keep2 []ast.Decl
+	for _, d := range keep {
+		fd, ok := d.(*ast.FuncDecl)
+		if ok && fd.Recv == nil && fd.Name != nil && fd.Name.Name == "Name" {
+			continue
+		}
+		if ok && fd.Recv != nil && fd.Name != nil && fd.Name.Name == "String" {
+			// Drop CasePos.String from prior stubs; re-inject with stubs.
+			if recvIsCasePos(fd) {
+				continue
+			}
+		}
+		keep2 = append(keep2, d)
+	}
+	f.Decls = keep2
+}
+
+func recvIsCasePos(fd *ast.FuncDecl) bool {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return false
+	}
+	t := fd.Recv.List[0].Type
+	if st, ok := t.(*ast.StarExpr); ok {
+		t = st.X
+	}
+	id, ok := t.(*ast.Ident)
+	return ok && id.Name == "CasePos"
+}
+
+func declRefsJsontest(s ast.Spec) bool {
+	refs := false
+	ast.Inspect(s, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if ok && pkg.Name == "jsontest" {
+			refs = true
+			return false
+		}
+		return true
+	})
+	return refs
+}
+
+func jsontestCaseHelperStubs() []ast.Decl {
+	// CasePos must be non-zero-sized: wasmgc struct descriptors omit
+	// zero-size fields, so an empty CasePos would make Where invisible
+	// ("type CaseName has no field Where") on tt.Where after embedding.
+	src := `package p
+type CaseName struct {
+	Name  string
+	Where CasePos
+}
+type CasePos struct{ _ byte }
+func (CasePos) String() string { return "?" }
+func Name(s string) CaseName { return CaseName{Name: s} }
+`
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "jsontest_stubs.go", src, 0)
+	if err != nil {
+		return nil
+	}
+	var out []ast.Decl
+	for _, d := range af.Decls {
+		out = append(out, d)
+	}
+	return out
+}
+
+func fileHasTypeOrValueDecls(f *ast.File) bool {
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		if gd.Tok == token.TYPE || gd.Tok == token.VAR || gd.Tok == token.CONST {
+			return true
+		}
+	}
+	return false
+}
+
+func collectIdents(n ast.Node, used map[string]bool) {
+	if n == nil {
+		return
+	}
+	ast.Inspect(n, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if ok && id.Name != "" {
+			used[id.Name] = true
+		}
+		return true
+	})
+}
+
+// collectLiveFuncIdents seeds used with idents from non-init funcs/methods
+// (same seed stripVarAndInit uses per file).
+func collectLiveFuncIdents(f *ast.File, used map[string]bool) {
+	if f == nil {
+		return
+	}
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fd.Recv == nil && fd.Name != nil && fd.Name.Name == "init" {
+			continue
+		}
+		collectIdents(fd, used)
+	}
+}
+
+// expandPkgUsed grows used by walking var/type decls across files until
+// fixed point — so a live scan_test table typed as renamedBool pulls that
+// type name even when it lives in fmt_test.go.
+func expandPkgUsed(used map[string]bool, files []*ast.File) {
+	type varGroup struct {
+		names []string
+		nodes []ast.Node // types + RHSs of every spec in the GenDecl
+	}
+	type typeSpec struct {
+		name string
+		rhs  ast.Expr
+	}
+	var groups []varGroup
+	var types []typeSpec
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			switch gd.Tok {
+			case token.VAR:
+				// stripVarAndInit keeps a whole GenDecl when any name is used,
+				// so expand the same way: one used name pulls every spec's type.
+				g := varGroup{}
+				for _, s := range gd.Specs {
+					vs := s.(*ast.ValueSpec)
+					for _, n := range vs.Names {
+						g.names = append(g.names, n.Name)
+					}
+					if vs.Type != nil {
+						g.nodes = append(g.nodes, vs.Type)
+					}
+					for _, rhs := range vs.Values {
+						g.nodes = append(g.nodes, rhs)
+					}
+				}
+				groups = append(groups, g)
+			case token.TYPE:
+				for _, s := range gd.Specs {
+					ts := s.(*ast.TypeSpec)
+					if ts.Name != nil {
+						types = append(types, typeSpec{name: ts.Name.Name, rhs: ts.Type})
+					}
+				}
+			}
+		}
+	}
+	mark := func(node ast.Node) bool {
+		if node == nil {
+			return false
+		}
+		added := false
+		ast.Inspect(node, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if ok && id.Name != "" && !used[id.Name] {
+				used[id.Name] = true
+				added = true
+			}
+			return true
+		})
+		return added
+	}
+	for {
+		added := false
+		for _, g := range groups {
+			needed := false
+			for _, n := range g.names {
+				if used[n] {
+					needed = true
+					break
+				}
+			}
+			if !needed {
+				continue
+			}
+			for _, n := range g.names {
+				if !used[n] {
+					used[n] = true
+					added = true
+				}
+			}
+			for _, node := range g.nodes {
+				if mark(node) {
+					added = true
+				}
+			}
+		}
+		for _, ts := range types {
+			if !used[ts.name] {
+				continue
+			}
+			if mark(ts.rhs) {
+				added = true
+			}
+		}
+		if !added {
+			return
+		}
+	}
 }
 
 func fileHasTestOrMain(f *ast.File) bool {
@@ -292,51 +824,92 @@ func countTestFuncs(f *ast.File) int {
 	return n
 }
 
-func stripVarAndInit(f *ast.File) {
+func stripVarAndInit(f *ast.File, extraUsed map[string]bool) {
 	// Names still referenced by remaining funcs/methods/types must be kept
 	// (e.g. poserPathErr used by (*poser).As after TestAs is skipped).
 	// init bodies are handled separately: keep an init when it mutates a
 	// still-used table (strconv NumError wrapping), drop it when it only
 	// touches unused vars (fmtTests-sized baggage for skipped printers).
+	// Unused type decls (e.g. RecursiveSlice only used by skipped tests) are
+	// dropped too — cyclic named types blow up Wasm global init otherwise.
 	used := map[string]bool{}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.GenDecl:
-			if n.Tok == token.VAR || n.Tok == token.IMPORT {
-				return false // do not mark LHS idents of vars as uses
-			}
-		case *ast.FuncDecl:
-			if n.Recv == nil && n.Name != nil && n.Name.Name == "init" {
-				return false // defer init refs until we know which vars stay
-			}
-		case *ast.Ident:
-			used[n.Name] = true
+	for name := range extraUsed {
+		used[name] = true
+	}
+	// Seed uses from live funcs/methods only. Package-level var/type decls
+	// are pulled in via expandUsedVars so unused RecursiveSlice-style cycles
+	// (and their vars) disappear with the skipped tests that referenced them.
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
 		}
-		return true
-	})
+		if fd.Recv == nil && fd.Name != nil && fd.Name.Name == "init" {
+			continue
+		}
+		ast.Inspect(fd, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name != "" {
+				used[id.Name] = true
+			}
+			return true
+		})
+	}
 
 	pkgVars := map[string]bool{}
 	type varSpec struct {
 		names []string
+		typ   ast.Expr
 		rhs   []ast.Expr
 		decl  *ast.GenDecl
 		spec  *ast.ValueSpec
 	}
 	var specs []varSpec
+	type typeSpec struct {
+		name string
+		rhs  ast.Expr
+		decl *ast.GenDecl
+		spec *ast.TypeSpec
+	}
+	var typeSpecs []typeSpec
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
-		if !ok || gd.Tok != token.VAR {
+		if !ok {
 			continue
 		}
-		for _, s := range gd.Specs {
-			vs := s.(*ast.ValueSpec)
-			names := make([]string, len(vs.Names))
-			for i, n := range vs.Names {
-				names[i] = n.Name
-				pkgVars[n.Name] = true
+		switch gd.Tok {
+		case token.VAR:
+			for _, s := range gd.Specs {
+				vs := s.(*ast.ValueSpec)
+				names := make([]string, len(vs.Names))
+				for i, n := range vs.Names {
+					names[i] = n.Name
+					pkgVars[n.Name] = true
+				}
+				specs = append(specs, varSpec{names: names, typ: vs.Type, rhs: vs.Values, decl: gd, spec: vs})
 			}
-			specs = append(specs, varSpec{names: names, rhs: vs.Values, decl: gd, spec: vs})
+		case token.TYPE:
+			for _, s := range gd.Specs {
+				ts := s.(*ast.TypeSpec)
+				if ts.Name != nil {
+					typeSpecs = append(typeSpecs, typeSpec{name: ts.Name.Name, rhs: ts.Type, decl: gd, spec: ts})
+				}
+			}
 		}
+	}
+
+	markIdents := func(node ast.Node) bool {
+		added := false
+		if node == nil {
+			return false
+		}
+		ast.Inspect(node, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name != "" && !used[id.Name] {
+				used[id.Name] = true
+				added = true
+			}
+			return true
+		})
+		return added
 	}
 
 	expandUsedVars := func() {
@@ -353,14 +926,21 @@ func stripVarAndInit(f *ast.File) {
 				if !needed {
 					continue
 				}
+				if markIdents(vs.typ) {
+					added = true
+				}
 				for _, rhs := range vs.rhs {
-					ast.Inspect(rhs, func(n ast.Node) bool {
-						if id, ok := n.(*ast.Ident); ok && !used[id.Name] {
-							used[id.Name] = true
-							added = true
-						}
-						return true
-					})
+					if markIdents(rhs) {
+						added = true
+					}
+				}
+			}
+			for _, ts := range typeSpecs {
+				if !used[ts.name] {
+					continue
+				}
+				if markIdents(ts.rhs) {
+					added = true
 				}
 			}
 			if !added {
@@ -436,6 +1016,26 @@ func stripVarAndInit(f *ast.File) {
 				keep = append(keep, d)
 				continue
 			}
+			if d.Tok == token.TYPE {
+				var keptSpecs []ast.Spec
+				for _, s := range d.Specs {
+					ts := s.(*ast.TypeSpec)
+					if ts.Name != nil && used[ts.Name.Name] {
+						keptSpecs = append(keptSpecs, s)
+					}
+				}
+				if len(keptSpecs) == 0 {
+					continue
+				}
+				if len(keptSpecs) == len(d.Specs) {
+					keep = append(keep, d)
+					continue
+				}
+				nd := *d
+				nd.Specs = keptSpecs
+				keep = append(keep, &nd)
+				continue
+			}
 			keep = append(keep, d)
 		case *ast.FuncDecl:
 			if d.Recv == nil && d.Name != nil && d.Name.Name == "init" {
@@ -444,12 +1044,46 @@ func stripVarAndInit(f *ast.File) {
 				}
 				continue
 			}
+			// Drop methods whose receiver type was stripped.
+			if d.Recv != nil && len(d.Recv.List) > 0 {
+				recvName := recvTypeName(d.Recv.List[0].Type)
+				if recvName != "" && !used[recvName] {
+					// Still keep if the name was never a package type decl
+					// (builtin/qualified) — only drop when we know the type
+					// was defined here and unused.
+					isPkgType := false
+					for _, ts := range typeSpecs {
+						if ts.name == recvName {
+							isPkgType = true
+							break
+						}
+					}
+					if isPkgType {
+						continue
+					}
+				}
+			}
 			keep = append(keep, d)
 		default:
 			keep = append(keep, d)
 		}
 	}
 	f.Decls = keep
+}
+
+func recvTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return recvTypeName(t.X)
+	case *ast.IndexExpr:
+		return recvTypeName(t.X)
+	case *ast.IndexListExpr:
+		return recvTypeName(t.X)
+	default:
+		return ""
+	}
 }
 
 // pruneUnusedImports drops import specs whose local name is never referenced.
