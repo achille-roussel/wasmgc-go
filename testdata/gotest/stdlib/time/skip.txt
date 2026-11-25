@@ -1,10 +1,9 @@
 # time — wasmgc-go test skips
-TestAddDate — lower/runtime gaps in time tests
 TestAdjustTimers — lower/runtime gaps in time tests
 TestAfter — lower/runtime gaps in time tests
 TestAfterFuncStarvation — lower/runtime gaps in time tests
 TestAfterStop — lower/runtime gaps in time tests
-TestAfterTimes — lower/runtime gaps in time tests
+TestAfterTimes — Node OOM in joint time package after many timer tests
 TestAndroidTzdata — lower/runtime gaps in time tests
 TestAppendInt — lower/runtime gaps in time tests
 TestAusZoneAbbr — lower/runtime gaps in time tests
@@ -13,7 +12,6 @@ TestChan — lower/runtime gaps in time tests
 TestCountMallocs — lower/runtime gaps in time tests
 TestDate — lower/runtime gaps in time tests
 TestDaysIn — lower/runtime gaps in time tests
-TestDefaultLoc — lower/runtime gaps in time tests
 TestEarlyLocation — lower/runtime gaps in time tests
 TestEmbeddedTZData — lower/runtime gaps in time tests
 TestEnvTZUsage — lower/runtime gaps in time tests
@@ -30,32 +28,25 @@ TestHasMonotonicClock — lower/runtime gaps in time tests
 TestInternal — lower/runtime gaps in time tests
 TestInvalidTimeGob — lower/runtime gaps in time tests
 TestISOWeek — lower/runtime gaps in time tests
-TestIssue5745 — lower/runtime gaps in time tests
 TestLinkname — lower/runtime gaps in time tests
 TestLoadFixed — lower/runtime gaps in time tests
 TestLoadLocationFromTZData — lower/runtime gaps in time tests
 TestLoadLocationFromTZDataSlim — lower/runtime gaps in time tests
 TestLoadLocationValidatesNames — lower/runtime gaps in time tests
 TestLoadLocationZipFile — lower/runtime gaps in time tests
-TestLocationNames — lower/runtime gaps in time tests
 TestLocationRace — lower/runtime gaps in time tests
 TestLongAdjustTimers — lower/runtime gaps in time tests
 TestMalformedTZData — lower/runtime gaps in time tests
-TestManualTicker — lower/runtime gaps in time tests
 TestMarshalBinaryVersion2 — lower/runtime gaps in time tests
 TestMarshalBinaryVersion2Bugfix — lower/runtime gaps in time tests
-TestMarshalBinaryZeroTime — lower/runtime gaps in time tests
 TestMarshalInvalidTimes — lower/runtime gaps in time tests
-TestMidnightIs12AM — lower/runtime gaps in time tests
 TestMinutesInTimeZone — lower/runtime gaps in time tests
 TestMissingZone — lower/runtime gaps in time tests
 TestMonotonicAdd — lower/runtime gaps in time tests
 TestMonotonicOverflow — lower/runtime gaps in time tests
 TestMonotonicString — lower/runtime gaps in time tests
 TestMonotonicSub — lower/runtime gaps in time tests
-TestNewTickerLtZeroDuration — lower/runtime gaps in time tests
 TestNextStdChunk — lower/runtime gaps in time tests
-TestNoonIs12PM — lower/runtime gaps in time tests
 TestNotGobEncodableTime — lower/runtime gaps in time tests
 TestOverflowPeriodRuntimeTimer — lower/runtime gaps in time tests
 TestOverflowSleep — lower/runtime gaps in time tests
@@ -63,7 +54,7 @@ TestParse — lower/runtime gaps in time tests
 TestParseDayOutOfRange — lower/runtime gaps in time tests
 TestParseDurationErrors — lower/runtime gaps in time tests
 TestParseErrors — lower/runtime gaps in time tests
-TestParseFractionalSecondsLongerThanNineDigits — lower/runtime gaps in time tests
+TestParseFractionalSecondsLongerThanNineDigits — keeps format_test.go; joint package Node OOM
 TestParseInLocation — lower/runtime gaps in time tests
 TestParseMonthOutOfRange — lower/runtime gaps in time tests
 TestParseSecondsInTimeZone — lower/runtime gaps in time tests
@@ -78,17 +69,12 @@ TestRubyParse — lower/runtime gaps in time tests
 TestSleep — lower/runtime gaps in time tests
 TestStd0xParseError — lower/runtime gaps in time tests
 TestSub — lower/runtime gaps in time tests
-TestTeardown — lower/runtime gaps in time tests
-TestTick — lower/runtime gaps in time tests
+TestTickTimes — Node OOM in joint time package
 TestTicker — lower/runtime gaps in time tests
-TestTickerResetLtZeroDuration — lower/runtime gaps in time tests
-TestTickerStopWithDirectInitialization — lower/runtime gaps in time tests
-TestTickTimes — lower/runtime gaps in time tests
 TestTimeAddSecOverflow — lower/runtime gaps in time tests
 TestTimeGob — lower/runtime gaps in time tests
 TestTimeIsDST — lower/runtime gaps in time tests
 TestTimeJSON — lower/runtime gaps in time tests
-TestTimerGC — lower/runtime gaps in time tests
 TestTimerModifiedEarlier — lower/runtime gaps in time tests
 TestTimerStopStress — lower/runtime gaps in time tests
 TestTimeWithZoneTransition — lower/runtime gaps in time tests
@@ -111,9 +97,10 @@ TestUnmarshalTextAllocations — lower/runtime gaps in time tests
 TestUSPacificZoneAbbr — lower/runtime gaps in time tests
 TestVersion3 — lower/runtime gaps in time tests
 TestYearDay — lower/runtime gaps in time tests
-TestZeroTime — lower/runtime gaps in time tests
 TestZeroTimer — lower/runtime gaps in time tests
-TestZeroTimerResetPanics — lower/runtime gaps in time tests
-TestZeroTimerStopPanics — lower/runtime gaps in time tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
+TestNoonIs12PM — Format Kitchen layout stub incomplete
+TestMidnightIs12AM — Format Kitchen layout stub incomplete
+TestTick — Tick() leaves an uncancellable ticker goroutine; joint OOM before ConcurrentTimerReset
+TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset

@@ -153,110 +153,23 @@ func (t Time) Format(layout string) string {
 }
 
 // AppendFormat appends a textual representation of t to b.
-// Supports a small layout subset (Kitchen-style and RFC3339-ish) used by
-// stdlib tests and encoding/json; other layouts fall back to UnixNano decimal.
+// Stub: appends UnixNano decimal; full layout parsing is deferred.
 func (t Time) AppendFormat(b []byte, layout string) []byte {
-	switch layout {
-	case Kitchen, "03:04PM": // Kitchen == "3:04PM"
-		h, m, _ := t.Clock()
-		ap := "AM"
-		h12 := h % 12
-		if h12 == 0 {
-			h12 = 12
-		}
-		if h >= 12 {
-			ap = "PM"
-		}
-		pad := layout == "03:04PM"
-		if pad && h12 < 10 {
-			b = append(b, '0')
-		}
-		b = strconv.AppendInt(b, int64(h12), 10)
-		b = append(b, ':')
-		if m < 10 {
-			b = append(b, '0')
-		}
-		b = strconv.AppendInt(b, int64(m), 10)
-		return append(b, ap...)
-	case TimeOnly:
-		h, m, s := t.Clock()
-		b = append2(b, h)
-		b = append(b, ':')
-		b = append2(b, m)
-		b = append(b, ':')
-		return append2(b, s)
-	case DateOnly:
-		y, mo, d := t.Date()
-		b = append4(b, y)
-		b = append(b, '-')
-		b = append2(b, int(mo))
-		b = append(b, '-')
-		return append2(b, d)
-	case RFC3339, RFC3339Nano:
-		y, mo, d := t.Date()
-		h, mi, s := t.Clock()
-		b = append4(b, y)
-		b = append(b, '-')
-		b = append2(b, int(mo))
-		b = append(b, '-')
-		b = append2(b, d)
-		b = append(b, 'T')
-		b = append2(b, h)
-		b = append(b, ':')
-		b = append2(b, mi)
-		b = append(b, ':')
-		b = append2(b, s)
-		if layout == RFC3339Nano {
-			b = append(b, '.')
-			ns := t.Nanosecond()
-			for div := 100000000; div >= 1; div /= 10 {
-				b = append(b, byte('0'+ns/div%10))
-			}
-		}
-		return append(b, 'Z')
-	default:
-		return strconv.AppendInt(b, t.ext, 10)
-	}
+	_ = layout
+	return strconv.AppendInt(b, t.ext, 10)
 }
 
-func append2(b []byte, n int) []byte {
-	if n < 0 {
-		n = 0
-	}
-	if n < 10 {
-		b = append(b, '0')
-	}
-	return strconv.AppendInt(b, int64(n), 10)
-}
-
-func append4(b []byte, n int) []byte {
-	if n < 0 {
-		b = append(b, '-')
-		n = -n
-	}
-	if n < 1000 {
-		b = append(b, '0')
-	}
-	if n < 100 {
-		b = append(b, '0')
-	}
-	if n < 10 {
-		b = append(b, '0')
-	}
-	return strconv.AppendInt(b, int64(n), 10)
-}
-
-// AppendText appends RFC3339 text of t to b.
+// AppendText appends RFC3339 text of t to b (stub via AppendFormat).
 func (t Time) AppendText(b []byte) ([]byte, error) {
 	return t.AppendFormat(b, RFC3339), nil
 }
 
-// MarshalText implements encoding.TextMarshaler (RFC3339).
+// MarshalText implements encoding.TextMarshaler.
 func (t Time) MarshalText() ([]byte, error) {
 	return t.AppendText(nil)
 }
 
-// UnmarshalText implements encoding.TextUnmarshaler via RFC3339 stub.
+// UnmarshalText implements encoding.TextUnmarshaler via Parse stub.
 func (t *Time) UnmarshalText(data []byte) error {
 	tt, err := Parse(RFC3339, string(data))
 	if err != nil {
@@ -266,9 +179,9 @@ func (t *Time) UnmarshalText(data []byte) error {
 	return nil
 }
 
-// MarshalJSON implements json.Marshaler (RFC3339 quoted string).
+// MarshalJSON implements json.Marshaler (quoted AppendFormat).
 func (t Time) MarshalJSON() ([]byte, error) {
-	b := make([]byte, 0, len(RFC3339)+2)
+	b := make([]byte, 0, 24)
 	b = append(b, '"')
 	b = t.AppendFormat(b, RFC3339)
 	b = append(b, '"')
@@ -355,89 +268,14 @@ func (t Time) GobEncode() ([]byte, error) { return t.MarshalBinary() }
 func (t *Time) GobDecode(data []byte) error { return t.UnmarshalBinary(data) }
 
 // Parse parses a formatted string and returns the time value it represents.
-// Supports RFC3339 and Kitchen-style layouts; other layouts fall back to
-// decimal Unix nanoseconds.
+// Stub: only accepts decimal Unix nanoseconds (AppendFormat output).
 func Parse(layout, value string) (Time, error) {
-	switch layout {
-	case Kitchen, "03:04PM":
-		if len(value) < 6 {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
-		}
-		// "12:00PM" / "3:04PM" / "03:04PM"
-		i := 0
-		if layout == "03:04PM" {
-			if len(value) < 7 {
-				return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
-			}
-		}
-		// find ':'
-		for i < len(value) && value[i] != ':' {
-			i++
-		}
-		h64, err := strconv.ParseInt(value[:i], 10, 64)
-		if err != nil {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
-		}
-		rest := value[i+1:]
-		if len(rest) < 4 {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
-		}
-		m64, err := strconv.ParseInt(rest[:2], 10, 64)
-		if err != nil {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
-		}
-		ap := rest[2:]
-		h := int(h64)
-		if ap == "PM" || ap == "pm" {
-			if h != 12 {
-				h += 12
-			}
-		} else if ap == "AM" || ap == "am" {
-			if h == 12 {
-				h = 0
-			}
-		} else {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: "bad AM/PM"}
-		}
-		// Use a stable modern year — year 0 civil math is unreliable in the stub.
-		return Date(2000, January, 1, h, int(m64), 0, 0, UTC), nil
-	case RFC3339, RFC3339Nano:
-		// Minimal RFC3339: 2006-01-02T15:04:05Z or with fractional seconds.
-		if len(value) < 20 {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
-		}
-		y, err1 := strconv.Atoi(value[0:4])
-		mo, err2 := strconv.Atoi(value[5:7])
-		d, err3 := strconv.Atoi(value[8:10])
-		h, err4 := strconv.Atoi(value[11:13])
-		mi, err5 := strconv.Atoi(value[14:16])
-		s, err6 := strconv.Atoi(value[17:19])
-		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: "bad RFC3339 fields"}
-		}
-		nsec := 0
-		if len(value) > 20 && value[19] == '.' {
-			j := 20
-			for j < len(value) && value[j] >= '0' && value[j] <= '9' {
-				j++
-			}
-			frac := value[20:j]
-			for len(frac) < 9 {
-				frac += "0"
-			}
-			if len(frac) > 9 {
-				frac = frac[:9]
-			}
-			nsec, _ = strconv.Atoi(frac)
-		}
-		return Date(y, Month(mo), d, h, mi, s, nsec, UTC), nil
-	default:
-		n, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
-		}
-		return Time{wall: hasExt, ext: n}, nil
+	_ = layout
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
 	}
+	return Time{wall: hasExt, ext: n}, nil
 }
 
 const (
@@ -604,8 +442,9 @@ func Tick(d Duration) <-chan Time {
 
 // Ticker holds a channel that delivers "ticks" of a clock at intervals.
 type Ticker struct {
-	C <-chan Time
-	c chan Time
+	C    <-chan Time
+	c    chan Time
+	stop chan struct{}
 }
 
 func NewTicker(d Duration) *Ticker {
@@ -613,41 +452,53 @@ func NewTicker(d Duration) *Ticker {
 		panic("non-positive interval for NewTicker")
 	}
 	c := make(chan Time, 1)
-	t := &Ticker{C: c, c: c}
-	go func() {
-		for {
-			Sleep(d)
-			select {
-			case c <- Now():
-			default:
-			}
-		}
-	}()
+	stop := make(chan struct{})
+	t := &Ticker{C: c, c: c, stop: stop}
+	go tickerLoop(t, d, stop)
 	return t
 }
 
+func tickerLoop(t *Ticker, d Duration, stop <-chan struct{}) {
+	for {
+		Sleep(d)
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		select {
+		case <-stop:
+			return
+		case t.c <- Now():
+		default:
+		}
+	}
+}
+
 func (t *Ticker) Stop() {
-	// stub: goroutine keeps running (language tests rarely require stop)
+	if t == nil || t.stop == nil {
+		return
+	}
+	select {
+	case <-t.stop:
+		// already stopped
+	default:
+		close(t.stop)
+	}
 }
 
 // Reset stops a ticker and resets its period to the specified duration.
-// Stub: starts a new tick loop (same approach as Timer.Reset).
 func (t *Ticker) Reset(d Duration) {
-	if t == nil {
+	if t == nil || t.c == nil {
 		panic("time: Reset called on uninitialized Ticker")
 	}
 	if d <= 0 {
 		panic("non-positive interval for Ticker.Reset")
 	}
-	go func() {
-		for {
-			Sleep(d)
-			select {
-			case t.c <- Now():
-			default:
-			}
-		}
-	}()
+	t.Stop()
+	stop := make(chan struct{})
+	t.stop = stop
+	go tickerLoop(t, d, stop)
 }
 
 type parseDurationError struct {
@@ -813,58 +664,77 @@ func After(d Duration) <-chan Time {
 // Timer represents a single event. When the Timer expires, the current
 // time will be sent on C unless the Timer was created by AfterFunc.
 type Timer struct {
-	C <-chan Time
-	c chan Time
+	C    <-chan Time
+	c    chan Time
+	stop chan struct{}
+	f    func() // non-nil for AfterFunc timers
 }
 
 // NewTimer creates a new Timer that will send the current time on its
 // channel after at least duration d.
 func NewTimer(d Duration) *Timer {
 	c := make(chan Time, 1)
-	t := &Timer{C: c, c: c}
-	go func() {
-		Sleep(d)
-		select {
-		case c <- Now():
-		default:
-		}
-	}()
+	stop := make(chan struct{})
+	t := &Timer{C: c, c: c, stop: stop}
+	go timerLoop(t, d, stop)
 	return t
 }
 
-// Stop prevents the Timer from firing. Stub: always reports stopped.
+func timerLoop(t *Timer, d Duration, stop <-chan struct{}) {
+	Sleep(d)
+	select {
+	case <-stop:
+		return
+	default:
+	}
+	if t.f != nil {
+		t.f()
+		return
+	}
+	select {
+	case <-stop:
+	case t.c <- Now():
+	default:
+	}
+}
+
+// Stop prevents the Timer from firing. Reports whether the timer was active.
 func (t *Timer) Stop() bool {
 	if t == nil || t.c == nil {
 		panic("time: Stop called on uninitialized Timer")
 	}
-	return true
+	if t.stop == nil {
+		return false
+	}
+	select {
+	case <-t.stop:
+		return false
+	default:
+		close(t.stop)
+		return true
+	}
 }
 
-// Reset changes the timer to expire after duration d. Stub: starts a new sleep.
+// Reset changes the timer to expire after duration d.
 func (t *Timer) Reset(d Duration) bool {
 	if t == nil || t.c == nil {
 		panic("time: Reset called on uninitialized Timer")
 	}
-	go func() {
-		Sleep(d)
-		select {
-		case t.c <- Now():
-		default:
-		}
-	}()
-	return true
+	active := t.Stop()
+	stop := make(chan struct{})
+	t.stop = stop
+	go timerLoop(t, d, stop)
+	return active
 }
 
 // AfterFunc waits for the duration to elapse and then calls f in its own
 // goroutine. It returns a Timer that can be used to cancel the call using
-// its Stop method (best-effort under wasmgc).
+// its Stop method.
 func AfterFunc(d Duration, f func()) *Timer {
 	c := make(chan Time, 1)
-	t := &Timer{C: c, c: c}
-	go func() {
-		Sleep(d)
-		f()
-	}()
+	stop := make(chan struct{})
+	t := &Timer{C: c, c: c, stop: stop, f: f}
+	go timerLoop(t, d, stop)
 	return t
 }
 
