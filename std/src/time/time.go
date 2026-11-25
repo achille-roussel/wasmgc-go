@@ -43,10 +43,11 @@ const (
 )
 
 // Time represents an instant in time with nanosecond precision.
-// wall is reserved for a later monotonic encoding; ext holds Unix nanoseconds.
+// wall distinguishes the zero Time from Unix(0,0); ext holds Unix nanoseconds.
 type Time struct {
 	wall uint64
 	ext  int64
+	loc  *Location
 }
 
 // ParseError describes a problem parsing a time string.
@@ -68,15 +69,19 @@ func (e *ParseError) Error() string {
 	return "parsing time " + strconv.Quote(e.Value) + " as " + strconv.Quote(e.Layout)
 }
 
+// hasExt marks a Time that holds an absolute Unix-nano ext value.
+// Distinguishes Unix(0,0) (1970) from the zero Time (year 1).
+const hasExt = 1
+
 // Now returns the current local time from the host wall clock.
 func Now() Time {
 	sec, nsec := runtime.Walltime()
-	return Time{ext: sec*1e9 + int64(nsec)}
+	return Time{wall: hasExt, ext: sec*1e9 + int64(nsec)}
 }
 
 // Unix returns the local Time corresponding to the given Unix time.
 func Unix(sec int64, nsec int64) Time {
-	return Time{ext: sec*1e9 + nsec}
+	return Time{wall: hasExt, ext: sec*1e9 + nsec}
 }
 
 // UnixMilli returns the local Time corresponding to the given Unix time
@@ -104,7 +109,13 @@ func (t Time) Equal(u Time) bool { return t.ext == u.ext }
 func (t Time) Sub(u Time) Duration { return Duration(t.ext - u.ext) }
 
 // Add returns the time t+d.
-func (t Time) Add(d Duration) Time { return Time{ext: t.ext + int64(d)} }
+func (t Time) Add(d Duration) Time {
+	wall := t.wall
+	if wall == 0 {
+		wall = hasExt
+	}
+	return Time{wall: wall, ext: t.ext + int64(d)}
+}
 
 // Since returns the time elapsed since t.
 func Since(t Time) Duration { return Now().Sub(t) }
@@ -142,10 +153,107 @@ func (t Time) Format(layout string) string {
 }
 
 // AppendFormat appends a textual representation of t to b.
-// Stub: appends UnixNano decimal; full layout parsing is deferred.
+// Supports a small layout subset (Kitchen-style and RFC3339-ish) used by
+// stdlib tests and encoding/json; other layouts fall back to UnixNano decimal.
 func (t Time) AppendFormat(b []byte, layout string) []byte {
-	_ = layout
-	return strconv.AppendInt(b, t.ext, 10)
+	switch layout {
+	case Kitchen, "03:04PM": // Kitchen == "3:04PM"
+		h, m, _ := t.Clock()
+		ap := "AM"
+		h12 := h % 12
+		if h12 == 0 {
+			h12 = 12
+		}
+		if h >= 12 {
+			ap = "PM"
+		}
+		pad := layout == "03:04PM"
+		if pad && h12 < 10 {
+			b = append(b, '0')
+		}
+		b = strconv.AppendInt(b, int64(h12), 10)
+		b = append(b, ':')
+		if m < 10 {
+			b = append(b, '0')
+		}
+		b = strconv.AppendInt(b, int64(m), 10)
+		return append(b, ap...)
+	case TimeOnly:
+		h, m, s := t.Clock()
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, m)
+		b = append(b, ':')
+		return append2(b, s)
+	case DateOnly:
+		y, mo, d := t.Date()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		return append2(b, d)
+	case RFC3339, RFC3339Nano:
+		y, mo, d := t.Date()
+		h, mi, s := t.Clock()
+		b = append4(b, y)
+		b = append(b, '-')
+		b = append2(b, int(mo))
+		b = append(b, '-')
+		b = append2(b, d)
+		b = append(b, 'T')
+		b = append2(b, h)
+		b = append(b, ':')
+		b = append2(b, mi)
+		b = append(b, ':')
+		b = append2(b, s)
+		if layout == RFC3339Nano {
+			b = append(b, '.')
+			ns := t.Nanosecond()
+			for div := 100000000; div >= 1; div /= 10 {
+				b = append(b, byte('0'+ns/div%10))
+			}
+		}
+		return append(b, 'Z')
+	default:
+		return strconv.AppendInt(b, t.ext, 10)
+	}
+}
+
+func append2(b []byte, n int) []byte {
+	if n < 0 {
+		n = 0
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
+}
+
+func append4(b []byte, n int) []byte {
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	if n < 1000 {
+		b = append(b, '0')
+	}
+	if n < 100 {
+		b = append(b, '0')
+	}
+	if n < 10 {
+		b = append(b, '0')
+	}
+	return strconv.AppendInt(b, int64(n), 10)
+}
+
+// AppendText appends RFC3339 text of t to b.
+func (t Time) AppendText(b []byte) ([]byte, error) {
+	return t.AppendFormat(b, RFC3339), nil
+}
+
+// MarshalText implements encoding.TextMarshaler (RFC3339).
+func (t Time) MarshalText() ([]byte, error) {
+	return t.AppendText(nil)
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler via RFC3339 stub.
@@ -158,15 +266,178 @@ func (t *Time) UnmarshalText(data []byte) error {
 	return nil
 }
 
-// Parse parses a formatted string and returns the time value it represents.
-// Stub: only accepts decimal Unix nanoseconds (AppendFormat output).
-func Parse(layout, value string) (Time, error) {
-	_ = layout
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+// MarshalJSON implements json.Marshaler (RFC3339 quoted string).
+func (t Time) MarshalJSON() ([]byte, error) {
+	b := make([]byte, 0, len(RFC3339)+2)
+	b = append(b, '"')
+	b = t.AppendFormat(b, RFC3339)
+	b = append(b, '"')
+	return b, nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (t *Time) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
 	}
-	return Time{ext: n}, nil
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return &ParseError{Layout: RFC3339, Value: string(data), Message: "input is not a JSON string"}
+	}
+	return t.UnmarshalText(data[1 : len(data)-1])
+}
+
+// AppendBinary appends the binary encoding of t to b.
+func (t Time) AppendBinary(b []byte) ([]byte, error) {
+	enc, err := t.marshalBinaryBuf()
+	if err != nil {
+		return b, err
+	}
+	return append(b, enc...), nil
+}
+
+func (t Time) marshalBinaryBuf() ([]byte, error) {
+	ext := t.ext
+	_, offset := t.Zone()
+	buf := make([]byte, 14)
+	buf[0] = 1 // version
+	buf[1] = byte(t.wall & 0xff)
+	for i := 0; i < 8; i++ {
+		buf[2+i] = byte(ext >> (56 - 8*i))
+	}
+	uoff := uint32(offset)
+	buf[10] = byte(uoff >> 24)
+	buf[11] = byte(uoff >> 16)
+	buf[12] = byte(uoff >> 8)
+	buf[13] = byte(uoff)
+	return buf, nil
+}
+
+// MarshalBinary implements encoding.BinaryMarshaler (stub: wall+ext+offset).
+func (t Time) MarshalBinary() ([]byte, error) {
+	return t.marshalBinaryBuf()
+}
+
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
+func (t *Time) UnmarshalBinary(data []byte) error {
+	if len(data) < 9 {
+		return errors.New("Time.UnmarshalBinary: too short")
+	}
+	var ext int64
+	wall := uint64(0)
+	off := 1
+	if len(data) >= 10 {
+		wall = uint64(data[1])
+		off = 2
+	}
+	for i := 0; i < 8; i++ {
+		if off+i >= len(data) {
+			break
+		}
+		ext = (ext << 8) | int64(data[off+i])
+	}
+	t.wall = wall
+	t.ext = ext
+	t.loc = nil
+	if len(data) >= 14 {
+		uoff := uint32(data[10])<<24 | uint32(data[11])<<16 | uint32(data[12])<<8 | uint32(data[13])
+		offset := int(int32(uoff))
+		if offset != 0 {
+			t.loc = FixedZone("", offset)
+		}
+	}
+	return nil
+}
+
+// GobEncode implements the gob.GobEncoder interface.
+func (t Time) GobEncode() ([]byte, error) { return t.MarshalBinary() }
+
+// GobDecode implements the gob.GobDecoder interface.
+func (t *Time) GobDecode(data []byte) error { return t.UnmarshalBinary(data) }
+
+// Parse parses a formatted string and returns the time value it represents.
+// Supports RFC3339 and Kitchen-style layouts; other layouts fall back to
+// decimal Unix nanoseconds.
+func Parse(layout, value string) (Time, error) {
+	switch layout {
+	case Kitchen, "03:04PM":
+		if len(value) < 6 {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+		}
+		// "12:00PM" / "3:04PM" / "03:04PM"
+		i := 0
+		if layout == "03:04PM" {
+			if len(value) < 7 {
+				return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+			}
+		}
+		// find ':'
+		for i < len(value) && value[i] != ':' {
+			i++
+		}
+		h64, err := strconv.ParseInt(value[:i], 10, 64)
+		if err != nil {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+		}
+		rest := value[i+1:]
+		if len(rest) < 4 {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+		}
+		m64, err := strconv.ParseInt(rest[:2], 10, 64)
+		if err != nil {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+		}
+		ap := rest[2:]
+		h := int(h64)
+		if ap == "PM" || ap == "pm" {
+			if h != 12 {
+				h += 12
+			}
+		} else if ap == "AM" || ap == "am" {
+			if h == 12 {
+				h = 0
+			}
+		} else {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: "bad AM/PM"}
+		}
+		// Use a stable modern year — year 0 civil math is unreliable in the stub.
+		return Date(2000, January, 1, h, int(m64), 0, 0, UTC), nil
+	case RFC3339, RFC3339Nano:
+		// Minimal RFC3339: 2006-01-02T15:04:05Z or with fractional seconds.
+		if len(value) < 20 {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: "too short"}
+		}
+		y, err1 := strconv.Atoi(value[0:4])
+		mo, err2 := strconv.Atoi(value[5:7])
+		d, err3 := strconv.Atoi(value[8:10])
+		h, err4 := strconv.Atoi(value[11:13])
+		mi, err5 := strconv.Atoi(value[14:16])
+		s, err6 := strconv.Atoi(value[17:19])
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: "bad RFC3339 fields"}
+		}
+		nsec := 0
+		if len(value) > 20 && value[19] == '.' {
+			j := 20
+			for j < len(value) && value[j] >= '0' && value[j] <= '9' {
+				j++
+			}
+			frac := value[20:j]
+			for len(frac) < 9 {
+				frac += "0"
+			}
+			if len(frac) > 9 {
+				frac = frac[:9]
+			}
+			nsec, _ = strconv.Atoi(frac)
+		}
+		return Date(y, Month(mo), d, h, mi, s, nsec, UTC), nil
+	default:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+		}
+		return Time{wall: hasExt, ext: n}, nil
+	}
 }
 
 const (
@@ -322,8 +593,12 @@ func (d Duration) Abs() Duration {
 	}
 }
 
-// Tick is a convenience wrapper for NewTicker(d).C. Stub ticker.
+// Tick is a convenience wrapper for NewTicker(d).C.
+// Like upstream, a non-positive duration returns nil (does not panic).
 func Tick(d Duration) <-chan Time {
+	if d <= 0 {
+		return nil
+	}
 	return NewTicker(d).C
 }
 
@@ -334,6 +609,9 @@ type Ticker struct {
 }
 
 func NewTicker(d Duration) *Ticker {
+	if d <= 0 {
+		panic("non-positive interval for NewTicker")
+	}
 	c := make(chan Time, 1)
 	t := &Ticker{C: c, c: c}
 	go func() {
@@ -350,6 +628,26 @@ func NewTicker(d Duration) *Ticker {
 
 func (t *Ticker) Stop() {
 	// stub: goroutine keeps running (language tests rarely require stop)
+}
+
+// Reset stops a ticker and resets its period to the specified duration.
+// Stub: starts a new tick loop (same approach as Timer.Reset).
+func (t *Ticker) Reset(d Duration) {
+	if t == nil {
+		panic("time: Reset called on uninitialized Ticker")
+	}
+	if d <= 0 {
+		panic("non-positive interval for Ticker.Reset")
+	}
+	go func() {
+		for {
+			Sleep(d)
+			select {
+			case t.c <- Now():
+			default:
+			}
+		}
+	}()
 }
 
 type parseDurationError struct {
@@ -536,16 +834,16 @@ func NewTimer(d Duration) *Timer {
 
 // Stop prevents the Timer from firing. Stub: always reports stopped.
 func (t *Timer) Stop() bool {
-	if t == nil {
-		return false
+	if t == nil || t.c == nil {
+		panic("time: Stop called on uninitialized Timer")
 	}
 	return true
 }
 
 // Reset changes the timer to expire after duration d. Stub: starts a new sleep.
 func (t *Timer) Reset(d Duration) bool {
-	if t == nil {
-		return false
+	if t == nil || t.c == nil {
+		panic("time: Reset called on uninitialized Timer")
 	}
 	go func() {
 		Sleep(d)
@@ -704,8 +1002,11 @@ func (t Time) Date() (year int, month Month, day int) {
 	return t.date()
 }
 
-// Location is a stub timezone (UTC only in v1 rewrite).
-type Location struct{ name string }
+// Location is a stub timezone.
+type Location struct {
+	name   string
+	offset int // seconds east of UTC
+}
 
 var (
 	utcLoc   = Location{name: "UTC"}
@@ -714,20 +1015,148 @@ var (
 	Local    = &localLoc
 )
 
-func (t Time) Location() *Location { return UTC }
-func (t Time) Local() Time         { return t }
+func (t Time) Location() *Location {
+	if t.loc == nil {
+		return UTC
+	}
+	return t.loc
+}
+func (t Time) Local() Time { return t }
 func (t Time) In(loc *Location) Time {
-	_ = loc
+	t.loc = loc
 	return t
 }
-func (t Time) Zone() (name string, offset int) { return "UTC", 0 }
+func (l *Location) String() string {
+	if l == nil {
+		return "UTC"
+	}
+	return l.name
+}
+func (t Time) Zone() (name string, offset int) {
+	if t.loc != nil {
+		return t.loc.name, t.loc.offset
+	}
+	return "UTC", 0
+}
+
+// FixedZone returns a Location that always uses the given zone name and
+// offset (seconds east of UTC).
+func FixedZone(name string, offset int) *Location {
+	return &Location{name: name, offset: offset}
+}
+
+// Compare compares t with u. Returns -1, 0, or +1.
+func (t Time) Compare(u Time) int {
+	if t.ext < u.ext {
+		return -1
+	}
+	if t.ext > u.ext {
+		return 1
+	}
+	return 0
+}
+
+// AddDate returns the time corresponding to adding the given number of years,
+// months, and days to t. Months are normalized; days are applied as 24h steps
+// (UTC-only rewrite, no DST).
+func (t Time) AddDate(years int, months int, days int) Time {
+	y, m, d := t.Date()
+	h, mi, s := t.Clock()
+	y += years
+	miMonth := int(m) + months
+	for miMonth > 12 {
+		y++
+		miMonth -= 12
+	}
+	for miMonth <= 0 {
+		y--
+		miMonth += 12
+	}
+	base := Date(y, Month(miMonth), d, h, mi, s, t.Nanosecond(), t.Location())
+	return base.Add(Duration(days) * 24 * Hour)
+}
+
+// Truncate returns t rounded down to a multiple of d (toward zero wall time).
+func (t Time) Truncate(d Duration) Time {
+	if d <= 0 {
+		return t
+	}
+	r := t.ext % int64(d)
+	if r < 0 {
+		r += int64(d)
+	}
+	return Time{wall: hasExt, ext: t.ext - r}
+}
+
+// Round returns t rounded to the nearest multiple of d.
+func (t Time) Round(d Duration) Time {
+	if d <= 0 {
+		return t
+	}
+	r := t.ext % int64(d)
+	if r < 0 {
+		r += int64(d)
+	}
+	if r+r < int64(d) {
+		return Time{wall: hasExt, ext: t.ext - r}
+	}
+	return Time{wall: hasExt, ext: t.ext + (int64(d) - r)}
+}
+
+// GoString returns a Go-syntax representation of t.
+func (t Time) GoString() string {
+	monthNames := []string{
+		"", "time.January", "time.February", "time.March", "time.April", "time.May", "time.June",
+		"time.July", "time.August", "time.September", "time.October", "time.November", "time.December",
+	}
+	m := t.Month()
+	ms := strconv.Itoa(int(m))
+	if int(m) >= 1 && int(m) <= 12 {
+		ms = monthNames[int(m)]
+	}
+	loc := "time.UTC"
+	if l := t.Location(); l == Local {
+		loc = "time.Local"
+	} else if l != nil && l != UTC && l.name != "" && l.name != "UTC" {
+		loc = "time.Location(" + strconv.Quote(l.name) + ")"
+	}
+	return "time.Date(" + strconv.Itoa(t.Year()) + ", " + ms +
+		", " + strconv.Itoa(t.Day()) + ", " + strconv.Itoa(t.Hour()) + ", " +
+		strconv.Itoa(t.Minute()) + ", " + strconv.Itoa(t.Second()) + ", " +
+		strconv.Itoa(t.Nanosecond()) + ", " + loc + ")"
+}
+
+// YearDay returns the day of the year in [1,365] (or 366 for leap years).
+func (t Time) YearDay() int {
+	y, m, d := t.Date()
+	return int(daysFromCivil(y, int(m), d)-daysFromCivil(y, 1, 1)) + 1
+}
+
+// ISOWeek returns the ISO 8601 year and week number.
+func (t Time) ISOWeek() (year, week int) {
+	// Approximate via year-day and weekday (Mon=0..Sun=6 in ISO).
+	y, _, _ := t.Date()
+	yd := t.YearDay()
+	// Weekday(): Sunday=0 … Saturday=6. ISO Monday=0.
+	wd := int(t.Weekday())
+	isoWD := (wd + 6) % 7
+	week = (yd - isoWD + 10) / 7
+	year = y
+	if week < 1 {
+		year--
+		week = 52
+	} else if week > 52 {
+		year++
+		week = 1
+	}
+	return year, week
+}
 
 // Date returns the Time corresponding to the given calendar arguments in loc.
 // Stub: ignores loc; computes Unix nanos via a simple civil→epoch conversion.
 func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) Time {
-	_ = loc
 	ext := civilToUnixNano(year, int(month), day, hour, min, sec, nsec)
-	return Time{ext: ext}
+	return Time{wall: hasExt, ext: ext, loc: loc}
 }
 
 func (t Time) date() (year int, month Month, day int) {
