@@ -18,22 +18,6 @@ func namedDisplay(n string) bool {
 	return false
 }
 
-// uncomparableNamed reports whether t is a named type whose underlying value
-// cannot be compared (slice/map/func field) — the recover2 unhashable case.
-func uncomparableNamed(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	n, ok := types.Unalias(t).(*types.Named)
-	if !ok {
-		return false
-	}
-	return !types.Comparable(n.Underlying())
-}
-
-// typeDisplayName returns a gc-like reflect.Type.String for a descriptor:
-// "main.T" for package main (even when the module path is gotestcase), else
-// "pkg.T" using the package name, else the go/types String / stored name.
 func typeDisplayName(tr *typeRec) string {
 	if tr == nil {
 		return ""
@@ -201,11 +185,10 @@ func (g *gen) fillReflectTypeName() {
 		if tr == nil || tr.id < 0 {
 			continue
 		}
-		// Only named uncomparable types need display names for unhashable
-		// map-key panics (recover2). Emitting stringConsts for every named
-		// type bloats fmt size corpus past budget.
+		// Named pkg.Type display names for fmt %#v / reflect.Type.String and
+		// unhashable map-key panics (recover2).
 		n := typeDisplayName(tr)
-		if n == "" || !namedDisplay(n) || !uncomparableNamed(tr.goType) {
+		if n == "" || !namedDisplay(n) {
 			continue
 		}
 		entries = append(entries, idName{id: tr.id, name: n})
