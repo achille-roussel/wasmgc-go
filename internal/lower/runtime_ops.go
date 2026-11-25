@@ -1229,6 +1229,12 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	add := len(elemEx)
 	st := &ir.Ref{Null: true, Named: sliceName}
 
+	// append(s) with no elements must return s unchanged (nil stays nil).
+	if add == 0 {
+		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: sliceEx})
+		return pre, nil
+	}
+
 	// Array refs are nullable so locals are defaultable: grow-only ndata is
 	// unset on the fit path, and Wasm rejects uninitialized non-defaultable locals.
 	arrT := &ir.Ref{Null: true, Named: arrName}

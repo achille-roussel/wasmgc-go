@@ -10,16 +10,13 @@ abi/convT64_criteria.go — output mismatch
 abi/idata.go — unsupported: unsafe
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
-append.go — wasm validate/compile error
 args.go — failed: panic: argc
 blank.go — wasm validate/compile error
 chan/doubleselect.go — failed: panic: runtime error: slice bounds out of range
 chan/powser1.go — compile error: lower: copy: unsupported dst type
 chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
-chan/select3.go — compile error: lower: unsupported select assign
 chan/sieve2.go — output mismatch
 chancap.go — failed: build: pipeline: IR verify: cannot assign refnull $go.chan to var h14768 of type i32 in main.clos.29…
-closedchan.go — wasm validate/compile error
 closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
@@ -109,7 +106,6 @@ fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
-fixedbugs/issue43111.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue43292.go — compile error: codegen
 fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
 fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():

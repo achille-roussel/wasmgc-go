@@ -978,10 +978,18 @@ func (fl *funcLower) appendSliceSpread(e *ast.CallExpr, srcArg ast.Expr, prefix 
 	}
 	fitBody.Stmts = append(fitBody.Stmts, copyFit...)
 
+	copyBody := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(dstCapV), fl.useVar(needV)}},
+			Then: growBody,
+			Else: fitBody,
+		},
+	}}
+	// append(nil, empty...) must stay nil; SliceSlice(nil,0,0) yields non-nil empty.
 	stmts = append(stmts, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(dstCapV), fl.useVar(needV)}},
-		Then: growBody,
-		Else: fitBody,
+		Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{fl.useVar(srcLenV), fl.i32const(0)}},
+		Then: &ir.Seq{}, // outV already dst
+		Else: copyBody,
 	})
 	return fl.useVar(outV), stmts, nil
 }
