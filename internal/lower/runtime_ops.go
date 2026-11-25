@@ -1961,6 +1961,14 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	}
 	rt.ensureFatPtr(kind)
 	pt := &ir.Ref{Named: ptrType}
+	// Recoverable nil *T before ref.as_non_null (convert4: [0]byte(*nil)).
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
+	})
 	clT := &ir.Temp{Name: rt.fresh("cl"), Typ: &ir.Ref{Named: "$go.class." + kind}}
 	pre = append(pre, &ir.Assign{
 		Lhs: []ir.Dest{{Temp: clT, Name: clT.Name}},

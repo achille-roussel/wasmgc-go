@@ -527,6 +527,9 @@ func (fl *funcLower) deferAddSigArgs(
 // printArgKind tags deferred print captures (bool and int share i32 IR).
 const (
 	printKindInt = iota
+	printKindInt64
+	printKindUint
+	printKindUint64
 	printKindBool
 	printKindString
 	printKindIface
@@ -564,6 +567,20 @@ func printArgKind(ty types.Type) int {
 			return printKindComplex64
 		}
 		return printKindComplex128
+	case isInteger(ty):
+		// Width from basic kind: int64/uint64 are always i64; int/uint are i32
+		// on WasmGC. Named integer aliases share the underlying basic kind.
+		if b, ok := ty.Underlying().(*types.Basic); ok {
+			switch b.Kind() {
+			case types.Int64:
+				return printKindInt64
+			case types.Uint64:
+				return printKindUint64
+			case types.Uint, types.Uint32, types.Uint16, types.Uint8, types.Uintptr:
+				return printKindUint
+			}
+		}
+		return printKindInt
 	default:
 		return printKindInt
 	}
@@ -620,24 +637,14 @@ func (fl *funcLower) deferredPrintKind(arg ir.Expr, kind int) []ir.Stmt {
 		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printcomplex64", Args: []ir.Expr{arg}}}}
 	case printKindComplex128:
 		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printcomplex128", Args: []ir.Expr{arg}}}}
+	case printKindInt64:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint64", Args: []ir.Expr{arg}}}}
+	case printKindUint64:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printuint64", Args: []ir.Expr{arg}}}}
+	case printKindUint:
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printuint", Args: []ir.Expr{arg}}}}
 	default:
-		// Integers: wrap i64 → i32 like printArg.
-		ex := arg
-		if get, ok := arg.(*ir.Instr); ok && get.Op == ir.OpStructGet {
-			if r, ok := get.Type.(*ir.Ref); ok && r.Named != "" {
-				if td := fl.mod.LookupType(r.Named); td != nil {
-					for _, f := range td.Fields {
-						if f.Name == get.Field {
-							if n, ok := f.Type.(*ir.NumType); ok && n.Kind == ir.I64 {
-								ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{arg}}
-							}
-							break
-						}
-					}
-				}
-			}
-		}
-		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{ex}}}}
+		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint", Args: []ir.Expr{arg}}}}
 	}
 }
 

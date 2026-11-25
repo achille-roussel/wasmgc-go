@@ -82,7 +82,7 @@ func scanPrintCalls(mod *ir.Module) (needString, needInt, needNL, needFloat, nee
 			switch name {
 			case "runtime.printstring":
 				needString = true
-			case "runtime.printint":
+			case "runtime.printint", "runtime.printint64", "runtime.printuint", "runtime.printuint64":
 				needInt = true
 			case "runtime.printnl":
 				needNL = true
@@ -141,6 +141,7 @@ func stripPrintFuncs(mod *ir.Module) {
 	names := map[string]bool{
 		"runtime.printstring":      true,
 		"runtime.printint":         true,
+		"runtime.printint64":       true,
 		"runtime.printnl":          true,
 		"runtime.printuint":        true,
 		"runtime.printuint64":      true,

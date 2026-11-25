@@ -279,6 +279,8 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	// $go.ptr.* (struct.get Type is the container, not the field type).
 	// Skip when the pointer is already a typed Name (Ident load) — avoids a
 	// dead `pd = p` after escape rewrites *p to struct.get.
+	// Nil checks for fat pointers live in expandDeref (not here) so escape
+	// rewrite can still see `p = addr …; deref p` → struct.get.
 	if r, ok := ptrTy.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.ptr.") {
 		if _, isName := ptr.(*ir.Name); !isName {
 			v := fl.newVar("pd", ptrTy)

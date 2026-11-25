@@ -30,6 +30,22 @@ func printint(v int) {
 	printuint(uint(v))
 }
 
+// printint64 writes a signed 64-bit integer. WasmGC int is i32, so println(int64)
+// must not i32.wrap_i64 (MaxInt64 would print as -1).
+func printint64(v int64) {
+	if v == 0 {
+		printstring("0")
+		return
+	}
+	if v < 0 {
+		printstring("-")
+		// Two's-complement abs so MinInt64 does not overflow.
+		printuint64(^uint64(v) + 1)
+		return
+	}
+	printuint64(uint64(v))
+}
+
 func printuint(v uint) {
 	if v >= 10 {
 		printuint(v / 10)
