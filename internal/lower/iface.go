@@ -683,13 +683,24 @@ func (fl *funcLower) structCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, 
 	if xt == nil {
 		return nil, nil, fl.errorf(e, "struct compare: missing type")
 	}
-	// Structs with no comparable fields (all blank / zero-size) are always equal.
+	// Structs with no comparable fields are always equal, but operands must
+	// still be evaluated (*nil panics — issue23837).
 	if st, ok := types.Unalias(xt).Underlying().(*types.Struct); ok && !structHasComparableField(st) {
 		v := int64(1)
 		if op == token.NEQ {
 			v = 0
 		}
-		return fl.i32const(v), nil, nil
+		x, xstmts, err := fl.expr(e.X, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		y, ystmts, err := fl.expr(e.Y, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = x
+		_ = y
+		return fl.i32const(v), append(xstmts, ystmts...), nil
 	}
 	x, xstmts, err := fl.expr(e.X, nil)
 	if err != nil {
@@ -718,7 +729,17 @@ func (fl *funcLower) arrayCompare(e *ast.BinaryExpr, op token.Token) (ir.Expr, [
 		if op == token.NEQ {
 			v = 0
 		}
-		return fl.i32const(v), nil, nil
+		x, xstmts, err := fl.expr(e.X, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		y, ystmts, err := fl.expr(e.Y, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = x
+		_ = y
+		return fl.i32const(v), append(xstmts, ystmts...), nil
 	}
 	x, xstmts, err := fl.expr(e.X, nil)
 	if err != nil {

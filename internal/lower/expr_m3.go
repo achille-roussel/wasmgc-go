@@ -446,6 +446,20 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 			return nil, nil, err
 		}
 		xt := fl.typeOf(e.X)
+		// p.f on nil *struct (or *T with struct fields) must panic (issue23837).
+		if xt != nil && isPointer(xt) && isObjectPointer(xt) {
+			ptrTy, err := fl.mapType(xt)
+			if err != nil {
+				return nil, nil, err
+			}
+			pv := fl.newVar("pf", ptrTy)
+			stmts = append(stmts, fl.assignVar(pv, base))
+			stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+			base = fl.useVar(pv)
+			if p, ok := types.Unalias(xt).(*types.Pointer); ok {
+				xt = p.Elem()
+			}
+		}
 		ty := want
 		if ty == nil {
 			ty, _ = fl.mapType(fl.typeOf(e))
@@ -470,6 +484,14 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 						}
 					}
 				}
+			}
+			// String fields must be copied out of the struct slot so a later
+			// assign (e.g. if s := tc.r.Replace(tc.in)) cannot clobber tc.in
+			// before another use (strings_test.TestReplacer WriteString).
+			if sel.Type() != nil && isString(sel.Type()) {
+				sv := fl.newVar("sfld", typeString)
+				stmts = append(stmts, fl.assignVar(sv, ex))
+				ex = fl.useVar(sv)
 			}
 			return ex, stmts, nil
 		}

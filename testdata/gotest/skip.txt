@@ -70,7 +70,6 @@ fixedbugs/issue22662.go — compile error: codegen
 fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
 fixedbugs/issue23017.go — compile error: lower: field index 0 out of range for gotestcase.T
 fixedbugs/issue23305.go — compile error: build: load: typecheck
-fixedbugs/issue23837.go — compile error: codegen
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
