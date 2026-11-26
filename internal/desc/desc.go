@@ -859,11 +859,9 @@ func (g *gen) discoverExtraDeps(tr *typeRec) {
 		if st == nil {
 			return
 		}
+		// Include zero-size fields so reflect extras can describe [0]T / struct{}.
 		for i := 0; i < st.NumFields(); i++ {
 			f := st.Field(i)
-			if isZeroSizeType(f.Type()) {
-				continue
-			}
 			fk := TypeKey(f.Type())
 			g.needTypeKey(fk)
 			if t := g.types[fk]; t != nil && t.goType == nil {
@@ -1108,9 +1106,12 @@ func (g *gen) arrayEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 			&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 1}}},
 		}}
 	}
+	// Map-miss / unset array values are often ref.null (same IR type for all
+	// [N]T). Treat null as a zero array of length N so == matches Go.
 	aty := &ir.Ref{Named: arrName}
-	sa := &ir.Var{Name: "sa", Typ: aty}
-	sb := &ir.Var{Name: "sb", Typ: aty}
+	atyNull := &ir.Ref{Named: arrName, Null: true}
+	sa := &ir.Var{Name: "sa", Typ: atyNull}
+	sb := &ir.Var{Name: "sb", Typ: atyNull}
 	iv := &ir.Var{Name: "i", Typ: ir.TypeI32}
 	getOp := ir.OpArrayGet
 	switch arrName {
@@ -1129,14 +1130,46 @@ func (g *gen) arrayEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 		&ir.Name{Raw: "sb", Var: sb}, &ir.Name{Raw: "i", Var: iv},
 	}}
 	elemEq := g.fieldEqExpr(elem, ea, eb)
+	mkZeroArr := func() ir.Expr {
+		if z := g.zeroValueExpr(tr); z != nil {
+			return z
+		}
+		// Fallback: defaultable elems only (iface/numeric).
+		return &ir.Instr{
+			Op:   ir.OpArrayNewDefault,
+			Type: aty,
+			Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: n}},
+		}
+	}
 	return &ir.Seq{Stmts: []ir.Stmt{
 		&ir.VarDef{Var: sa}, &ir.VarDef{Var: sb}, &ir.VarDef{Var: iv},
 		&ir.Assign{Lhs: []ir.Dest{{Name: "sa", Var: sa}}, Rhs: &ir.Instr{
-			Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}},
+			Op: ir.OpRefCast, Type: atyNull, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}},
 		}},
 		&ir.Assign{Lhs: []ir.Dest{{Name: "sb", Var: sb}}, Rhs: &ir.Instr{
-			Op: ir.OpRefCast, Type: aty, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
+			Op: ir.OpRefCast, Type: atyNull, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}},
 		}},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "sa", Var: sa}}},
+				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "sb", Var: sb}}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 1}}},
+			}},
+		},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "sa", Var: sa}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "sa", Var: sa}}, Rhs: mkZeroArr()},
+			}},
+		},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "sb", Var: sb}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "sb", Var: sb}}, Rhs: mkZeroArr()},
+			}},
+		},
 		&ir.Assign{Lhs: []ir.Dest{{Name: "i", Var: iv}}, Rhs: &ir.Const{Op: ir.OpI32Const, I64: 0}},
 		&ir.Block{
 			Name: doneL,
@@ -1749,10 +1782,33 @@ func TypeKey(t types.Type) string {
 	case *types.Map:
 		return "map[" + TypeKey(t.Key()) + "]" + TypeKey(t.Elem())
 	case *types.Struct:
+		// Build from field names + TypeKey(field type) so:
+		// - struct{int} vs struct{Int} (alias) differ by field name (issue50190)
+		// - block-local type C=int32 vs C=uint32 don't collapse to the same
+		//   String() key "pkg.C" (issue50190 second half)
+		// go/types.String keeps alias names without LocalTypeSuffix and would
+		// make both local C aliases look identical.
 		if t.NumFields() == 0 {
 			return "struct{}"
 		}
-		return strings.ReplaceAll(t.String(), " ", "_")
+		var b strings.Builder
+		b.WriteString("struct{")
+		for i := 0; i < t.NumFields(); i++ {
+			if i > 0 {
+				b.WriteByte(';')
+			}
+			f := t.Field(i)
+			b.WriteString(f.Name())
+			b.WriteByte(':')
+			b.WriteString(TypeKey(f.Type()))
+			if tag := t.Tag(i); tag != "" {
+				b.WriteString("_`")
+				b.WriteString(strings.ReplaceAll(tag, " ", "_"))
+				b.WriteByte('`')
+			}
+		}
+		b.WriteByte('}')
+		return b.String()
 	case *types.Chan:
 		return strings.ReplaceAll(t.String(), " ", "_")
 	case *types.Signature:

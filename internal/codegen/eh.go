@@ -82,7 +82,8 @@ func (g *gen) scanEHNeeds() bool {
 			}
 			switch in.Func {
 			case "runtime.throwPanic", "runtime.deferRun", "runtime.gorecover",
-				"runtime.unrecoveredPanic", "runtime.panicIndex", "runtime.panicSliceB",
+				"runtime.unrecoveredPanic", "runtime.panicIndex", "runtime.panicIndexU",
+				"runtime.panicBounds", "runtime.panicSliceB",
 				"runtime.panicNil", "runtime.panicDivide", "runtime.panicNegativeShift",
 				"runtime.panicUncomparable", "runtime.panicTypeAssert", "runtime.panicTypeAssertTypes",
 				"runtime.panicTypeAssertMissing", "runtime.panicrangestate":
@@ -859,9 +860,8 @@ func (g *gen) bodyUnrecoveredPanic() wasm.Code {
 	enc.If(wasm.BlockEmpty())
 	printLit("<panic>")
 	enc.Else()
-	// Only string payloads can be written via the linear bridge. Other
-	// concrete panic values (runtime.errorString boxed as named type,
-	// ints, …) used to ref.cast to $go.string and trap — hide them.
+	// String payloads print as-is. runtime.plainError {msg string} is the
+	// usual recoverable panic value — extract msg without calling Error().
 	enc.LocalGet(0)
 	enc.StructGet(panicObj, 0)
 	enc.StructGet(iface, 1)
@@ -874,7 +874,26 @@ func (g *gen) bodyUnrecoveredPanic() wasm.Code {
 	enc.LocalSet(locStr)
 	writeStr()
 	enc.Else()
-	printLit("<non-string>")
+	plainTy, hasPlain := g.types.ByName["$go.struct.runtime.plainError"]
+	if hasPlain {
+		enc.LocalGet(0)
+		enc.StructGet(panicObj, 0)
+		enc.StructGet(iface, 1)
+		enc.RefTest(wasm.TypeIndexHeap(plainTy))
+		enc.If(wasm.BlockEmpty())
+		enc.LocalGet(0)
+		enc.StructGet(panicObj, 0)
+		enc.StructGet(iface, 1)
+		enc.RefCast(wasm.TypeIndexHeap(plainTy))
+		enc.StructGet(plainTy, 0) // msg
+		enc.LocalSet(locStr)
+		writeStr()
+		enc.Else()
+		printLit("<non-string>")
+		enc.End()
+	} else {
+		printLit("<non-string>")
+	}
 	enc.End()
 	enc.End()
 	enc.End()

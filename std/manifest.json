@@ -312,6 +312,13 @@
     "math/rand/v2": {
       "tier": "rewrite",
       "notes": "Minimal IntN/New/NewPCG stub for sort/slices tests"
+    },
+    "regexp": {
+      "tier": "overlay",
+      "overlays": [
+        "onepass.go"
+      ],
+      "notes": "compileOnePass stubbed: makeOnePass panics on wasmgc; NFA engine OK"
     }
   }
 }

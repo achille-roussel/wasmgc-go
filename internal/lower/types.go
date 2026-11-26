@@ -123,9 +123,6 @@ func (l *pkgLower) ensureTypeDescLayout() {
 }
 
 func (l *pkgLower) ensureMapBaseTypes() {
-	if l.mod.LookupType("$go.hmap") != nil && len(l.mod.LookupType("$go.hmap").Fields) > 0 {
-		return
-	}
 	sliceU8, err := l.mapSlice(types.NewSlice(types.Typ[types.Uint8]))
 	if err != nil {
 		panic("ensureMapBaseTypes: []uint8: " + err.Error())
@@ -142,6 +139,7 @@ func (l *pkgLower) ensureMapBaseTypes() {
 		{Name: "ctrl", Type: sliceU8, Mut: true},
 		{Name: "keys", Type: sliceIface, Mut: true},
 		{Name: "vals", Type: sliceIface, Mut: true},
+		{Name: "clearSeq", Type: ir.TypeI32, Mut: true},
 	}
 	if td := l.mod.LookupType("$go.hmap"); td != nil {
 		td.Fields = fields
@@ -157,6 +155,7 @@ func (l *pkgLower) ensureMapBaseTypes() {
 		{Name: "start", Type: ir.TypeI32, Mut: true},
 		{Name: "i", Type: ir.TypeI32, Mut: true},
 		{Name: "n", Type: ir.TypeI32, Mut: true},
+		{Name: "clearSeq", Type: ir.TypeI32, Mut: true},
 	}
 	if td := l.mod.LookupType("$go.mapIter"); td != nil {
 		td.Fields = iterFields

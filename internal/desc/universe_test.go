@@ -145,3 +145,31 @@ func TestFieldTagEmission(t *testing.T) {
 		t.Fatalf("tag string not in data segments; data=%v", mod.Data)
 	}
 }
+
+func TestTypeKeyStructAliasFieldNames(t *testing.T) {
+	pkg := types.NewPackage("main", "main")
+	intAlias := types.NewAlias(types.NewTypeName(1, pkg, "Int", nil), types.Typ[types.Int])
+	fInt := types.NewField(0, pkg, "int", types.Typ[types.Int], true)
+	fIntAlias := types.NewField(0, pkg, "Int", intAlias, true)
+	s1 := types.NewStruct([]*types.Var{fInt}, nil)
+	s2 := types.NewStruct([]*types.Var{fIntAlias}, nil)
+	k1, k2 := TypeKey(s1), TypeKey(s2)
+	if k1 == k2 {
+		t.Fatalf("struct{int} and struct{Int} keys collided: %q", k1)
+	}
+	if !strings.Contains(k1, "int:") || !strings.Contains(k2, "Int:") {
+		t.Fatalf("keys=%q %q", k1, k2)
+	}
+}
+
+func TestTypeKeyStructLocalAliasUnderlying(t *testing.T) {
+	pkg := types.NewPackage("main", "main")
+	c32 := types.NewAlias(types.NewTypeName(10, pkg, "C", nil), types.Typ[types.Int32])
+	cU32 := types.NewAlias(types.NewTypeName(20, pkg, "C", nil), types.Typ[types.Uint32])
+	s1 := types.NewStruct([]*types.Var{types.NewField(0, pkg, "C", c32, true)}, nil)
+	s2 := types.NewStruct([]*types.Var{types.NewField(0, pkg, "C", cU32, true)}, nil)
+	k1, k2 := TypeKey(s1), TypeKey(s2)
+	if k1 == k2 {
+		t.Fatalf("struct{C=int32} and struct{C=uint32} keys collided: %q", k1)
+	}
+}

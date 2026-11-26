@@ -2,6 +2,7 @@ package desc
 
 import (
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
@@ -25,6 +26,18 @@ func typeDisplayName(tr *typeRec) string {
 	if tr.goType != nil {
 		if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
 			obj := n.Obj()
+			// Instantiated generics: include type args (issue49547 %T).
+			// go/types.String uses Pkg.Path(); soft-suite module path is
+			// "gotestcase" while //.out expects package name "main".
+			if targs := n.TypeArgs(); targs != nil && targs.Len() > 0 {
+				s := n.String()
+				if obj != nil && obj.Pkg() != nil && obj.Pkg().Name() == "main" {
+					if path := obj.Pkg().Path(); path != "" && path != "main" {
+						s = strings.ReplaceAll(s, path+".", "main.")
+					}
+				}
+				return s
+			}
 			if obj == nil {
 				return tr.goType.String()
 			}
@@ -72,6 +85,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectUnboxF64()
 	g.fillReflectComplex64()
 	g.fillReflectComplex128()
+	g.fillReflectSetComplex()
 	g.fillReflectSetBoxI32()
 	g.fillReflectSetBoxI64()
 	g.fillReflectSetBoxF32()
@@ -83,6 +97,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectFatPtrGet()
 	g.fillReflectFatPtrSet()
 	g.fillReflectSliceOf()
+	g.fillReflectArrayOf()
 	g.fillReflectPointerTo()
 	g.fillReflectMapOfEmpty()
 	g.fillReflectImplements()
@@ -959,6 +974,84 @@ func (g *gen) fillReflectSliceOf() {
 	})
 }
 
+// fillReflectArrayOf builds runtime.ReflectArrayOf(n, t) → [n]T when present.
+func (g *gen) fillReflectArrayOf() {
+	name := "runtime.ReflectArrayOf"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	nV := &ir.Var{Name: "n", Typ: ir.TypeI32}
+	t := &ir.Var{Name: "t", Typ: typeTy}
+	nullT := &ir.Instr{Op: ir.OpRefNull, Type: typeTy}
+	idV := &ir.Var{Name: "id", Typ: ir.TypeI32}
+
+	type arm struct {
+		id, n  int32
+		global string
+	}
+	var arms []arm
+	keys := make([]string, 0, len(g.types))
+	for k := range g.types {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	for _, k := range keys {
+		arr := g.types[k]
+		if arr == nil || arr.goType == nil || arr.global == "" {
+			continue
+		}
+		a, ok := types.Unalias(arr.goType).Underlying().(*types.Array)
+		if !ok || a.Len() < 0 || a.Len() > 1<<28 {
+			continue
+		}
+		elem := g.types[TypeKey(a.Elem())]
+		if elem == nil || elem.id < 0 {
+			continue
+		}
+		arms = append(arms, arm{id: elem.id, n: int32(a.Len()), global: arr.global})
+	}
+
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{nullT}}
+	for i := len(arms) - 1; i >= 0; i-- {
+		a := arms[i]
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+					&ir.Name{Raw: "id", Var: idV},
+					&ir.Const{Op: ir.OpI32Const, I64: int64(a.id)},
+				}},
+				&ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+					&ir.Name{Raw: "n", Var: nV},
+					&ir.Const{Op: ir.OpI32Const, I64: int64(a.n)},
+				}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: a.global},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: idV},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullT}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "id", Var: idV}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: &ir.Ref{Named: "$go.type"}, Field: "id",
+					Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
+				}},
+				chain,
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{nV, t}, []ir.Type{typeTy}, body)
+}
+
 func (g *gen) fillReflectPointerTo() {
 	g.fillReflectCtorByElemID("runtime.ReflectPointerTo", func(elem *typeRec) *typeRec {
 		if elem.goType == nil {
@@ -1191,22 +1284,28 @@ func (g *gen) fillReflectComplex64() {
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
 			Else: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.Assign{Lhs: []ir.Dest{{Name: "c", Var: c}}, Rhs: &ir.Instr{
-					Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-				}},
-				&ir.Return{Results: []ir.Expr{&ir.Instr{
-					Op: ir.OpStructNew, Type: c128,
-					Args: []ir.Expr{
-						&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
-							Op: ir.OpStructGet, Type: c64, Field: "real",
-							Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "c", Var: c}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+						}},
+						&ir.Return{Results: []ir.Expr{&ir.Instr{
+							Op: ir.OpStructNew, Type: c128,
+							Args: []ir.Expr{
+								&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+									Op: ir.OpStructGet, Type: c64, Field: "real",
+									Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
+								}}},
+								&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+									Op: ir.OpStructGet, Type: c64, Field: "imag",
+									Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
+								}}},
+							},
 						}}},
-						&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
-							Op: ir.OpStructGet, Type: c64, Field: "imag",
-							Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
-						}}},
-					},
-				}}},
+					}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
+				},
 			}},
 		},
 		&ir.Unreachable{},
@@ -1223,22 +1322,226 @@ func (g *gen) fillReflectComplex128() {
 	g.ensureComplexTypes()
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 	c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+	c64 := &ir.Ref{Named: "$go.complex64"}
 	data := &ir.Var{Name: "data", Typ: anyT}
+	c := &ir.Var{Name: "c", Typ: c64}
 	zero := &ir.Instr{Op: ir.OpStructNew, Type: c128, Args: []ir.Expr{
 		&ir.Const{Op: ir.OpF64Const, F64: 0},
 		&ir.Const{Op: ir.OpF64Const, F64: 0},
 	}}
+	// Prefer ref.test: DeepEqual/Scan may pass complex64 data under a
+	// Complex128 kind, or a non-complex leftover — never trap.
 	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: c},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
 			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
-			Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
-				Op: ir.OpRefCast, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
-			}}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Instr{
+						Op: ir.OpRefCast, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+					}}}}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "c", Var: c}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}},
+								}},
+								&ir.Return{Results: []ir.Expr{&ir.Instr{
+									Op: ir.OpStructNew, Type: c128,
+									Args: []ir.Expr{
+										&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+											Op: ir.OpStructGet, Type: c64, Field: "real",
+											Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
+										}}},
+										&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+											Op: ir.OpStructGet, Type: c64, Field: "imag",
+											Args: []ir.Expr{&ir.Name{Raw: "c", Var: c}},
+										}}},
+									},
+								}}},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{zero}}}},
+						},
+					}},
+				},
+			}},
 		},
 		&ir.Unreachable{},
 	}}
 	g.replaceBody(name, []*ir.Var{data}, []ir.Type{c128}, body)
+}
+
+// fillReflectSetComplex mutates dst's real/imag from src. Both args are
+// $go.complex64 or $go.complex128 refs (New().Elem() addressable slots).
+func (g *gen) fillReflectSetComplex() {
+	name := "runtime.ReflectSetComplex"
+	f := g.mod.LookupFunc(name)
+	if f == nil || !emptyBody(f) {
+		return
+	}
+	g.ensureComplexTypes()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	c128 := &ir.Ref{Named: "$go.complex128"}
+	c64 := &ir.Ref{Named: "$go.complex64"}
+	dst := &ir.Var{Name: "dst", Typ: anyT}
+	src := &ir.Var{Name: "src", Typ: anyT}
+	d128 := &ir.Var{Name: "d128", Typ: c128}
+	s128 := &ir.Var{Name: "s128", Typ: c128}
+	d64 := &ir.Var{Name: "d64", Typ: c64}
+	s64 := &ir.Var{Name: "s64", Typ: c64}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: d128},
+		&ir.VarDef{Var: s128},
+		&ir.VarDef{Var: d64},
+		&ir.VarDef{Var: s64},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "dst", Var: dst}}},
+				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpRefTest, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "dst", Var: dst}}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.Assign{Lhs: []ir.Dest{{Name: "d128", Var: d128}}, Rhs: &ir.Instr{
+							Op: ir.OpRefCast, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "dst", Var: dst}},
+						}},
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "s128", Var: s128}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}},
+								}},
+								&ir.ExprStmt{X: &ir.Instr{
+									Op: ir.OpStructSet, Type: c128, Field: "real",
+									Args: []ir.Expr{
+										&ir.Name{Raw: "d128", Var: d128},
+										&ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "real",
+											Args: []ir.Expr{&ir.Name{Raw: "s128", Var: s128}}},
+									},
+								}},
+								&ir.ExprStmt{X: &ir.Instr{
+									Op: ir.OpStructSet, Type: c128, Field: "imag",
+									Args: []ir.Expr{
+										&ir.Name{Raw: "d128", Var: d128},
+										&ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "imag",
+											Args: []ir.Expr{&ir.Name{Raw: "s128", Var: s128}}},
+									},
+								}},
+								&ir.Return{},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.If{
+									Cond: &ir.Instr{Op: ir.OpRefTest, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}}},
+									Then: &ir.Seq{Stmts: []ir.Stmt{
+										&ir.Assign{Lhs: []ir.Dest{{Name: "s64", Var: s64}}, Rhs: &ir.Instr{
+											Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}},
+										}},
+										&ir.ExprStmt{X: &ir.Instr{
+											Op: ir.OpStructSet, Type: c128, Field: "real",
+											Args: []ir.Expr{
+												&ir.Name{Raw: "d128", Var: d128},
+												&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+													Op: ir.OpStructGet, Type: c64, Field: "real",
+													Args: []ir.Expr{&ir.Name{Raw: "s64", Var: s64}},
+												}}},
+											},
+										}},
+										&ir.ExprStmt{X: &ir.Instr{
+											Op: ir.OpStructSet, Type: c128, Field: "imag",
+											Args: []ir.Expr{
+												&ir.Name{Raw: "d128", Var: d128},
+												&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{&ir.Instr{
+													Op: ir.OpStructGet, Type: c64, Field: "imag",
+													Args: []ir.Expr{&ir.Name{Raw: "s64", Var: s64}},
+												}}},
+											},
+										}},
+										&ir.Return{},
+									}},
+									Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+								},
+							}},
+						},
+					}},
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpRefTest, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "dst", Var: dst}}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.Assign{Lhs: []ir.Dest{{Name: "d64", Var: d64}}, Rhs: &ir.Instr{
+									Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "dst", Var: dst}},
+								}},
+								&ir.If{
+									Cond: &ir.Instr{Op: ir.OpRefTest, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}}},
+									Then: &ir.Seq{Stmts: []ir.Stmt{
+										&ir.Assign{Lhs: []ir.Dest{{Name: "s64", Var: s64}}, Rhs: &ir.Instr{
+											Op: ir.OpRefCast, Type: c64, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}},
+										}},
+										&ir.ExprStmt{X: &ir.Instr{
+											Op: ir.OpStructSet, Type: c64, Field: "real",
+											Args: []ir.Expr{
+												&ir.Name{Raw: "d64", Var: d64},
+												&ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "real",
+													Args: []ir.Expr{&ir.Name{Raw: "s64", Var: s64}}},
+											},
+										}},
+										&ir.ExprStmt{X: &ir.Instr{
+											Op: ir.OpStructSet, Type: c64, Field: "imag",
+											Args: []ir.Expr{
+												&ir.Name{Raw: "d64", Var: d64},
+												&ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "imag",
+													Args: []ir.Expr{&ir.Name{Raw: "s64", Var: s64}}},
+											},
+										}},
+										&ir.Return{},
+									}},
+									Else: &ir.Seq{Stmts: []ir.Stmt{
+										&ir.If{
+											Cond: &ir.Instr{Op: ir.OpRefTest, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}}},
+											Then: &ir.Seq{Stmts: []ir.Stmt{
+												&ir.Assign{Lhs: []ir.Dest{{Name: "s128", Var: s128}}, Rhs: &ir.Instr{
+													Op: ir.OpRefCast, Type: c128, Args: []ir.Expr{&ir.Name{Raw: "src", Var: src}},
+												}},
+												&ir.ExprStmt{X: &ir.Instr{
+													Op: ir.OpStructSet, Type: c64, Field: "real",
+													Args: []ir.Expr{
+														&ir.Name{Raw: "d64", Var: d64},
+														&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{&ir.Instr{
+															Op: ir.OpStructGet, Type: c128, Field: "real",
+															Args: []ir.Expr{&ir.Name{Raw: "s128", Var: s128}},
+														}}},
+													},
+												}},
+												&ir.ExprStmt{X: &ir.Instr{
+													Op: ir.OpStructSet, Type: c64, Field: "imag",
+													Args: []ir.Expr{
+														&ir.Name{Raw: "d64", Var: d64},
+														&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{&ir.Instr{
+															Op: ir.OpStructGet, Type: c128, Field: "imag",
+															Args: []ir.Expr{&ir.Name{Raw: "s128", Var: s128}},
+														}}},
+													},
+												}},
+												&ir.Return{},
+											}},
+											Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+										},
+									}},
+								},
+							}},
+							Else: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}},
+						},
+					}},
+				},
+			}},
+		},
+		&ir.Return{},
+	}}
+	g.replaceBody(name, []*ir.Var{dst, src}, nil, body)
 }
 
 func (g *gen) fillReflectUnbox(name, box string, res ir.Type) {

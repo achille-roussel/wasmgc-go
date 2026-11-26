@@ -64,6 +64,9 @@ type funcLower struct {
 	deferInLoop   bool
 	deferCount           int
 	defersVar            *ir.Var
+	// deferListObj is a cell-backed $go.defer list shared with range-over-func
+	// yield bodies (cmd/compile deferrangefunc). Nil until the first range-over-func.
+	deferListObj types.Object
 	mayPanic             bool
 	needsRecoverPrologue bool
 	allowVar             *ir.Var
@@ -80,16 +83,17 @@ type funcLower struct {
 }
 
 // rangeFrame holds the state machine and early-exit cells for one
-// range-over-func loop (docs/design/02-ir.md). Follow-up: defer inside the
-// range body should attach to the outer frame (runtime.deferrangefunc).
+// range-over-func loop (docs/design/02-ir.md). Defers inside the yield body
+// attach to deferListObj on the outermost frame (deferrangefunc).
 type rangeFrame struct {
-	stateObj   types.Object
-	retObj     types.Object   // shared with outermost; 1 = outer return pending
-	resultObjs []types.Object // staging cells for outer return values
-	resultTys  []ir.Type
-	resultGo   []types.Type
-	breakL     string
-	contL      string
+	stateObj     types.Object
+	retObj       types.Object   // shared with outermost; 1 = outer return pending
+	resultObjs   []types.Object // staging cells for outer return values
+	resultTys    []ir.Type
+	resultGo     []types.Type
+	deferListObj types.Object // outermost only; shared defer list cell
+	breakL       string
+	contL        string
 }
 
 func (fl *funcLower) errorf(n ast.Node, format string, args ...any) error {

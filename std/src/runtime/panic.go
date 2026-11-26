@@ -117,7 +117,36 @@ func panicTypeAssertTypes(kind int32, want string) {
 	if want == "" {
 		want = "?"
 	}
-	throwPanic(panicErr("interface conversion: " + got + ", not " + want))
+	// Strip LocalTypeSuffix (_pN) for display; gc Type.String is scope-blind.
+	wantDisp := want
+	for i := 0; i+2 < len(want); i++ {
+		if want[i] != '_' || want[i+1] != 'p' {
+			continue
+		}
+		j := i + 2
+		if j >= len(want) {
+			continue
+		}
+		allDigit := true
+		for ; j < len(want); j++ {
+			if want[j] < '0' || want[j] > '9' {
+				allDigit = false
+				break
+			}
+		}
+		if allDigit {
+			wantDisp = want[:i]
+			break
+		}
+	}
+	msg := "interface conversion: " + got + ", not " + wantDisp
+	// issue26094: same name from different scopes.
+	if len(wantDisp) > 0 && wantDisp[0] >= 'A' && wantDisp[0] <= 'Z' {
+		if got == "struct" || got == "ptr" {
+			msg += ": types from different scopes"
+		}
+	}
+	throwPanic(panicErr(msg))
 }
 
 // panicTypeAssertMissing reports a failed iface assertion (missing method).

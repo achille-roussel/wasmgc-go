@@ -5,18 +5,13 @@
 #
 # Stdlib (encoding/json, gob) StructOf skips live under stdlib/ — see README.
 
-abi/convF_criteria.go — output mismatch
-abi/convT64_criteria.go — output mismatch
 abi/idata.go — unsupported: unsafe
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
 blank.go — wasm validate/compile error
-chan/powser1.go — compile error: lower: copy: unsupported dst type
-chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
 chan/sieve2.go — output mismatch
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
-const4.go — output mismatch
 const7.go — could not import os/exec
 convT2X.go — codegen: missing struct field
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
@@ -25,13 +20,10 @@ devirtualization_nil_panics.go — compile error: codegen
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug114.go — compile error: build: load: typecheck
-fixedbugs/bug196.go — wasm validate/compile error
-fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
 fixedbugs/bug257.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug260.go — output mismatch
-fixedbugs/bug262.go — output mismatch
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
@@ -52,7 +44,6 @@ fixedbugs/issue19113.go — reflect.Value.Call/Convert stubs: concrete funcs no-
 fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
-fixedbugs/issue22605.go — failed: panic: interface conversion: type assertion failed
 fixedbugs/issue22662.go — compile error: codegen
 fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
 fixedbugs/issue23017.go — compile error: lower: field index 0 out of range for gotestcase.T
@@ -60,7 +51,6 @@ fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
-fixedbugs/issue26094.go — failed: panic: <nil>
 fixedbugs/issue27201.go — compile error: codegen
 fixedbugs/issue27518a.go — compile error: codegen
 fixedbugs/issue27518b.go — compile error: codegen
@@ -71,8 +61,6 @@ fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
 fixedbugs/issue29504.go — compile error: codegen
 fixedbugs/issue30041.go — compile error: build: load: typecheck
-fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
-fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30977.go — compile error: codegen
 fixedbugs/issue32477.go — compile error: codegen
 fixedbugs/issue33724.go — runtime error: null deref / stub stack
@@ -84,14 +72,12 @@ fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
-fixedbugs/issue43292.go — compile error: codegen
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue4562.go — compile error: codegen
 fixedbugs/issue4585.go — runtime error
 fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
 fixedbugs/issue48536.go — unsupported: unsafe
-fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
 fixedbugs/issue5373.go — wasm validate/compile error
@@ -107,12 +93,9 @@ fixedbugs/issue5856.go — compile error: codegen
 fixedbugs/issue59293.go — runtime error
 fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice obj=*types.Builtin crypto/internal/fips140/subtle: lower: not a …
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
-fixedbugs/issue59411.go — failed: panic: BAD
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
-fixedbugs/issue70189.go — runtime error
-fixedbugs/issue71675.go — output mismatch
 fixedbugs/issue72063.go — compile error: lower: unsupported callee *ast.CallExpr
 fixedbugs/issue75365.go — output mismatch
 fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.outer not in scope pipeline: IR verify: br target $goto.…
@@ -125,7 +108,6 @@ fixedbugs/issue8004.go — runtime error
 fixedbugs/issue80127.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
-fixedbugs/issue81863.go — runtime error
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
 gcgort.go — compile error: IR verify complex64 nullability
@@ -134,19 +116,16 @@ genmeth1.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instan
 genmeth2.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
 heapsampling.go — output mismatch
 init1.go — output mismatch
-initialize.go — failed: build: pipeline: IR verify: return value 0: have refnull $go.slice.i8, want i32 in $go.acc.go_array_…
 inline_caller.go — compile error: codegen
 inline_callers.go — compile error: codegen
 inline_literal.go — unsupported: reflect.Value.Pointer
 ken/chan1.go — output mismatch
 mallocfin.go — compile error: codegen
 maymorestack.go — compile error: codegen
-newexpr.go — wasm validate/compile error
 nilptr.go — unsupported: unsafe
 nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
-range4.go — output mismatch
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error
@@ -166,11 +145,9 @@ typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer
 typeparam/issue48253.go — compile error: codegen
 typeparam/issue48318.go — could not import encoding/xml
 typeparam/issue48645a.go — output mismatch
-typeparam/issue49547.go — output mismatch
 typeparam/issue51303.go — failed: build: mono: pending main.list$slice.int.Equal missing package/info mono: pending main.list$slice.in…
 typeparam/issue51521.go — compile error: codegen
 typeparam/issue51522b.go — wasm validate/compile error
-typeparam/issue54456.go — failed: panic: bad type identity
 typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
 typeparam/mdempsky/14.go — wasm validate/compile error: struct.new anyref vs i32
 typeparam/mdempsky/16.go — wasm validate/compile error

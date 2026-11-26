@@ -692,9 +692,14 @@ func (fl *funcLower) builtinLenCap(e *ast.CallExpr, op ir.Op, want ir.Type) (ir.
 	// (possibly nil) pointer — evaluate the arg for side effects only.
 	// len(*p) must not nil-check *p (issue72844); only evaluate p's side effects.
 	if n, ok := arrayRangeLen(argTy); ok {
-		_, stmts, err := fl.exprArrayLenSideEffects(e.Args[0])
+		ex, stmts, err := fl.exprArrayLenSideEffects(e.Args[0])
 		if err != nil {
 			return nil, nil, err
+		}
+		// Keep side-effecting operands (len(<-c), len(f())) — discarding the
+		// returned expr would drop OpChanRecv / calls (const4.go).
+		if ex != nil && exprHasSideEffects(ex) {
+			stmts = append(stmts, &ir.ExprStmt{X: ex})
 		}
 		_ = want
 		_ = op
@@ -731,6 +736,22 @@ func (fl *funcLower) exprArrayLenSideEffects(e ast.Expr) (ir.Expr, []ir.Stmt, er
 		}
 	}
 	return fl.expr(e, nil)
+}
+
+// exprHasSideEffects reports IR that must run even when its value is discarded
+// (chan recv, calls, and other high ops expanded by RuntimeOps).
+func exprHasSideEffects(e ir.Expr) bool {
+	in, ok := e.(*ir.Instr)
+	if !ok {
+		return false
+	}
+	switch in.Op {
+	case ir.OpChanRecv, ir.OpChanSend, ir.OpCall, ir.OpCallRef,
+		ir.OpMapGet, ir.OpMapSet, ir.OpStore, ir.OpGlobalSet:
+		return true
+	default:
+		return false
+	}
 }
 
 // isSimpleName reports whether e (parens stripped) is a bare identifier —
@@ -884,8 +905,86 @@ func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
-	if want != nil {
+	if want != nil && isRefIR(want) {
 		irt = want
+	}
+	// new(expr) (Go 1.26+): allocate *T and store the evaluated expression.
+	// new(T) type form keeps the zero-init OpLiteral path.
+	if tv, ok := fl.info.Types[e.Args[0]]; ok && !tv.IsType() {
+		elemTy := fl.typeOf(e.Args[0])
+		if elemTy == nil {
+			if p, ok := types.Unalias(resTy).(*types.Pointer); ok {
+				elemTy = p.Elem()
+			}
+		}
+		elemIR, err := fl.mapType(elemTy)
+		if err != nil {
+			return nil, nil, fl.errorf(e.Args[0], "%v", err)
+		}
+		val, vstmts, err := fl.expr(e.Args[0], elemIR)
+		if err != nil {
+			return nil, nil, err
+		}
+		in := &ir.Instr{Op: ir.OpLiteral, Type: irt, Str: "new"}
+		if p, ok := types.Unalias(resTy).(*types.Pointer); ok {
+			if a, ok := types.Unalias(p.Elem()).Underlying().(*types.Array); ok {
+				in.I32 = int32(a.Len())
+			}
+		}
+		ptrT := fl.newTemp(irt)
+		var stmts []ir.Stmt
+		stmts = append(stmts, vstmts...)
+		stmts = append(stmts, fl.assignTemp(ptrT, in))
+		// *[N]T / *Struct share the object ref with T — copy into the fresh
+		// object (same as *p = v). OpStore is only for fat $go.ptr.* slots.
+		if isObjectPointer(resTy) {
+			if arr, ok := types.Unalias(elemTy).Underlying().(*types.Array); ok {
+				r, ok := elemIR.(*ir.Ref)
+				if !ok || r.Named == "" {
+					return nil, nil, fl.errorf(e, "new(expr): bad array type")
+				}
+				if _, _, err := fl.pkg.ensureArrayType(arr.Elem()); err != nil {
+					return nil, nil, err
+				}
+				rhsT := fl.newTemp(elemIR)
+				stmts = append(stmts, fl.assignTemp(rhsT, val))
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpArrayCopy, Type: elemIR, Type2: elemIR,
+					Args: []ir.Expr{
+						fl.useTemp(ptrT), fl.i32const(0),
+						fl.useTemp(rhsT), fl.i32const(0),
+						fl.i32const(arr.Len()),
+					},
+				}})
+				return fl.useTemp(ptrT), stmts, nil
+			}
+			r, ok := elemIR.(*ir.Ref)
+			if !ok || r.Named == "" {
+				return nil, nil, fl.errorf(e, "new(expr): bad struct type")
+			}
+			td := fl.mod.LookupType(r.Named)
+			if td == nil {
+				return nil, nil, fl.errorf(e, "new(expr): unknown type %s", r.Named)
+			}
+			rhsT := fl.newTemp(elemIR)
+			stmts = append(stmts, fl.assignTemp(rhsT, val))
+			for _, f := range td.Fields {
+				get := &ir.Instr{
+					Op: ir.OpStructGet, Type: elemIR, Field: f.Name,
+					Args: []ir.Expr{fl.useTemp(rhsT)},
+				}
+				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpStructSet, Type: elemIR, Field: f.Name,
+					Args: []ir.Expr{fl.useTemp(ptrT), get},
+				}})
+			}
+			return fl.useTemp(ptrT), stmts, nil
+		}
+		stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+			Op:   ir.OpStore,
+			Args: []ir.Expr{fl.useTemp(ptrT), val},
+		}})
+		return fl.useTemp(ptrT), stmts, nil
 	}
 	// literal … Str:"new" → RuntimeOps allocates (1-elem array + fat ptr, or struct).
 	in := &ir.Instr{Op: ir.OpLiteral, Type: irt, Str: "new"}

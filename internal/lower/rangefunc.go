@@ -26,8 +26,8 @@ import (
 // READY/DONE on continue/break; EXHAUSTED after iterator returns.
 // Double-yield after DONE/EXHAUSTED/PANIC calls runtime.panicrangestate.
 //
-// Follow-up: defer inside the range body should attach to the outer frame
-// (cmd/compile's deferrangefunc); skipped for this cut.
+// Defers inside the range body attach to the outer frame's shared defer list
+// cell (cmd/compile deferrangefunc).
 
 const (
 	rfDone         = 0
@@ -62,6 +62,7 @@ func (fl *funcLower) rangeFuncStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 	var resultObjs []types.Object
 	var resultTys []ir.Type
 	var resultGo []types.Type
+	var deferListObj types.Object
 	if len(fl.rangeFrames) == 0 {
 		retObj = fl.syntheticLocal("#rfret", types.Typ[types.Int32], ir.TypeI32)
 		fl.markAssigned(retObj)
@@ -77,8 +78,14 @@ func (fl *funcLower) rangeFuncStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 			for i := 0; i < fl.sig.Results().Len(); i++ {
 				r := fl.sig.Results().At(i)
 				ty := fl.results[i]
-				name := "#rfrv" + strconv.Itoa(i)
-				obj := fl.syntheticLocal(name, r.Type(), ty)
+				// Prefer the real named result (z, w in `func f() (z, w int)`)
+				// so assignments inside the yield body and a naked `return`
+				// share one cell (range4 func6 / issue named-return rangefunc).
+				var obj types.Object = r
+				if r.Name() == "" || fl.vars[r] == nil {
+					name := "#rfrv" + strconv.Itoa(i)
+					obj = fl.syntheticLocal(name, r.Type(), ty)
+				}
 				fl.markAssigned(obj)
 				cellName, err := fl.pkg.ensureCellType(ty)
 				if err != nil {
@@ -92,12 +99,24 @@ func (fl *funcLower) rangeFuncStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 				resultGo = append(resultGo, r.Type())
 			}
 		}
+		// Shared defer list only when the yield body has a defer
+		// (deferrangefunc). Eager install would force runtime.deferRun into
+		// every rangefunc, including e2e cases with no runtime EH stubs.
+		if rangeBodyHasDefer(s.Body) {
+			dobj, dstmts, err := fl.ensureDeferListObj()
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, dstmts...)
+			deferListObj = dobj
+		}
 	} else {
 		outer := fl.rangeFrames[0]
 		retObj = outer.retObj
 		resultObjs = outer.resultObjs
 		resultTys = outer.resultTys
 		resultGo = outer.resultGo
+		deferListObj = outer.deferListObj
 	}
 
 	stateObj := fl.syntheticLocal("#rfstate", types.Typ[types.Int32], ir.TypeI32)
@@ -122,13 +141,14 @@ func (fl *funcLower) rangeFuncStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 	}
 
 	rf := &rangeFrame{
-		stateObj:   stateObj,
-		retObj:     retObj,
-		resultObjs: resultObjs,
-		resultTys:  resultTys,
-		resultGo:   resultGo,
-		breakL:     breakL,
-		contL:      contL,
+		stateObj:     stateObj,
+		retObj:       retObj,
+		resultObjs:   resultObjs,
+		resultTys:    resultTys,
+		resultGo:     resultGo,
+		deferListObj: deferListObj,
+		breakL:       breakL,
+		contL:        contL,
 	}
 	fl.rangeFrames = append(fl.rangeFrames, rf)
 	defer func() {
@@ -308,7 +328,64 @@ func (fl *funcLower) appendRangeFrameCaptures(caps []captureInfo, rf *rangeFrame
 			return nil, err
 		}
 	}
+	if err := add(rf.deferListObj); err != nil {
+		return nil, err
+	}
 	return caps, nil
+}
+
+// rangeBodyHasDefer reports whether the range body contains a defer that
+// should attach to the outer frame (skip nested func literals).
+func rangeBodyHasDefer(body *ast.BlockStmt) bool {
+	if body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found || n == nil {
+			return false
+		}
+		switch n.(type) {
+		case *ast.DeferStmt:
+			found = true
+			return false
+		case *ast.FuncLit:
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// ensureDeferListObj creates a cell-backed $go.defer list shared with yield
+// bodies. Seeds from any defers already pushed onto defersVar.
+func (fl *funcLower) ensureDeferListObj() (types.Object, []ir.Stmt, error) {
+	if fl.deferListObj != nil {
+		return fl.deferListObj, nil, nil
+	}
+	fl.pkg.ensureDeferTypes()
+	deferIR := &ir.Ref{Null: true, Named: deferTypeName}
+	obj := fl.syntheticLocal("#rfdefers", types.Typ[types.UnsafePointer], deferIR)
+	fl.markAssigned(obj)
+	cellName, err := fl.pkg.ensureCellType(deferIR)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := fl.ensureLocalCell(obj, cellName, deferIR); err != nil {
+		return nil, nil, err
+	}
+	if fl.defersVar == nil {
+		fl.defersVar = fl.newVar("defers", deferIR)
+	}
+	fl.deferListObj = obj
+	fl.deferUsesList = true
+	fl.hasDefer = true
+	// Seed the cell from the current defer list (null or already-pushed).
+	ws, err := fl.writeVar(obj, fl.useVar(fl.defersVar))
+	if err != nil {
+		return nil, nil, err
+	}
+	return obj, ws, nil
 }
 
 func (fl *funcLower) callIterator(x ast.Expr, iterSig *types.Signature, yieldClos ir.Expr) (ir.Expr, []ir.Stmt, error) {

@@ -81,6 +81,12 @@ func (fl *funcLower) mapIndexCommaOk(s *ast.AssignStmt, e *ast.IndexExpr, out []
 	if len(s.Lhs) != 2 {
 		return nil, fl.errorf(s, "map comma-ok wants 2 LHS")
 	}
+	// Prepare *f()-style LHS before key/lookup (bug242: *f(), ok = m[gint()]).
+	preps, pstmts, err := fl.prepareParallelDests(s.Lhs)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, pstmts...)
 	mTy := fl.typeOf(e.X)
 	mIR, err := fl.mapType(mTy)
 	if err != nil {
@@ -137,11 +143,20 @@ func (fl *funcLower) mapIndexCommaOk(s *ast.AssignStmt, e *ast.IndexExpr, out []
 		},
 		Rhs: in,
 	})
-	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), elemT)
+	// Box when LHS is interface{} (issue16870: ok interface{}; _, ok = m[k]).
+	v0, err := fl.maybeBoxExpr(fl.useTemp(vt), elemT, s.Lhs[0])
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
+	v1, err := fl.maybeBoxExpr(fl.useTemp(ot), types.Typ[types.Bool], s.Lhs[1])
+	if err != nil {
+		return nil, err
+	}
+	as0, err := fl.commitParallelDest(preps[0], v0)
+	if err != nil {
+		return nil, err
+	}
+	as1, err := fl.commitParallelDest(preps[1], v1)
 	if err != nil {
 		return nil, err
 	}
@@ -373,11 +388,13 @@ func (fl *funcLower) rangeMapStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 		}
 	}
 
+	mV := fl.newVar("mmap", xIR)
+	out = append(out, fl.assignVar(mV, x))
 	itV := fl.newVar("mit", &ir.Ref{Null: true, Named: "$go.mapIter"})
 	out = append(out, fl.assignVar(itV, &ir.Instr{
 		Op:   ir.OpMapIter,
 		Type: itV.Typ,
-		Args: []ir.Expr{x},
+		Args: []ir.Expr{fl.useVar(mV)},
 	}))
 
 	var keyVar, valVar *ir.Var
@@ -429,7 +446,7 @@ func (fl *funcLower) rangeMapStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 	next := &ir.Instr{
 		Op:   ir.OpMapNext,
 		Type: typeIface,
-		Args: []ir.Expr{fl.useVar(itV)},
+		Args: []ir.Expr{fl.useVar(mV), fl.useVar(itV)},
 	}
 	if keyT != nil {
 		next.Str = desc.TypeKey(keyT)

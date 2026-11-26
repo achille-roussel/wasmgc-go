@@ -210,14 +210,19 @@ func (rt *runtimeLower) expandMapIter(s *ir.Assign, in *ir.Instr, n *int) ([]ir.
 }
 
 func (rt *runtimeLower) expandMapNext(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt, error) {
-	if len(in.Args) < 1 {
-		return nil, fmt.Errorf("map.next: want iter")
+	if len(in.Args) < 2 {
+		return nil, fmt.Errorf("map.next: want map, iter")
 	}
-	it, pre, err := rt.rewriteExpr(in.Args[0], n)
+	m, pre, err := rt.rewriteExpr(in.Args[0], n)
 	if err != nil {
 		return nil, err
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: "runtime.mapIterNext", Args: []ir.Expr{it}}
+	it, ipre, err := rt.rewriteExpr(in.Args[1], n)
+	if err != nil {
+		return nil, err
+	}
+	pre = append(pre, ipre...)
+	call := &ir.Instr{Op: ir.OpCall, Func: "runtime.mapIterNext", Args: []ir.Expr{m, it}}
 	if s != nil && len(s.Lhs) > 0 {
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: call})
 	}

@@ -77,16 +77,22 @@ func EnsurePanic(mod *ir.Module, rewriteDir string) error {
 		if err := lower.AppendFiles(mod, fset, files, pkg, info); err != nil {
 			return fmt.Errorf("rtlink: lower panic_index.go: %w", err)
 		}
-		// Keep prior funcs; add only panicIndex/panicSliceToArray/itoa/digit.
+		// Keep prior funcs; add panicIndex* / panicBounds / itoa helpers.
 		index := map[string]*ir.Func{}
 		for _, f := range mod.Funcs {
 			switch f.Name {
-			case "runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit":
+			case "runtime.panicIndex", "runtime.panicIndexU", "runtime.panicBounds",
+				"runtime.panicSliceToArray", "runtime.itoa", "runtime.itoa64",
+				"runtime.uitoa", "runtime.digit":
 				index[f.Name] = f
 			}
 		}
 		mod.Funcs = prior
-		for _, name := range []string{"runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit"} {
+		for _, name := range []string{
+			"runtime.panicIndex", "runtime.panicIndexU", "runtime.panicBounds",
+			"runtime.panicSliceToArray", "runtime.itoa", "runtime.itoa64",
+			"runtime.uitoa", "runtime.digit",
+		} {
 			if f := index[name]; f != nil && mod.LookupFunc(name) == nil {
 				mod.Funcs = append(mod.Funcs, f)
 			}
@@ -132,7 +138,8 @@ func scanPanicIndex(mod *ir.Module) bool {
 	need := false
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
-			if name == "runtime.panicIndex" || name == "runtime.panicSliceToArray" {
+			if name == "runtime.panicIndex" || name == "runtime.panicIndexU" ||
+				name == "runtime.panicBounds" || name == "runtime.panicSliceToArray" {
 				need = true
 			}
 		})
@@ -181,6 +188,8 @@ var panicSyms = []string{
 	"runtime.goexit",
 	"runtime.unrecoveredPanic",
 	"runtime.panicIndex",
+	"runtime.panicIndexU",
+	"runtime.panicBounds",
 	"runtime.panicSliceToArray",
 	"runtime.panicSliceB",
 	"runtime.panicNil",
@@ -227,6 +236,8 @@ func stripPanicFuncs(mod *ir.Module) {
 		names[s] = true
 	}
 	names["runtime.itoa"] = true
+	names["runtime.itoa64"] = true
+	names["runtime.uitoa"] = true
 	names["runtime.digit"] = true
 	// plainError methods + ctor ship in panic.go; drop before re-AppendFiles
 	// so PackageHigh + EnsurePanic do not duplicate.
@@ -257,10 +268,14 @@ func scanCallsName(mod *ir.Module, want string) bool {
 
 func stripPanicIndexFuncs(mod *ir.Module) {
 	names := map[string]bool{
-		"runtime.panicIndex":       true,
+		"runtime.panicIndex":        true,
+		"runtime.panicIndexU":       true,
+		"runtime.panicBounds":       true,
 		"runtime.panicSliceToArray": true,
-		"runtime.itoa":             true,
-		"runtime.digit":            true,
+		"runtime.itoa":              true,
+		"runtime.itoa64":            true,
+		"runtime.uitoa":             true,
+		"runtime.digit":             true,
 	}
 	out := mod.Funcs[:0]
 	for _, f := range mod.Funcs {
