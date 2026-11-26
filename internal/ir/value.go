@@ -16,8 +16,9 @@ func (v *Var) String() string {
 }
 
 // Temp is a single-assignment name produced by an instruction (%0, %1, …).
-// The verifier requires every use to be inside the same straight-line
-// region that defined it. A temp does not survive a region boundary.
+// Uses must be dominated by the definition. Outer temps are visible inside
+// nested Block/Loop/If/Switch/Try/Dispatch regions (they lower to function
+// locals); temps defined inside a nested region do not escape it.
 type Temp struct {
 	Name string // including leading '%', e.g. "%0"
 	Typ  Type   // set by verifier or explicit assignment

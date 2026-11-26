@@ -8,8 +8,9 @@ type Region interface {
 }
 
 // Seq is a straight-line sequence of statements. Temps defined in a Seq
-// are visible only to later statements in the same Seq; they do not
-// survive into a nested region or past the Seq's end.
+// are visible to later statements in the same Seq and to nested regions
+// entered after the definition (outer temps lower to function locals).
+// Temps defined inside a nested region do not escape that region.
 type Seq struct {
 	Stmts []Stmt
 	Pos   Pos

@@ -2,7 +2,8 @@
 //
 // The IR is a tree of regions (seq, block, loop, if, switch, try, dispatch),
 // not a CFG. Values are mutable vars (Wasm locals) and single-assignment
-// temps that do not cross region boundaries. High-level ops (map.get, panic,
+// temps (outer temps are readable in nested regions; temps defined inside
+// a nested region do not escape it). High-level ops (map.get, panic,
 // …) are rewritten by the runtime-lowering pass; a module marked Low must
 // contain only low ops that codegen can emit.
 //

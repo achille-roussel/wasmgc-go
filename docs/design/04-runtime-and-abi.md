@@ -50,7 +50,13 @@ The mechanism is the exception-handling proposal: one tag, `try_table`, `catch_r
 
 ### Frame shape
 
-A function that contains a `defer` lowers to the nesting in the prototype. The defer list is a local, a linked list of closures pushed at the `defer` statement. Argument expressions are evaluated at the `defer`, not at the call, and stored in the closure. On the normal return the function calls `runtime.deferRun` and then returns. On the catch path it calls `runtime.deferRun` and then returns or rethrows.
+A function that contains a `defer` lowers to the nesting in the prototype. Argument expressions are evaluated at the `defer`, not at the call, and stored in the closure.
+
+**Open-coded vs list.** A fixed set of defers (none inside a loop) can become direct `call_ref` / `call` sequences at every exit. The loop / dynamic path pushes onto a per-frame `$go.defer` list (initialized `null`, appended lazily at each `defer`) and calls `runtime.deferRun`. Yield / rangefunc bodies that share a frame keep the authoritative list in a cell (`deferListObj`) so appends from nested regions stay visible.
+
+**Named-result reload.** After `deferRun` on the normal return path, named results are re-read so mutations such as `defer func(){ a++ }()` apply before the Wasm `return`. Cell-boxed named results (escaped into closures or goroutines) are synced cell→plain on both the return path and the catch path after recover, so a recover defer that wrote through the cell is visible to the caller. Cell allocations are hoisted out of the `try` body so the catch handler can still touch them.
+
+**Catch path.** The handler re-installs the caught panic on `$g` before walking remaining defers. The defer list is snapshotted and the frame list nulled before `deferRun` so an unrecovered rethrow does not double-fire the same nodes. Nested panics from inside a deferred call are new `$go.panic` objects; `$g.deferDepth` / `deferStartDepth` and `panicObj.depth` decide whether `defer recover()` may observe an outer-frame panic (same-frame panic stays a no-op). An unrecovered panic after the catch-path `deferRun` is rethrown unless it is the same panic that was already pending at try entry (inherited outer panic after a nested recover).
 
 `runtime.deferRun` walks the list from the head (LIFO). For each node it sets `$g.recoverOk` to 1, clears it in the deferred function's prologue, and calls the closure. The prologue rule, which every function that contains `recover` executes:
 
@@ -60,8 +66,6 @@ struct.set recoverOk of $g to 0
 ```
 
 `recover` returns the current panic value only when its function's `$allow` local is 1, and sets `recovered` on the panic object. A helper called from a deferred function sees `$allow == 0` because the deferred function cleared the global before the call. That is the spec rule that `recover` works only when called directly by a deferred function. Functions that do not contain `recover` and whose callees are all known not to contain it skip the prologue; the dead-code pass deletes it.
-
-A panic inside a deferred call is a new `$go.panic` thrown from inside `deferRun`'s own `try`. The new object becomes the one `deferRun` is propagating, and the remaining defers still run. A `recover` in a later defer (an earlier one, since the walk is LIFO) observes the new panic. This is the Go nesting, with the exception as the unwinder.
 
 A function with no defer and no `recover` has no `try`. Index and nil panics are `throw` of a panic object built at the check.
 

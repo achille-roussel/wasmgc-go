@@ -59,12 +59,12 @@ func TestVerifyErrors(t *testing.T) {
 			"not in scope",
 		},
 		{
-			// Temps do not enter nested regions; resolve rejects the use.
+			// Temps defined inside a nested region do not escape it.
 			`func f() {
-  %0 = i32.add 1, 2
   block $b {
-    %1 = i32.add %0, 1
+    %0 = i32.add 1, 2
   }
+  %1 = i32.add %0, 1
   return
 }`,
 			"undefined temp",

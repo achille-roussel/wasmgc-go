@@ -1,9 +1,10 @@
 # Hard ceilings (names off). Fail CI if a build exceeds the budget.
-# M10: generous headroom — size corpus is a loose regression guard only.
-# Reflect Method/REFLECTMETHOD keeps method graphs live (~2× fmt corpus).
+# Method/REFLECTMETHOD prune restored (~294 KiB hello vs ~610 KiB with #70's
+# always-on Method tables). Remaining headroom vs pre-#66 (~127 KiB) is
+# justified by #66–#71 defer/reflect/stdlib growth, not method reachability.
 empty_main	512
 println	2048
-m8_fmt_hello	700000
-m8_fmt_map	720000
-m8_fmt_float	740000
-m8_fmt_quote	720000
+m8_fmt_hello	320000
+m8_fmt_map	350000
+m8_fmt_float	370000
+m8_fmt_quote	340000

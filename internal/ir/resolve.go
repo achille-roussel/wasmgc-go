@@ -118,8 +118,9 @@ func resolveRegion(r Region, vars map[string]*Var, temps map[string]*Temp, types
 	}
 	switch r := r.(type) {
 	case *Seq:
-		// Temps in a seq are scoped to the seq. Child regions get a
-		// copy of vars but a fresh empty temp map.
+		// Temps defined in this Seq accumulate for later stmts and nested
+		// regions (outer temps → function locals; #52). Clone so we do not
+		// mutate the caller's map.
 		localTemps := cloneTempMap(temps)
 		for _, s := range r.Stmts {
 			if err := resolveStmt(s, vars, localTemps, types); err != nil {
@@ -130,22 +131,21 @@ func resolveRegion(r Region, vars map[string]*Var, temps map[string]*Temp, types
 		for _, p := range r.Params {
 			vars[p.Name] = p
 		}
-		childTemps := map[string]*Temp{}
-		return resolveRegion(r.Body, vars, childTemps, types)
+		return resolveRegion(r.Body, vars, cloneTempMap(temps), types)
 	case *Loop:
 		for _, p := range r.Params {
 			vars[p.Name] = p
 		}
-		return resolveRegion(r.Body, vars, map[string]*Temp{}, types)
+		return resolveRegion(r.Body, vars, cloneTempMap(temps), types)
 	case *If:
 		if err := resolveExpr(r.Cond, vars, temps); err != nil {
 			return err
 		}
-		if err := resolveRegion(r.Then, vars, map[string]*Temp{}, types); err != nil {
+		if err := resolveRegion(r.Then, vars, cloneTempMap(temps), types); err != nil {
 			return err
 		}
 		if r.Else != nil {
-			if err := resolveRegion(r.Else, vars, map[string]*Temp{}, types); err != nil {
+			if err := resolveRegion(r.Else, vars, cloneTempMap(temps), types); err != nil {
 				return err
 			}
 		}
@@ -154,24 +154,24 @@ func resolveRegion(r Region, vars map[string]*Var, temps map[string]*Temp, types
 			return err
 		}
 		for i := range r.Cases {
-			if err := resolveRegion(r.Cases[i].Body, vars, map[string]*Temp{}, types); err != nil {
+			if err := resolveRegion(r.Cases[i].Body, vars, cloneTempMap(temps), types); err != nil {
 				return err
 			}
 		}
 		if r.Default != nil {
-			if err := resolveRegion(r.Default, vars, map[string]*Temp{}, types); err != nil {
+			if err := resolveRegion(r.Default, vars, cloneTempMap(temps), types); err != nil {
 				return err
 			}
 		}
 	case *Try:
-		if err := resolveRegion(r.Body, vars, map[string]*Temp{}, types); err != nil {
+		if err := resolveRegion(r.Body, vars, cloneTempMap(temps), types); err != nil {
 			return err
 		}
 		hvars := cloneVarMap(vars)
 		for _, p := range r.Params {
 			hvars[p.Name] = p
 		}
-		return resolveRegion(r.Handler, hvars, map[string]*Temp{}, types)
+		return resolveRegion(r.Handler, hvars, cloneTempMap(temps), types)
 	case *Dispatch:
 		if r.State != nil {
 			vars[r.State.Name] = r.State
@@ -180,7 +180,7 @@ func resolveRegion(r Region, vars map[string]*Var, temps map[string]*Temp, types
 			if a == nil {
 				continue
 			}
-			if err := resolveRegion(a, vars, map[string]*Temp{}, types); err != nil {
+			if err := resolveRegion(a, vars, cloneTempMap(temps), types); err != nil {
 				return err
 			}
 		}
@@ -191,7 +191,7 @@ func resolveRegion(r Region, vars map[string]*Var, temps map[string]*Temp, types
 func resolveStmt(s Stmt, vars map[string]*Var, temps map[string]*Temp, types map[string]*TypeDef) error {
 	switch s := s.(type) {
 	case Region:
-		return resolveRegion(s, vars, map[string]*Temp{}, types)
+		return resolveRegion(s, vars, temps, types)
 	case *VarDef:
 		if _, ok := vars[s.Var.Name]; ok {
 			return &Error{Pos: s.Pos, Msg: fmt.Sprintf("duplicate var %s", s.Var.Name)}
