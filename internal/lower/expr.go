@@ -3187,6 +3187,13 @@ func (fl *funcLower) lowerArgsWithSig(e *ast.CallExpr, sig *types.Signature) ([]
 			return nil, nil, err
 		}
 		stmts = append(stmts, st...)
+		// Fresh temp per string argument so a later local (e.g. if-init s :=
+		// tc.r.Replace(tc.in)) cannot alias the same lowering as a later call.
+		if want != nil && ir.TypesEqual(want, typeString) {
+			tmp := fl.newTemp(want)
+			stmts = append(stmts, fl.assignTemp(tmp, ex))
+			ex = fl.useTemp(tmp)
+		}
 		args = append(args, ex)
 	}
 
