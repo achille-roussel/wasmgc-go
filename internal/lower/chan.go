@@ -28,8 +28,14 @@ func (fl *funcLower) sendStmt(s *ast.SendStmt) ([]ir.Stmt, error) {
 	var val ir.Expr
 	var vstmts []ir.Stmt
 	if elem != nil {
-		emptyIface := types.NewInterfaceType(nil, nil)
-		val, vstmts, err = fl.convertToIface(s.Value, fl.typeOf(s.Value), emptyIface, typeIface)
+		// Box to the channel element interface when it is one (issue43292:
+		// chan I must carry I-itabs so recv+method call can cast itabtype).
+		// Concrete element types still travel as any and are asserted on recv.
+		var dstIface types.Type = types.NewInterfaceType(nil, nil)
+		if isIface(elem) {
+			dstIface = elem
+		}
+		val, vstmts, err = fl.convertToIface(s.Value, fl.typeOf(s.Value), dstIface, typeIface)
 	} else {
 		val, vstmts, err = fl.expr(s.Value, typeIface)
 	}
@@ -118,6 +124,12 @@ func (fl *funcLower) multiAssignRecv(s *ast.AssignStmt, recv *ast.UnaryExpr, out
 	if fl.pkg.meta != nil {
 		fl.pkg.meta.needsSched = true
 	}
+	// LHS destinations before the channel operand (bug242: *f(), ok = <-e1(c, n)).
+	preps, pstmts, err := fl.prepareParallelDests(s.Lhs)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, pstmts...)
 	chTy := fl.typeOf(recv.X)
 	chIR, err := fl.mapType(chTy)
 	if err != nil {
@@ -159,11 +171,19 @@ func (fl *funcLower) multiAssignRecv(s *ast.AssignStmt, recv *ast.UnaryExpr, out
 		},
 		Rhs: ex,
 	})
-	as0, err := fl.assignToMaybeBox(s.Lhs[0], fl.useTemp(vt), elemGo)
+	v0, err := fl.maybeBoxExpr(fl.useTemp(vt), elemGo, s.Lhs[0])
 	if err != nil {
 		return nil, err
 	}
-	as1, err := fl.assignToMaybeBox(s.Lhs[1], fl.useTemp(ot), types.Typ[types.Bool])
+	v1, err := fl.maybeBoxExpr(fl.useTemp(ot), types.Typ[types.Bool], s.Lhs[1])
+	if err != nil {
+		return nil, err
+	}
+	as0, err := fl.commitParallelDest(preps[0], v0)
+	if err != nil {
+		return nil, err
+	}
+	as1, err := fl.commitParallelDest(preps[1], v1)
 	if err != nil {
 		return nil, err
 	}
@@ -310,8 +330,12 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 			}
 			out = append(out, stmts...)
 			chEx = ch
-			emptyIface := types.NewInterfaceType(nil, nil)
-			ev, estmts, err := fl.convertToIface(meta.send.Value, fl.typeOf(meta.send.Value), emptyIface, typeIface)
+			elemGo := chanElem(chTy)
+			var dstIface types.Type = types.NewInterfaceType(nil, nil)
+			if elemGo != nil && isIface(elemGo) {
+				dstIface = elemGo
+			}
+			ev, estmts, err := fl.convertToIface(meta.send.Value, fl.typeOf(meta.send.Value), dstIface, typeIface)
 			if err != nil {
 				return nil, err
 			}
@@ -422,10 +446,48 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 			} else {
 				elemGo := chanElem(fl.typeOf(meta.recvExpr.X))
 				dstGo := fl.typeOf(lhs0)
-				if dstGo != nil && isIface(dstGo) && elemGo != nil && !isIface(elemGo) {
-					// Interface LHS: selectGo returns nil iface on closed recv,
-					// but Go wants a typed zero. Start with boxed zero; overwrite
-					// with the runtime iface when the receive succeeded.
+				switch {
+				case elemGo != nil && isIface(elemGo):
+					// Chan of interface: selectGo already returns the element
+					// iface. Do not concrete-assert to the iface type name
+					// (powser2: chan item → it = <-dat[i] was "ptr, not item").
+					valTy, err := fl.lhsType(lhs0)
+					if err != nil {
+						return nil, err
+					}
+					z, err := fl.zeroValue(valTy)
+					if err != nil {
+						return nil, err
+					}
+					as0, err := fl.assignTo(lhs0, z)
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, as0...)
+					var got ir.Expr = fl.useVar(recvIface)
+					if dstGo != nil && isIface(dstGo) && !types.Identical(types.Unalias(elemGo), types.Unalias(dstGo)) {
+						got = &ir.Instr{
+							Op:     ir.OpIfaceAssert,
+							Type:   valTy,
+							Global: desc.TypeKey(dstGo),
+							Str:    "iface",
+							Args:   []ir.Expr{fl.useVar(recvIface)},
+						}
+					}
+					asOK, err := fl.assignTo(lhs0, got)
+					if err != nil {
+						return nil, err
+					}
+					body.Stmts = append(body.Stmts, &ir.If{
+						Cond: fl.useVar(recvOK),
+						Then: &ir.Seq{Stmts: asOK},
+						Else: &ir.Seq{},
+					})
+				case dstGo != nil && isIface(dstGo) && elemGo != nil && !isIface(elemGo):
+					// Interface LHS, concrete chan elem: selectGo returns nil
+					// iface on closed recv, but Go wants a typed zero. Start
+					// with boxed zero; overwrite with the runtime iface when
+					// the receive succeeded.
 					elemIR, err := fl.mapType(elemGo)
 					if err != nil {
 						return nil, err
@@ -448,7 +510,7 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 						Then: &ir.Seq{Stmts: asOK},
 						Else: &ir.Seq{},
 					})
-				} else {
+				default:
 					// Concrete LHS: closed recv may yield a nil iface
 					// (defaultChanOps.zero). Match expandChanRecv — assign
 					// element zero, then iface-assert only when recvOK.

@@ -57,6 +57,13 @@ func collectAddrs(r ir.Region, addrs map[string]*addrInfo) {
 		} else if as.Lhs[0].Var != nil {
 			name = as.Lhs[0].Var.Name
 		}
+		// Reassigned pointer (p=&x; if c { p=&y }; *p=1): cannot rewrite
+		// *p through a single static addr (issue81863). Keep dynamic fat ptrs.
+		if prev, ok := addrs[name]; ok && prev.instr != in {
+			prev.escapes = true
+			in.I32 = 1
+			return
+		}
 		addrs[name] = &addrInfo{instr: in, name: name}
 	})
 }

@@ -333,6 +333,35 @@ func (fe *funcEmitter) blockType(results []ir.Type) (wasm.BlockType, error) {
 	return wasm.BlockTypeIndex(idx), nil
 }
 
+// exprIsI64 reports whether e produces an i64 on the stack. Used by dense
+// switches: Wasm br_table needs i32, so i64 tags are subtracted then wrapped.
+func exprIsI64(e ir.Expr) bool {
+	switch e := e.(type) {
+	case *ir.Name:
+		if e.Var != nil {
+			return e.Var.Typ == ir.TypeI64
+		}
+		if e.Temp != nil {
+			return e.Temp.Typ == ir.TypeI64
+		}
+	case *ir.Const:
+		return e.Op == ir.OpI64Const
+	case *ir.Instr:
+		if e.Type == ir.TypeI64 {
+			return true
+		}
+		switch e.Op {
+		case ir.OpI64Const, ir.OpI64Add, ir.OpI64Sub, ir.OpI64Mul,
+			ir.OpI64DivS, ir.OpI64DivU, ir.OpI64RemS, ir.OpI64RemU,
+			ir.OpI64And, ir.OpI64Or, ir.OpI64Xor, ir.OpI64Shl,
+			ir.OpI64ShrS, ir.OpI64ShrU, ir.OpI64Rotl, ir.OpI64Rotr,
+			ir.OpI64ExtendI32S, ir.OpI64ExtendI32U:
+			return true
+		}
+	}
+	return false
+}
+
 func (fe *funcEmitter) emitSwitch(r *ir.Switch) error {
 	if !r.Dense {
 		return fmt.Errorf("non-dense switch; lowerer should emit if-chain")
@@ -378,7 +407,16 @@ func (fe *funcEmitter) emitSwitch(r *ir.Switch) error {
 	if err := fe.emitExpr(r.Tag); err != nil {
 		return err
 	}
-	if min != 0 {
+	// br_table consumes i32. Dense switches on int64/uint64 (e.g. chan/powser
+	// end()+2*end()) must subtract the base in i64, then wrap — wrapping first
+	// would truncate large bases, and emitting i32.sub on an i64 tag fails validate.
+	if exprIsI64(r.Tag) {
+		if min != 0 {
+			fe.enc.I64Const(min)
+			fe.enc.I64Sub()
+		}
+		fe.enc.I32WrapI64()
+	} else if min != 0 {
 		fe.enc.I32Const(int32(min))
 		fe.enc.I32Sub()
 	}

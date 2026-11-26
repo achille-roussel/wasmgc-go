@@ -292,14 +292,15 @@ func TestM5RecoverPanicE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	runM2(t, "recover_panic", "boom\n", 8192)
+	// panicBounds / deferStartDepth grow EH + deferRun (~10KiB names-off).
+	runM2(t, "recover_panic", "boom\n", 12288)
 }
 
 func TestM5RePanicE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	runM2(t, "re_panic", "again\n", 8192)
+	runM2(t, "re_panic", "again\n", 12288)
 }
 
 func TestM5IndexRecoverE2E(t *testing.T) {

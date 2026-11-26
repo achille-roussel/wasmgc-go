@@ -76,7 +76,9 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 		index := map[string]*ir.Func{}
 		for _, f := range mod.Funcs {
 			switch f.Name {
-			case "runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit":
+			case "runtime.panicIndex", "runtime.panicIndexU", "runtime.panicBounds",
+				"runtime.panicSliceToArray", "runtime.itoa", "runtime.itoa64",
+				"runtime.uitoa", "runtime.digit":
 				index[f.Name] = f
 			}
 		}
@@ -86,7 +88,11 @@ func EnsureMaps(mod *ir.Module, rewriteDir string) error {
 				mod.Funcs = append(mod.Funcs, f)
 			}
 		}
-		for _, name := range []string{"runtime.panicIndex", "runtime.panicSliceToArray", "runtime.itoa", "runtime.digit"} {
+		for _, name := range []string{
+			"runtime.panicIndex", "runtime.panicIndexU", "runtime.panicBounds",
+			"runtime.panicSliceToArray", "runtime.itoa", "runtime.itoa64",
+			"runtime.uitoa", "runtime.digit",
+		} {
 			if f := index[name]; f != nil && mod.LookupFunc(name) == nil {
 				mod.Funcs = append(mod.Funcs, f)
 			}

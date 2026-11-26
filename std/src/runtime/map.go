@@ -24,23 +24,25 @@ const (
 // hmap is $go.hmap (03). Keys and vals are boxed as any; typed arrays are a
 // later size win. used is field 0 so len can be a struct.get.
 type hmap struct {
-	used    int32
-	seed    uint32
-	mask    int32 // cap-1; 0 when table is nil
-	writing int32 // 1 while a write is in progress
-	ctrl    []uint8
-	keys    []any
-	vals    []any
+	used     int32
+	seed     uint32
+	mask     int32 // cap-1; 0 when table is nil
+	writing  int32 // 1 while a write is in progress
+	ctrl     []uint8
+	keys     []any
+	vals     []any
+	clearSeq int32 // bumped by mapClear; iterators stop when mismatched
 }
 
 // mapIter holds a snapshot of the table arrays so growth during range is safe.
 type mapIter struct {
-	keys  []any
-	vals  []any
-	ctrl  []uint8
-	start int32
-	i     int32 // steps taken
-	n     int32 // table length
+	keys     []any
+	vals     []any
+	ctrl     []uint8
+	start    int32
+	i        int32 // steps taken
+	n        int32 // table length
+	clearSeq int32 // h.clearSeq at start; mapIterNext compares against h
 }
 
 // makemap allocates a map. hint 0 leaves the table nil until first insert.
@@ -256,6 +258,7 @@ func mapClear(h *hmap) {
 		h.vals[i] = nil
 	}
 	h.used = 0
+	h.clearSeq++
 	h.writing = 0
 }
 
@@ -279,17 +282,22 @@ func mapIterStart(h *hmap) *mapIter {
 		start = int32(fastrandn(uint32(n)))
 	}
 	return &mapIter{
-		keys:  h.keys,
-		vals:  h.vals,
-		ctrl:  h.ctrl,
-		start: start,
-		n:     n,
+		keys:     h.keys,
+		vals:     h.vals,
+		ctrl:     h.ctrl,
+		start:    start,
+		n:        n,
+		clearSeq: h.clearSeq,
 	}
 }
 
 // mapIterNext returns the next full slot, skipping tombstones.
-func mapIterNext(it *mapIter) (key, val any, ok bool) {
+// After clear(m) during range, iteration stops (issue70189 / issue59411).
+func mapIterNext(h *hmap, it *mapIter) (key, val any, ok bool) {
 	if it == nil || it.n == 0 {
+		return nil, nil, false
+	}
+	if h != nil && it.clearSeq != h.clearSeq {
 		return nil, nil, false
 	}
 	for it.i < it.n {

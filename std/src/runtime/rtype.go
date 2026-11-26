@@ -89,6 +89,10 @@ func ReflectComplex64(data unsafe.Pointer) complex128
 // Body-less: desc fills the IR.
 func ReflectComplex128(data unsafe.Pointer) complex128
 
+// ReflectSetComplex copies src's real/imag into dst (both $go.complex* refs).
+// Body-less: desc fills the IR. Used by reflect.Value.SetComplex on New().Elem().
+func ReflectSetComplex(dst, src unsafe.Pointer)
+
 // ReflectMapLen returns len of a map whose data word is an hmap ref.
 // Body requires hmap from map.go — EnsureReflect typechecks them together.
 func ReflectMapLen(data unsafe.Pointer) int {
@@ -121,6 +125,26 @@ func ReflectMapPairs(data unsafe.Pointer) (keys, vals []any) {
 		}
 	}
 	return keys, vals
+}
+
+// ReflectMapClear empties a map (reflect.Value.Clear).
+func ReflectMapClear(data unsafe.Pointer) {
+	if data == nil {
+		return
+	}
+	mapClear((*hmap)(data))
+}
+
+// ReflectMapClearSeq returns h.clearSeq so MapRange can stop after Clear.
+func ReflectMapClearSeq(data unsafe.Pointer) int32 {
+	if data == nil {
+		return 0
+	}
+	h := (*hmap)(data)
+	if h == nil {
+		return 0
+	}
+	return h.clearSeq
 }
 
 // ReflectIface returns a non-nil interface from a type descriptor and data word.
@@ -166,6 +190,11 @@ func ReflectMapElem(extra unsafe.Pointer) *Rtype
 // ReflectSliceOf returns the descriptor for []T given T's descriptor.
 // Body-less: desc fills an id→global.get table over the closed universe.
 func ReflectSliceOf(t *Rtype) *Rtype
+
+// ReflectArrayOf returns the descriptor for [n]T when that array type is
+// already in the program (Wasm GC cannot mint array types at run time).
+// Body-less: desc fills from types present after closeUniverse.
+func ReflectArrayOf(n int, t *Rtype) *Rtype
 
 // ReflectImplements reports whether concrete type t implements interface u.
 // Body-less: desc fills from emitted itabs ($go.itab.<iface>.@.<concrete>).

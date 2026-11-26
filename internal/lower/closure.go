@@ -250,16 +250,27 @@ func (fl *funcLower) planCaptures(free []types.Object) ([]captureInfo, error) {
 			typ:  ty,
 		}
 		if byRef {
-			cell, err := fl.pkg.ensureCellType(ty)
-			if err != nil {
-				return nil, err
-			}
-			c.cell = true
-			c.cellTy = cell
-			c.irTyp = &ir.Ref{Named: cell}
-			// Ensure the enclosing local is a cell.
-			if err := fl.ensureLocalCell(obj, cell, ty); err != nil {
-				return nil, err
+			// Prefer an already-installed cell (e.g. #rfdefers is IR-typed as
+			// refnull $go.defer while its Go type is unsafe.Pointer → any).
+			if cv, ok := fl.cells[obj]; ok {
+				cellTy, _ := cv.Typ.(*ir.Ref)
+				c.cell = true
+				c.cellTy = cellTy.Named
+				c.irTyp = cv.Typ
+				if v := fl.vars[obj]; v != nil {
+					c.typ = v.Typ
+				}
+			} else {
+				cell, err := fl.pkg.ensureCellType(ty)
+				if err != nil {
+					return nil, err
+				}
+				c.cell = true
+				c.cellTy = cell
+				c.irTyp = &ir.Ref{Named: cell}
+				if err := fl.ensureLocalCell(obj, cell, ty); err != nil {
+					return nil, err
+				}
 			}
 		} else {
 			c.irTyp = ty

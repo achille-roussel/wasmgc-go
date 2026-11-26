@@ -10,7 +10,6 @@ TestCompactBig — lower/runtime/reflect gaps in encoding/json tests
 TestDecodeInStream — lower/runtime/reflect gaps in encoding/json tests
 TestDecoder — lower/runtime/reflect gaps in encoding/json tests
 TestDecoderMaxBytesError — lower/runtime/reflect gaps in encoding/json tests
-TestEmptyStructs — lower/runtime/reflect gaps in encoding/json tests
 TestEncodePointerString — lower/runtime/reflect gaps in encoding/json tests
 TestEncoder — lower/runtime/reflect gaps in encoding/json tests
 TestEncoderErrorAndReuseEncodeState — lower/runtime/reflect gaps in encoding/json tests
@@ -35,7 +34,6 @@ TestMergeComposite — lower/runtime/reflect gaps in encoding/json tests
 TestNilMarshalerTextMapKey — lower/runtime/reflect gaps in encoding/json tests
 TestNullRawMessage — lower/runtime/reflect gaps in encoding/json tests
 TestNumberIsValid — lower/runtime/reflect gaps in encoding/json tests
-TestOmitEmpty — lower/runtime/reflect gaps in encoding/json tests
 TestOmitEmptyOption — lower/runtime/reflect gaps in encoding/json tests
 TestOmitEmptyZero — lower/runtime/reflect gaps in encoding/json tests
 TestOmitZero — lower/runtime/reflect gaps in encoding/json tests

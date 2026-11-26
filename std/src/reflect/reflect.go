@@ -296,6 +296,11 @@ func (v Value) Interface() any {
 			return runtime.ReflectIface(v.typ.rt, clos)
 		}
 	}
+	// Defined named types (PkgPath set) must keep their identity in any —
+	// fmt Scan DeepEqual(renamedBool(true), …) fails if we widen to bool.
+	if v.typ != nil && v.typ.PkgPath() != "" && v.typ.rt != nil {
+		return runtime.ReflectIface(v.typ.rt, v.dataWord())
+	}
 	// Scalars/strings may live in mutable boxes (New().Elem(), fields).
 	// Interface must return a snapshot so map storage / any assignment
 	// does not alias the box (json SetMapIndex, MapIndex round-trips).
@@ -371,11 +376,12 @@ func (v Value) Elem() Value {
 		}
 		// ValueOf(&localMap): *map is $go.ptr.ref (not New's $go.box.ref).
 		// Scalars use typed boxes (New) or $go.ptr.i32 fat pointers
-		// (ValueOf(&local)) — Unbox/SetBox accept both shapes. Structs/arrays
-		// use the object ref itself as *T. Pointer too: ValueOf(&errP).Elem()
-		// for var errP *T must load through the fat pointer (errors.As).
+		// (ValueOf(&local)) — Unbox/SetBox accept both shapes. Complex uses
+		// $go.ptr.ref (cell holds $go.complex*). Structs/arrays use the object
+		// ref itself as *T. Pointer too: ValueOf(&errP).Elem() for var errP *T
+		// must load through the fat pointer (errors.As).
 		switch elem.Kind() {
-		case Map, Slice, Interface, Chan, Func, Pointer:
+		case Map, Slice, Interface, Chan, Func, Pointer, Complex64, Complex128:
 			fl |= flagFatPtr
 		}
 		return Value{typ: elem, data: v.data, flag: fl}
@@ -586,14 +592,17 @@ func (v Value) MapRange() *MapIter {
 	if v.Kind() != Map {
 		panic("reflect: MapRange of non-map type")
 	}
-	keys, vals := runtime.ReflectMapPairs(v.dataWord())
+	data := v.dataWord()
+	keys, vals := runtime.ReflectMapPairs(data)
 	extra := runtime.ReflectExtra(v.typ.rt)
 	return &MapIter{
-		keys: keys,
-		vals: vals,
-		kt:   wrap(runtime.ReflectMapKey(extra)),
-		vt:   wrap(runtime.ReflectMapElem(extra)),
-		i:    -1,
+		data:     data,
+		clearSeq: runtime.ReflectMapClearSeq(data),
+		keys:     keys,
+		vals:     vals,
+		kt:       wrap(runtime.ReflectMapKey(extra)),
+		vt:       wrap(runtime.ReflectMapElem(extra)),
+		i:        -1,
 	}
 }
 
@@ -712,6 +721,9 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 		runtime.ReflectSetBoxF32(v.data, runtime.ReflectUnboxF32(boxed))
 	case Float64:
 		runtime.ReflectSetBoxF64(v.data, runtime.ReflectUnboxF64(boxed))
+	case Complex64, Complex128:
+		// New().Elem() stores a mutable $go.complex* ref (not $go.box.*).
+		runtime.ReflectSetComplex(v.data, boxed)
 	case String:
 		if v.flag&(flagField|flagIndex) == 0 {
 			runtime.ReflectSetBoxString(v.data, runtime.ReflectString(boxed))
@@ -806,7 +818,19 @@ func (v Value) SetFloat(x float64) {
 	}
 }
 
-func (v Value) SetComplex(x complex128) {}
+func (v Value) SetComplex(x complex128) {
+	v.mustBeSettable()
+	switch v.Kind() {
+	case Complex64:
+		var i any = complex64(x)
+		v.setSlot(runtime.ReflectData(i))
+	case Complex128:
+		var i any = x
+		v.setSlot(runtime.ReflectData(i))
+	default:
+		panic("reflect: SetComplex of non-complex Value")
+	}
+}
 func (v Value) SetString(x string) {
 	v.mustBeSettable()
 	if v.Kind() != String {
@@ -912,7 +936,11 @@ func (v Value) SetMapIndex(key, elem Value) {
 }
 
 func (v Value) Grow(n int)   {}
-func (v Value) Clear()       {}
+func (v Value) Clear() {
+	if v.Kind() == Map {
+		runtime.ReflectMapClear(v.dataWord())
+	}
+}
 func (v Value) IsZero() bool { return !v.IsValid() }
 func (v Value) SetZero() {
 	if !v.CanSet() {
@@ -922,15 +950,21 @@ func (v Value) SetZero() {
 }
 
 type MapIter struct {
-	keys []any
-	vals []any
-	kt   *rtype
-	vt   *rtype
-	i    int
+	data     unsafe.Pointer // hmap; used to detect Clear during range
+	clearSeq int32
+	keys     []any
+	vals     []any
+	kt       *rtype
+	vt       *rtype
+	i        int
 }
 
 func (it *MapIter) Next() bool {
 	if it == nil {
+		return false
+	}
+	// clear(m) / Value.Clear during range must stop iteration (issue59411).
+	if it.data != nil && runtime.ReflectMapClearSeq(it.data) != it.clearSeq {
 		return false
 	}
 	it.i++
@@ -1002,7 +1036,17 @@ func SliceOf(t Type) Type {
 	}
 	return wrap(runtime.ReflectSliceOf(r.rt))
 }
-func ArrayOf(n int, t Type) Type { return t }
+func ArrayOf(n int, t Type) Type {
+	r := asRtype(t)
+	if r == nil || r.rt == nil || n < 0 {
+		return t
+	}
+	if a := runtime.ReflectArrayOf(n, r.rt); a != nil {
+		return wrap(a)
+	}
+	// [n]T not in this program's type universe (docs/design/05).
+	return &rtype{kind: uint8(Array), str: "array"}
+}
 func MapOf(key, elem Type) Type {
 	k := asRtype(key)
 	e := asRtype(elem)

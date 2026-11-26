@@ -60,7 +60,6 @@ func (l *pkgLower) ensureDeferTypes() {
 
 func (fl *funcLower) deferStmt(s *ast.DeferStmt) ([]ir.Stmt, error) {
 	fl.pkg.ensureDeferTypes()
-	fl.hasDefer = true
 	if fl.deferInLoop {
 		fl.deferUsesList = true
 	}
@@ -71,9 +70,44 @@ func (fl *funcLower) deferStmt(s *ast.DeferStmt) ([]ir.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Range-over-func yield body: attach to the outer frame's shared list
+	// (deferrangefunc). Do not set hasDefer — yield must not run these on return.
+	if fl.rangeYield && len(fl.rangeFrames) > 0 {
+		if dobj := fl.rangeFrames[0].deferListObj; dobj != nil {
+			return fl.pushDeferOntoObj(dobj, closEx, stmts)
+		}
+	}
+
+	fl.hasDefer = true
 	if fl.defersVar == nil {
 		fl.defersVar = fl.newVar("defers", &ir.Ref{Null: true, Named: deferTypeName})
 	}
+
+	// After a range-over-func has installed deferListObj, keep the cell and the
+	// plain defersVar mirror in sync so applyDeferPass can snapshot either.
+	if fl.deferListObj != nil {
+		head, err := fl.readVar(fl.deferListObj)
+		if err != nil {
+			return nil, err
+		}
+		deferIR := &ir.Ref{Null: true, Named: deferTypeName}
+		nodeT := fl.newTemp(deferIR)
+		stmts = append(stmts, fl.assignTemp(nodeT, &ir.Instr{
+			Op:   ir.OpStructNew,
+			Type: &ir.Ref{Named: deferTypeName},
+			Args: []ir.Expr{closEx, head},
+		}))
+		ws, err := fl.writeVar(fl.deferListObj, fl.useTemp(nodeT))
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, ws...)
+		stmts = append(stmts, fl.assignVar(fl.defersVar, fl.useTemp(nodeT)))
+		fl.deferCount++
+		return stmts, nil
+	}
+
 	// Push: defers = {fn: clos, link: defers}
 	node := &ir.Instr{
 		Op:   ir.OpStructNew,
@@ -84,6 +118,26 @@ func (fl *funcLower) deferStmt(s *ast.DeferStmt) ([]ir.Stmt, error) {
 		},
 	}
 	stmts = append(stmts, fl.assignVar(fl.defersVar, node))
+	fl.deferCount++
+	return stmts, nil
+}
+
+// pushDeferOntoObj prepends a defer thunk onto a cell-backed list (range yield).
+func (fl *funcLower) pushDeferOntoObj(obj types.Object, closEx ir.Expr, stmts []ir.Stmt) ([]ir.Stmt, error) {
+	head, err := fl.readVar(obj)
+	if err != nil {
+		return nil, err
+	}
+	node := &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: deferTypeName},
+		Args: []ir.Expr{closEx, head},
+	}
+	ws, err := fl.writeVar(obj, node)
+	if err != nil {
+		return nil, err
+	}
+	stmts = append(stmts, ws...)
 	fl.deferCount++
 	return stmts, nil
 }
@@ -1104,11 +1158,27 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	// Empty name → newVar auto-uniques (nested wrapDeferBody / MakeFunc
 	// paths must not emit two VarDefs named defersSnap in one IR func).
 	deferSnap := fl.newVar("", &ir.Ref{Null: true, Named: deferTypeName})
-	runDefers := []ir.Stmt{
-		fl.assignVar(deferSnap, fl.useVar(fl.defersVar)),
-		fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}),
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(deferSnap)}}},
+	runDefers := []ir.Stmt{}
+	if fl.deferListObj != nil {
+		// Authoritative list lives in the shared cell (yield bodies append here).
+		head, err := fl.readVar(fl.deferListObj)
+		if err != nil {
+			return nil, err
+		}
+		runDefers = append(runDefers, fl.assignVar(deferSnap, head))
+		ws, err := fl.writeVar(fl.deferListObj, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}})
+		if err != nil {
+			return nil, err
+		}
+		runDefers = append(runDefers, ws...)
+		runDefers = append(runDefers, fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}))
+	} else {
+		runDefers = append(runDefers,
+			fl.assignVar(deferSnap, fl.useVar(fl.defersVar)),
+			fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}),
+		)
 	}
+	runDefers = append(runDefers, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(deferSnap)}}})
 
 	// Rewrite returns to run defers first. With named results, re-read them
 	// after deferRun so mutations like `defer func(){ a++ }()` apply (bug293).
@@ -1176,13 +1246,31 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 			&ir.Unreachable{},
 		}}
 	}
-	handler := &ir.Seq{Stmts: []ir.Stmt{
+	catchDeferSnap := fl.newVar("", &ir.Ref{Null: true, Named: deferTypeName})
+	catchLoad := []ir.Stmt{fl.assignVar(catchDeferSnap, fl.useVar(fl.defersVar))}
+	if fl.deferListObj != nil {
+		head, err := fl.readVar(fl.deferListObj)
+		if err != nil {
+			return nil, err
+		}
+		catchLoad = []ir.Stmt{fl.assignVar(catchDeferSnap, head)}
+		ws, err := fl.writeVar(fl.deferListObj, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}})
+		if err != nil {
+			return nil, err
+		}
+		catchLoad = append(catchLoad, ws...)
+		catchLoad = append(catchLoad, fl.assignVar(fl.defersVar, &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: deferTypeName}}))
+	}
+	handlerStmts := []ir.Stmt{
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
 		&ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpStructSet, Type: gTy, Field: "panic",
 			Args: []ir.Expr{gNonNull, fl.useVar(payload)},
 		}},
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
+	}
+	handlerStmts = append(handlerStmts, catchLoad...)
+	handlerStmts = append(handlerStmts,
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(catchDeferSnap)}}},
 		// Read $g.panic after deferRun.
 		fl.assignVar(panicSlot, &ir.Instr{
 			Op: ir.OpStructGet, Type: gTy, Field: "panic",
@@ -1190,6 +1278,8 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 				&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
 			}}},
 		}),
+	)
+	handler := &ir.Seq{Stmts: append(handlerStmts,
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(panicSlot)}},
 			Then: clearAndReturn(),
@@ -1220,7 +1310,7 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 				},
 			}},
 		},
-	}}
+	)}
 
 	// Normal edge: body already runs defers at returns; add fallthrough run+return.
 	if !endsWithReturn(newBody) {

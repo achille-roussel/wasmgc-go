@@ -655,6 +655,25 @@ func (g *gen) zeroValueExpr(tr *typeRec) ir.Expr {
 			Op: ir.OpStructNew, Type: &ir.Ref{Named: "$go.box.f64"},
 			Args: []ir.Expr{&ir.Const{Op: ir.OpF64Const, F64: 0}},
 		}
+	case KindComplex64:
+		// Mutable $go.complex64 so New(complex64).Elem().SetComplex works.
+		g.ensureComplexTypes()
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: &ir.Ref{Named: "$go.complex64"},
+			Args: []ir.Expr{
+				&ir.Const{Op: ir.OpF32Const, F64: 0},
+				&ir.Const{Op: ir.OpF32Const, F64: 0},
+			},
+		}
+	case KindComplex128:
+		g.ensureComplexTypes()
+		return &ir.Instr{
+			Op: ir.OpStructNew, Type: &ir.Ref{Named: "$go.complex128"},
+			Args: []ir.Expr{
+				&ir.Const{Op: ir.OpF64Const, F64: 0},
+				&ir.Const{Op: ir.OpF64Const, F64: 0},
+			},
+		}
 	case KindString:
 		// Mutable holder so New(string).Elem().SetString works.
 		g.ensureBoxString()

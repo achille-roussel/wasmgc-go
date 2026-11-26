@@ -141,15 +141,12 @@ func (g *gen) emitStructExtra(tr *typeRec) ir.Expr {
 		return &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}}
 	}
 	g.ensureExtraShapes()
-	// Collect non-zero-size fields (Wasm layout skips zero-size).
+	// Reflect NumField/Field must include zero-size fields ([0]T, struct{}) so
+	// fmt prints `{[] -1.25}` (abi/convF_criteria). Wasm layout still omits them.
 	var fields []*types.Var
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
-		if isZeroSizeType(f.Type()) {
-			continue
-		}
 		fields = append(fields, f)
-		// Ensure field type descriptors exist (may recurse).
 		fk := TypeKey(f.Type())
 		g.needTypeKey(fk)
 		if t := g.types[fk]; t != nil && t.goType == nil {
@@ -372,37 +369,46 @@ func (g *gen) emitGetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) s
 	sv := &ir.Var{Name: "s", Typ: sty}
 	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
 
-	var logical []int // go field index → wasm field (skipping zero-size)
+	// Reflect Field(i) uses Go field indices (including zero-size). Map each
+	// non-zero field to its Wasm layout slot; zero-size → null data (Len 0 / {}).
+	var wasmSlot []int // go field index → wasm field index, or -1 if omitted
+	wasmI := 0
 	for i := 0; i < st.NumFields(); i++ {
-		if !isZeroSizeType(st.Field(i).Type()) {
-			logical = append(logical, i)
+		if isZeroSizeType(st.Field(i).Type()) {
+			wasmSlot = append(wasmSlot, -1)
+			continue
 		}
+		wasmSlot = append(wasmSlot, wasmI)
+		wasmI++
 	}
-	// if/else chain on i
-	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{
-		&ir.Instr{Op: ir.OpRefNull, Type: anyT},
-	}}
+	nullRet := &ir.Return{Results: []ir.Expr{&ir.Instr{Op: ir.OpRefNull, Type: anyT}}}
+	var chain ir.Stmt = nullRet
 	var wasmFields []ir.Field
 	if td := g.mod.LookupType(wasmName); td != nil {
 		wasmFields = td.Fields
 	}
-	for li := len(logical) - 1; li >= 0; li-- {
-		fi := logical[li]
+	for fi := st.NumFields() - 1; fi >= 0; fi-- {
 		f := st.Field(fi)
-		fname := f.Name()
-		if li < len(wasmFields) {
-			fname = wasmFields[li].Name
-		} else if fname == "_" {
-			fname = fmt.Sprintf("_%d", fi)
+		var then *ir.Seq
+		if wi := wasmSlot[fi]; wi < 0 {
+			then = &ir.Seq{Stmts: []ir.Stmt{nullRet}}
+		} else {
+			fname := f.Name()
+			if wi < len(wasmFields) {
+				fname = wasmFields[wi].Name
+			} else if fname == "_" {
+				fname = fmt.Sprintf("_%d", fi)
+			}
+			get := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: fname, Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}}}
+			boxed := g.boxFieldToAny(f.Type(), get)
+			then = &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{boxed}}}}
 		}
-		get := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: fname, Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}}}
-		boxed := g.boxFieldToAny(f.Type(), get)
 		chain = &ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
 				&ir.Name{Raw: "i", Var: idx},
-				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(fi)},
 			}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{boxed}}}},
+			Then: then,
 			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
 		}
 	}
@@ -436,42 +442,50 @@ func (g *gen) emitSetFieldFunc(tr *typeRec, st *types.Struct, wasmName string) s
 	sty := &ir.Ref{Named: wasmName}
 	sv := &ir.Var{Name: "s", Typ: sty}
 
-	var logical []int
+	// Go field indices (incl. zero-size no-ops) so Field(i).Set matches NumField.
+	var wasmSlot []int
+	wasmI := 0
 	for i := 0; i < st.NumFields(); i++ {
-		if !isZeroSizeType(st.Field(i).Type()) {
-			logical = append(logical, i)
+		if isZeroSizeType(st.Field(i).Type()) {
+			wasmSlot = append(wasmSlot, -1)
+			continue
 		}
+		wasmSlot = append(wasmSlot, wasmI)
+		wasmI++
 	}
-	// Prefer the Wasm field type from the TypeDef so struct.set validates.
 	var wasmFields []ir.Field
 	if td := g.mod.LookupType(wasmName); td != nil {
 		wasmFields = td.Fields
 	}
-	var chain ir.Stmt = &ir.Return{}
-	for li := len(logical) - 1; li >= 0; li-- {
-		fi := logical[li]
+	nop := &ir.Seq{Stmts: []ir.Stmt{&ir.Return{}}}
+	var chain ir.Stmt = nop
+	for fi := st.NumFields() - 1; fi >= 0; fi-- {
 		f := st.Field(fi)
-		var fieldIR ir.Type
-		if li < len(wasmFields) {
-			fieldIR = wasmFields[li].Type
+		then := nop
+		if wi := wasmSlot[fi]; wi >= 0 {
+			var fieldIR ir.Type
+			if wi < len(wasmFields) {
+				fieldIR = wasmFields[wi].Type
+			}
+			unboxed := g.unboxAnyToField(f.Type(), &ir.Name{Raw: "v", Var: val}, fieldIR)
+			fname := f.Name()
+			if wi < len(wasmFields) {
+				fname = wasmFields[wi].Name
+			} else if fname == "_" {
+				fname = fmt.Sprintf("_%d", fi)
+			}
+			set := &ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpStructSet, Type: sty, Field: fname,
+				Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}, unboxed},
+			}}
+			then = &ir.Seq{Stmts: []ir.Stmt{set, &ir.Return{}}}
 		}
-		unboxed := g.unboxAnyToField(f.Type(), &ir.Name{Raw: "v", Var: val}, fieldIR)
-		fname := f.Name()
-		if li < len(wasmFields) {
-			fname = wasmFields[li].Name
-		} else if fname == "_" {
-			fname = fmt.Sprintf("_%d", fi)
-		}
-		set := &ir.ExprStmt{X: &ir.Instr{
-			Op: ir.OpStructSet, Type: sty, Field: fname,
-			Args: []ir.Expr{&ir.Name{Raw: "s", Var: sv}, unboxed},
-		}}
 		chain = &ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
 				&ir.Name{Raw: "i", Var: idx},
-				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(fi)},
 			}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{set, &ir.Return{}}},
+			Then: then,
 			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
 		}
 	}
@@ -1197,18 +1211,12 @@ func (g *gen) emitFieldTagFunc(tr *typeRec, st *types.Struct, fields []*types.Va
 	}
 	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
 	strTy := &ir.Ref{Named: "$go.string"}
-	// Map logical (non-zero-size) index → go/types field index for Tag(i).
-	var goIdx []int
-	for i := 0; i < st.NumFields(); i++ {
-		if !isZeroSizeType(st.Field(i).Type()) {
-			goIdx = append(goIdx, i)
-		}
-	}
+	// fields are all Go fields (incl. zero-size); Tag(i) uses the same index.
 	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{g.stringConstExpr("")}}
 	for li := len(fields) - 1; li >= 0; li-- {
 		tag := ""
-		if li < len(goIdx) {
-			tag = st.Tag(goIdx[li])
+		if li < st.NumFields() {
+			tag = st.Tag(li)
 		}
 		chain = &ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{

@@ -451,6 +451,14 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 	if !ok {
 		return nil, fl.errorf(s, "multi-value assignment requires a call, type assert, or channel receive")
 	}
+	// Evaluate LHS destinations before the RHS call (Go assignment order:
+	// m[f()], *g() = Atoi(h()) must call f,g before h — bug262).
+	nPrep := len(s.Lhs)
+	preps, pstmts, err := fl.prepareParallelDests(s.Lhs)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, pstmts...)
 	// Materialize with callee result types (nil), not LHS types — blank `_`
 	// reports i32 via lhsType and would corrupt non-int discarded results.
 	temps, stmts, err := fl.callMaterialize(call, nil)
@@ -460,16 +468,14 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 	out = append(out, stmts...)
 	srcGos := fl.callResultGoTypes(call)
 	n := len(temps)
-	if n > len(s.Lhs) {
-		n = len(s.Lhs)
+	if n > nPrep {
+		n = nPrep
 	}
-	rhss := make([]ir.Expr, n)
-	lhs := s.Lhs[:n]
 	for i := 0; i < n; i++ {
 		var ex ir.Expr = fl.useTemp(temps[i])
-		dstGo := fl.typeOf(lhs[i])
+		dstGo := fl.typeOf(s.Lhs[i])
 		if dstGo == nil {
-			if id, ok := lhs[i].(*ast.Ident); ok {
+			if id, ok := s.Lhs[i].(*ast.Ident); ok {
 				if obj := fl.info.Defs[id]; obj != nil {
 					dstGo = obj.Type()
 				} else if obj := fl.info.Uses[id]; obj != nil {
@@ -493,13 +499,12 @@ func (fl *funcLower) multiAssignAppend(s *ast.AssignStmt, out []ir.Stmt) ([]ir.S
 			srcGo != nil && !isIface(srcGo) && !isTypeParam(srcGo) {
 			ex = fl.boxIRToIface(ex, srcGo, dstGo)
 		}
-		rhss[i] = ex
+		as, err := fl.commitParallelDest(preps[i], ex)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, as...)
 	}
-	as, err := fl.assignParallel(lhs, rhss)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, as...)
 	return out, nil
 }
 
@@ -577,16 +582,25 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 			out = append(out, defs...)
 		}
 	}
-	// Parallel assignment (a, b = b, a): evaluate every RHS before any LHS
-	// write. Pairwise assign would corrupt swaps used by slices.Sort*.
+	// Parallel assignment (a, b = b, a): evaluate LHS destinations, then every
+	// RHS, then write (Go order — bug242: *f(), *f() = g(), g()). Pairwise
+	// assign would also corrupt swaps used by slices.Sort*.
 	parallel := len(s.Lhs) > 1
 	type rhsSlot struct {
 		expr ir.Expr
 		tmp  *ir.Temp
 	}
 	var slots []rhsSlot
+	var preps []parallelDest
 	if parallel {
 		slots = make([]rhsSlot, len(s.Lhs))
+		var pstmts []ir.Stmt
+		var err error
+		preps, pstmts, err = fl.prepareParallelDests(s.Lhs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pstmts...)
 	}
 	for i := range s.Lhs {
 		want, err := fl.lhsType(s.Lhs[i])
@@ -809,15 +823,13 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 		out = append(out, as...)
 	}
 	if parallel {
-		rhss := make([]ir.Expr, len(slots))
 		for i := range slots {
-			rhss[i] = slots[i].expr
+			as, err := fl.commitParallelDest(preps[i], slots[i].expr)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, as...)
 		}
-		as, err := fl.assignParallel(s.Lhs, rhss)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, as...)
 	}
 	return out, nil
 }
@@ -1053,6 +1065,19 @@ func (fl *funcLower) assignToSavedStar(lhs *ast.StarExpr, ptr, rhs ir.Expr) ([]i
 // opAssignAddrOnce lowers *p/x[i]/m[k] op= y with the destination evaluated
 // before y. Returns ok=false to fall back to the generic op-assign path.
 func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.Expr, want ir.Type) ([]ir.Stmt, bool, error) {
+	return fl.opAssignAddrOnceGet(lhs, tok, want, func() (ir.Expr, []ir.Stmt, error) {
+		return fl.expr(rhsAst, want)
+	})
+}
+
+// opAssignAddrOnceIR is opAssignAddrOnce with an already-lowered RHS (x++).
+func (fl *funcLower) opAssignAddrOnceIR(lhs ast.Expr, tok token.Token, rhsEx ir.Expr, want ir.Type) ([]ir.Stmt, bool, error) {
+	return fl.opAssignAddrOnceGet(lhs, tok, want, func() (ir.Expr, []ir.Stmt, error) {
+		return rhsEx, nil, nil
+	})
+}
+
+func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.Type, getRhs func() (ir.Expr, []ir.Stmt, error)) ([]ir.Stmt, bool, error) {
 	combine := func(lhsEx, rhsEx ir.Expr, lhsGo types.Type) (ir.Expr, error) {
 		if tok == token.ADD_ASSIGN && lhsGo != nil && isString(lhsGo) {
 			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}, nil
@@ -1101,7 +1126,7 @@ func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.
 		out = append(out, fl.assignTemp(ptrT, ptr))
 		loadT := fl.newTemp(want)
 		out = append(out, fl.assignTemp(loadT, &ir.Instr{Op: ir.OpDeref, Type: want, Args: []ir.Expr{fl.useTemp(ptrT)}}))
-		rhsEx, rs, err := fl.expr(rhsAst, want)
+		rhsEx, rs, err := getRhs()
 		if err != nil {
 			return nil, true, err
 		}
@@ -1147,7 +1172,7 @@ func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.
 			}
 			oldT := fl.newTemp(want)
 			out = append(out, fl.assignTemp(oldT, get))
-			rhsEx, rs, err := fl.expr(rhsAst, want)
+			rhsEx, rs, err := getRhs()
 			if err != nil {
 				return nil, true, err
 			}
@@ -1232,7 +1257,7 @@ func (fl *funcLower) opAssignAddrOnce(lhs ast.Expr, tok token.Token, rhsAst ast.
 			}
 			loadT := fl.newTemp(want)
 			out = append(out, fl.assignTemp(loadT, loaded))
-			rhsEx, rs, err := fl.expr(rhsAst, want)
+			rhsEx, rs, err := getRhs()
 			if err != nil {
 				return nil, true, err
 			}
@@ -1281,6 +1306,12 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 	if len(s.Lhs) != 2 {
 		return nil, fl.errorf(s, "type assert comma-ok wants 2 LHS")
 	}
+	// LHS destinations before the assert operand (bug242: *e3(&iv), ok = e2(x).(I)).
+	preps, pstmts, err := fl.prepareParallelDests(s.Lhs)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, pstmts...)
 	ex, stmts, err := fl.typeAssert(ta, nil, true)
 	if err != nil {
 		return nil, err
@@ -1317,11 +1348,16 @@ func (fl *funcLower) multiAssignTypeAssert(s *ast.AssignStmt, ta *ast.TypeAssert
 	if err != nil {
 		return nil, err
 	}
-	as, err := fl.assignParallel(s.Lhs, []ir.Expr{v0, v1})
+	as0, err := fl.commitParallelDest(preps[0], v0)
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, as...)
+	as1, err := fl.commitParallelDest(preps[1], v1)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, as0...)
+	out = append(out, as1...)
 	return out, nil
 }
 
@@ -1596,7 +1632,9 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 				&ir.If{
 					Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 					Then: &ir.Seq{Stmts: []ir.Stmt{
-						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
+						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{
+							&ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{idx}}, fl.useVar(lenV),
+						}}},
 						&ir.Unreachable{},
 					}},
 				},
@@ -2987,10 +3025,6 @@ func (fl *funcLower) incDecStmt(s *ast.IncDecStmt) ([]ir.Stmt, error) {
 		}
 		return append(stmts, as...), nil
 	}
-	lhs, stmts, err := fl.expr(s.X, want)
-	if err != nil {
-		return nil, err
-	}
 	var one ir.Expr
 	var op ir.Op
 	switch irNumWidth(want) {
@@ -3022,6 +3056,21 @@ func (fl *funcLower) incDecStmt(s *ast.IncDecStmt) ([]ir.Stmt, error) {
 		} else {
 			op = ir.OpI32Sub
 		}
+	}
+	// *p++ / x[i]++ / m[k]++: evaluate destination once (bug196 f()[0]++).
+	tok := token.ADD_ASSIGN
+	if s.Tok != token.INC {
+		tok = token.SUB_ASSIGN
+	}
+	if as, ok, err := fl.opAssignAddrOnceIR(s.X, tok, one, want); ok || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return as, nil
+	}
+	lhs, stmts, err := fl.expr(s.X, want)
+	if err != nil {
+		return nil, err
 	}
 	rhs := &ir.Instr{Op: op, Args: []ir.Expr{lhs, one}}
 	as, err := fl.assignTo(s.X, rhs)

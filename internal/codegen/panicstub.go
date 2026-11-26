@@ -26,7 +26,7 @@ func (g *gen) ensurePanicStubs() {
 	}
 	if needIndex {
 		if _, ok := g.funcs["runtime.panicIndex"]; !ok {
-			g.panicIndexIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{wasm.I32(), wasm.I32()}, nil))
+			g.panicIndexIdx = g.wm.AddFunc(g.internFuncType([]wasm.ValType{wasm.I64(), wasm.I32()}, nil))
 			g.funcs["runtime.panicIndex"] = g.panicIndexIdx
 		}
 		if g.m.LookupFunc("runtime.panicIndex") == nil {

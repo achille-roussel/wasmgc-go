@@ -56,9 +56,68 @@ func (rt *runtimeLower) useVar(v *ir.Var) *ir.Name {
 }
 
 // panicIndex emits call runtime.panicIndex(idx, len) then unreachable.
+// idx may be i32 (extended to i64) or already i64.
 func (rt *runtimeLower) panicIndex(idx, length ir.Expr) []ir.Stmt {
+	idx64 := asI64Index(idx)
 	return []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, length}}},
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx64, length}}},
+		&ir.Unreachable{},
+	}
+}
+
+// asI64Index widens an i32 index to i64 for runtime.panicIndex(int64, int).
+func asI64Index(idx ir.Expr) ir.Expr {
+	if in, ok := idx.(*ir.Instr); ok {
+		switch in.Op {
+		case ir.OpI64Const, ir.OpI64ExtendI32S, ir.OpI64ExtendI32U,
+			ir.OpI64Add, ir.OpI64Sub, ir.OpI64Mul, ir.OpI64DivS, ir.OpI64DivU:
+			return idx
+		}
+		if in.Type == ir.TypeI64 {
+			return idx
+		}
+	}
+	if n, ok := idx.(*ir.Name); ok {
+		var ty ir.Type
+		if n.Temp != nil {
+			ty = n.Temp.Typ
+		} else if n.Var != nil {
+			ty = n.Var.Typ
+		}
+		if ty == ir.TypeI64 {
+			return idx
+		}
+	}
+	return &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{idx}}
+}
+
+// Bounds codes — must match runtime.bounds* in panic_index.go.
+const (
+	boundsIndex = iota
+	boundsSliceAlen
+	boundsSliceAcap
+	boundsSliceB
+	boundsSlice3Alen
+	boundsSlice3Acap
+	boundsSlice3B
+	boundsSlice3C
+)
+
+// panicBounds emits call runtime.panicBounds(code, x, y, signed) then unreachable.
+// x may be i32 (extended) or i64; y is i32; signed is 0/1 i32.
+func (rt *runtimeLower) panicBounds(code int, x, y ir.Expr, signed bool) []ir.Stmt {
+	x64 := asI64Index(x)
+	sig := int64(0)
+	if signed {
+		sig = 1
+	}
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicBounds", Args: []ir.Expr{
+			&ir.Const{Op: ir.OpI32Const, I64: int64(code)},
+			x64,
+			y,
+			&ir.Const{Op: ir.OpI32Const, I64: sig},
+		}}},
 		&ir.Unreachable{},
 	}
 }
@@ -2006,6 +2065,25 @@ func exprRefTypeMod(mod *ir.Module, e ir.Expr) string {
 								return fr.Named
 							}
 						}
+					}
+				}
+			}
+		}
+		// array.get's Type is the ARRAY (codegen); fat-pointer / slice unwrap
+		// needs the element (initialize.go: &a12[0][0] where a12 is [2][]byte).
+		if (b.Op == ir.OpArrayGet || b.Op == ir.OpArrayGetU || b.Op == ir.OpArrayGetS) &&
+			b.Type != nil {
+			if r, ok := b.Type.(*ir.Ref); ok && r.Named != "" {
+				if mod != nil {
+					if td := mod.LookupType(r.Named); td != nil && td.Elem != nil {
+						if er, ok := td.Elem.(*ir.Ref); ok {
+							return er.Named
+						}
+					}
+				}
+				if el := elemOfArrayName(r.Named); el != nil {
+					if er, ok := el.(*ir.Ref); ok {
+						return er.Named
 					}
 				}
 			}

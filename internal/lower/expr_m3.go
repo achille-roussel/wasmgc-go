@@ -547,8 +547,10 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	// Bounds-check in i64 first so high-bit indices panic (bug272) instead of
 	// wrapping into a valid i32 slot.
 	idxIsI64 := false
+	idxUnsigned := false
 	var idxI64 ir.Expr
 	if it := fl.typeOf(e.Index); it != nil {
+		idxUnsigned = isUnsigned(it)
 		if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
 			idxIsI64 = true
 			idxI64 = idx
@@ -559,6 +561,26 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	if ty == nil {
 		ty, _ = fl.mapType(fl.typeOf(e))
 	}
+	panicIdx := func(lenEx ir.Expr) []ir.Stmt {
+		if idxIsI64 {
+			return fl.panicIfI64IndexOOB(idxI64, lenEx, idxUnsigned)
+		}
+		idx64 := &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{idx}}
+		if idxUnsigned {
+			idx64 = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{idx}}
+		}
+		fn := "runtime.panicIndex"
+		if idxUnsigned {
+			fn = "runtime.panicIndexU"
+		}
+		return []ir.Stmt{&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, lenEx}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{idx64, lenEx}}},
+				&ir.Unreachable{},
+			}},
+		}}
+	}
 	if isString(xt) {
 		// Recoverable panic instead of Wasm string/array OOB trap.
 		sv := fl.newVar("s", &ir.Ref{Named: "$go.string", Null: true})
@@ -566,17 +588,7 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
 		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
-		if idxIsI64 {
-			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
-		} else {
-			stmts = append(stmts, &ir.If{
-				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
-				Then: &ir.Seq{Stmts: []ir.Stmt{
-					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
-					&ir.Unreachable{},
-				}},
-			})
-		}
+		stmts = append(stmts, panicIdx(fl.useVar(lenV))...)
 		return &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{base, idx}}, stmts, nil
 	}
 	if isSlice(xt) {
@@ -589,17 +601,7 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
 		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
-		if idxIsI64 {
-			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
-		} else {
-			stmts = append(stmts, &ir.If{
-				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
-				Then: &ir.Seq{Stmts: []ir.Stmt{
-					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
-					&ir.Unreachable{},
-				}},
-			})
-		}
+		stmts = append(stmts, panicIdx(fl.useVar(lenV))...)
 		return &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{base, idx}, Type: ty}, stmts, nil
 	}
 	if isArray(xt) || isPtrToArray(xt) {
@@ -653,17 +655,7 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		}
 		lenV := fl.newVar("alen", ir.TypeI32)
 		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}))
-		if idxIsI64 {
-			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
-		} else {
-			stmts = append(stmts, &ir.If{
-				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
-				Then: &ir.Seq{Stmts: []ir.Stmt{
-					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
-					&ir.Unreachable{},
-				}},
-			})
-		}
+		stmts = append(stmts, panicIdx(fl.useVar(lenV))...)
 		return &ir.Instr{Op: op, Args: []ir.Expr{base, idx}, Type: at}, stmts, nil
 	}
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)
@@ -671,35 +663,169 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 
 // panicIfI64IndexOOB emits a recoverable panic when a wide index is negative or
 // ≥ len (compared in i64 so wrapping to i32 cannot hide OOB, bug272).
-func (fl *funcLower) panicIfI64IndexOOB(idxI64, lenI32 ir.Expr) []ir.Stmt {
+// unsigned selects panicIndexU so issue30116u prints the full uint64 bit pattern.
+func (fl *funcLower) panicIfI64IndexOOB(idxI64, lenI32 ir.Expr, unsigned bool) []ir.Stmt {
 	len64 := &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{lenI32}}
-	oob := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
-		&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{idxI64, fl.i64const(0)}},
-		&ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{idxI64, len64}},
-	}}
-	// panicIndex wants i32 args; clamp display index to wrapped low bits.
-	idx32 := &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idxI64}}
+	var oob ir.Expr
+	if unsigned {
+		oob = &ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{idxI64, len64}}
+	} else {
+		oob = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{idxI64, fl.i64const(0)}},
+			&ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{idxI64, len64}},
+		}}
+	}
+	fn := "runtime.panicIndex"
+	if unsigned {
+		fn = "runtime.panicIndexU"
+	}
 	return []ir.Stmt{&ir.If{
 		Cond: oob,
 		Then: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx32, lenI32}}},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: fn, Args: []ir.Expr{idxI64, lenI32}}},
 			&ir.Unreachable{},
 		}},
 	}}
 }
 
-func (fl *funcLower) sliceBoundI32(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
-	ex, stmts, err := fl.expr(e, ir.TypeI32)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Wasm slice bounds are i32; Go may use int64 (e.g. io.LimitedReader.N).
+// sliceBoundEval evaluates a slice index retaining a full-width i64 for panic
+// text (issue30116), plus an i32 wrap for the Wasm slice op.
+func (fl *funcLower) sliceBoundEval(e ast.Expr) (i32, i64 ir.Expr, unsigned bool, stmts []ir.Stmt, err error) {
+	want := ir.Type(ir.TypeI32)
+	unsigned = false
 	if t := fl.typeOf(e); t != nil {
-		if irt, err := fl.mapType(t); err == nil && irNumWidth(irt) == ir.I64 {
-			ex = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		unsigned = isUnsigned(t)
+		if irt, err2 := fl.mapType(t); err2 == nil && irNumWidth(irt) == ir.I64 {
+			want = ir.TypeI64
 		}
 	}
-	return ex, stmts, nil
+	ex, stmts, err := fl.expr(e, want)
+	if err != nil {
+		return nil, nil, false, nil, err
+	}
+	if want == ir.TypeI64 {
+		i64 = ex
+		i32 = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+		return i32, i64, unsigned, stmts, nil
+	}
+	i32 = ex
+	if unsigned {
+		i64 = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{ex}}
+	} else {
+		i64 = &ir.Instr{Op: ir.OpI64ExtendI32S, Args: []ir.Expr{ex}}
+	}
+	return i32, i64, unsigned, stmts, nil
+}
+
+func (fl *funcLower) callPanicBounds(code int, x, y ir.Expr, signed bool) []ir.Stmt {
+	sig := int64(0)
+	if signed {
+		sig = 1
+	}
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicBounds", Args: []ir.Expr{
+			fl.i32const(int64(code)), x, y, fl.i32const(sig),
+		}}},
+		&ir.Unreachable{},
+	}
+}
+
+// sliceBoundChecks emits gc-ordered panicBounds checks for s[lo:hi] / s[lo:hi:max].
+// useCap selects Acap vs Alen (slices use capacity; arrays/strings use length).
+func (fl *funcLower) sliceBoundChecks(
+	lo64, hi64, max64 ir.Expr,
+	hasMax bool,
+	loU, hiU, maxU bool,
+	boundI32 ir.Expr, // len or cap as i32
+	useCap bool,
+) []ir.Stmt {
+	var out []ir.Stmt
+	bound64 := &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{boundI32}}
+	signedHi := !hiU
+	signedLo := !loU
+	signedMax := !maxU
+
+	hiNeg := func() ir.Expr {
+		return &ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{hi64, fl.i64const(0)}}
+	}
+	loNeg := func() ir.Expr {
+		return &ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{lo64, fl.i64const(0)}}
+	}
+	maxNeg := func() ir.Expr {
+		return &ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{max64, fl.i64const(0)}}
+	}
+	gtU := func(a, b ir.Expr) ir.Expr {
+		return &ir.Instr{Op: ir.OpI64GtU, Args: []ir.Expr{a, b}}
+	}
+
+	if hasMax {
+		codeTop, codeMid := boundsSlice3Acap, boundsSlice3B
+		if !useCap {
+			codeTop = boundsSlice3Alen
+		}
+		// 1) max vs 0 / cap
+		if signedMax {
+			out = append(out, &ir.If{
+				Cond: maxNeg(),
+				Then: &ir.Seq{Stmts: fl.callPanicBounds(codeTop, max64, boundI32, true)},
+			})
+		}
+		out = append(out, &ir.If{
+			Cond: gtU(max64, bound64),
+			Then: &ir.Seq{Stmts: fl.callPanicBounds(codeTop, max64, boundI32, signedMax)},
+		})
+		// 2) hi vs 0 / max
+		if signedHi {
+			out = append(out, &ir.If{
+				Cond: hiNeg(),
+				Then: &ir.Seq{Stmts: fl.callPanicBounds(codeMid, hi64, fl.i32const(0), true)},
+			})
+		}
+		out = append(out, &ir.If{
+			Cond: gtU(hi64, max64),
+			Then: &ir.Seq{Stmts: fl.callPanicBounds(codeMid, hi64, &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{max64}}, signedHi)},
+		})
+		// 3) lo vs 0 / hi
+		if signedLo {
+			out = append(out, &ir.If{
+				Cond: loNeg(),
+				Then: &ir.Seq{Stmts: fl.callPanicBounds(boundsSlice3C, lo64, fl.i32const(0), true)},
+			})
+		}
+		out = append(out, &ir.If{
+			Cond: gtU(lo64, hi64),
+			Then: &ir.Seq{Stmts: fl.callPanicBounds(boundsSlice3C, lo64, &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{hi64}}, signedLo)},
+		})
+		return out
+	}
+
+	codeHi := boundsSliceAcap
+	if !useCap {
+		codeHi = boundsSliceAlen
+	}
+	// 1) hi vs 0 / bound
+	if signedHi {
+		out = append(out, &ir.If{
+			Cond: hiNeg(),
+			Then: &ir.Seq{Stmts: fl.callPanicBounds(codeHi, hi64, boundI32, true)},
+		})
+	}
+	out = append(out, &ir.If{
+		Cond: gtU(hi64, bound64),
+		Then: &ir.Seq{Stmts: fl.callPanicBounds(codeHi, hi64, boundI32, signedHi)},
+	})
+	// 2) lo vs 0 / hi
+	if signedLo {
+		out = append(out, &ir.If{
+			Cond: loNeg(),
+			Then: &ir.Seq{Stmts: fl.callPanicBounds(boundsSliceB, lo64, fl.i32const(0), true)},
+		})
+	}
+	out = append(out, &ir.If{
+		Cond: gtU(lo64, hi64),
+		Then: &ir.Seq{Stmts: fl.callPanicBounds(boundsSliceB, lo64, &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{hi64}}, signedLo)},
+	})
+	return out
 }
 
 func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -707,37 +833,81 @@ func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.St
 	if err != nil {
 		return nil, nil, err
 	}
-	var lo, hi, max ir.Expr
+	xt := fl.typeOf(e.X)
+	// Materialize base so len/cap and the slice op share one evaluation.
+	baseIR, _ := fl.mapType(xt)
+	if baseIR == nil {
+		baseIR = &ir.Ref{Named: "$go.slice.i32", Null: true}
+	}
+	bv := fl.newVar("sbase", baseIR)
+	stmts = append(stmts, fl.assignVar(bv, base))
+	base = fl.useVar(bv)
+
+	var lo32, hi32, max32 ir.Expr
+	var lo64, hi64, max64 ir.Expr
+	loU, hiU, maxU := false, false, false
 	if e.Low != nil {
 		var lstmts []ir.Stmt
-		lo, lstmts, err = fl.sliceBoundI32(e.Low)
+		lo32, lo64, loU, lstmts, err = fl.sliceBoundEval(e.Low)
 		if err != nil {
 			return nil, nil, err
 		}
 		stmts = append(stmts, lstmts...)
 	} else {
-		lo = fl.i32const(0)
+		lo32 = fl.i32const(0)
+		lo64 = fl.i64const(0)
 	}
-	if e.High != nil {
+	hiExplicit := e.High != nil
+	if hiExplicit {
 		var hstmts []ir.Stmt
-		hi, hstmts, err = fl.sliceBoundI32(e.High)
+		hi32, hi64, hiU, hstmts, err = fl.sliceBoundEval(e.High)
 		if err != nil {
 			return nil, nil, err
 		}
 		stmts = append(stmts, hstmts...)
-	} else {
-		// hi = len(base)
-		hi = &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}
 	}
-	args := []ir.Expr{base, lo, hi}
-	if e.Max != nil {
+	hasMax := e.Max != nil
+	if hasMax {
 		var mstmts []ir.Stmt
-		max, mstmts, err = fl.sliceBoundI32(e.Max)
+		max32, max64, maxU, mstmts, err = fl.sliceBoundEval(e.Max)
 		if err != nil {
 			return nil, nil, err
 		}
 		stmts = append(stmts, mstmts...)
-		args = append(args, max)
+	}
+
+	useCap := isSlice(xt)
+	boundOp := ir.OpLen
+	if useCap {
+		boundOp = ir.OpCap
+	}
+	boundV := fl.newVar("sbound", ir.TypeI32)
+	stmts = append(stmts, fl.assignVar(boundV, &ir.Instr{Op: boundOp, Args: []ir.Expr{base}}))
+	if !hiExplicit {
+		hi32 = fl.useVar(boundV)
+		// Default hi is len (not cap) for 2-index; for 3-index without hi, also len.
+		// But boundV is cap for slices — for omitted hi, Go uses len(s).
+		if useCap {
+			lenV := fl.newVar("slen", ir.TypeI32)
+			stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
+			hi32 = fl.useVar(lenV)
+		}
+		hi64 = &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{hi32}}
+		hiU = true // non-negative by construction
+	}
+
+	// Check against capacity (slices) or length (arrays/strings).
+	checkBound := fl.useVar(boundV)
+	if useCap {
+		checkBound = fl.useVar(boundV)
+	} else {
+		checkBound = fl.useVar(boundV) // OpLen
+	}
+	stmts = append(stmts, fl.sliceBoundChecks(lo64, hi64, max64, hasMax, loU, hiU, maxU, checkBound, useCap)...)
+
+	args := []ir.Expr{base, lo32, hi32}
+	if hasMax {
+		args = append(args, max32)
 	}
 	// Prefer the slice expression's mapped type over want: blank `_ = s[i:]`
 	// reports want=i32 via lhsType("_") and would corrupt OpSliceSlice typing
@@ -746,7 +916,7 @@ func (fl *funcLower) sliceExpr(e *ast.SliceExpr, want ir.Type) (ir.Expr, []ir.St
 	if want != nil && isRefIR(want) {
 		ty = want
 	}
-	if isString(fl.typeOf(e.X)) {
+	if isString(xt) {
 		return &ir.Instr{Op: ir.OpStringSlice, Args: args, Type: ty}, stmts, nil
 	}
 	return &ir.Instr{Op: ir.OpSliceSlice, Args: args, Type: ty}, stmts, nil
