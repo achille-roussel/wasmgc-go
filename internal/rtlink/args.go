@@ -10,8 +10,8 @@ import (
 )
 
 // EnsureArgs links runtime/args.go when the module calls GetArgc / GetArg /
-// getArgString. PackageHigh skips GOROOT runtime, so os.init's import
-// "runtime" does not lower these otherwise.
+// Getenv / getArgString / getEnvString. PackageHigh skips GOROOT runtime, so
+// os.init's import "runtime" does not lower these otherwise.
 func EnsureArgs(mod *ir.Module, rewriteDir string) error {
 	if mod == nil {
 		return nil
@@ -45,8 +45,9 @@ func scanArgCalls(mod *ir.Module) bool {
 	for _, f := range mod.Funcs {
 		walkCalls(f.Body, func(name string) {
 			switch name {
-			case "runtime.GetArgc", "runtime.GetArg",
-				"runtime.getArgc", "runtime.getArg", "runtime.getArgString":
+			case "runtime.GetArgc", "runtime.GetArg", "runtime.Getenv",
+				"runtime.getArgc", "runtime.getArg", "runtime.getArgString",
+				"runtime.getEnv", "runtime.getEnvString":
 				need = true
 			}
 		})

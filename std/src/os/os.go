@@ -110,7 +110,10 @@ func errPermission() error { return syscall.EPERM }
 func Exit(code int) { syscall.Exit(code) }
 
 func Getenv(key string) string {
-	v, _ := syscall.Getenv(key)
+	v, ok := runtime.Getenv(key)
+	if !ok {
+		return ""
+	}
 	return v
 }
 

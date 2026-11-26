@@ -25,7 +25,6 @@ convT2X.go — codegen: missing struct field
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 deferfin.go — unsupported: unsafe
 devirtualization_nil_panics.go — compile error: codegen
-env.go — output mismatch
 escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error

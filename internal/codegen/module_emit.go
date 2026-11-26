@@ -52,6 +52,7 @@ var hostImportIR = []struct {
 	{"runtime.nanotime", "runtime.nanotime", false},
 	{"runtime.getArgc", "runtime.getArgc", false},
 	{"runtime.getArg", "runtime.getArg", false},
+	{"runtime.getEnv", "runtime.getEnv", false},
 	// syscall/js host imports (07); reachability-gated like clocks/args.
 	{"syscall.js.jsGet", "js.get", false},
 	{"syscall.js.jsSet", "js.set", false},
@@ -123,6 +124,11 @@ func (g *gen) needsHostImport(irName string) bool {
 	if irName == "runtime.getArg" {
 		gs := g.m.LookupFunc("runtime.getArgString")
 		return gs != nil && emptyPrintBody(gs) && g.callsHost("runtime.getArgString")
+	}
+	// getEnv is only invoked from the getEnvString codegen fill.
+	if irName == "runtime.getEnv" {
+		gs := g.m.LookupFunc("runtime.getEnvString")
+		return gs != nil && emptyPrintBody(gs) && g.callsHost("runtime.getEnvString")
 	}
 	// js.value / js.stringCopy are called from string-bridge fills.
 	if irName == "syscall.js.jsValue" {
@@ -320,6 +326,9 @@ func (g *gen) emitFuncBodies() error {
 			continue
 		case f.Name == "runtime.getArgString" && g.fillGetArgString:
 			g.wm.AddCode(g.bodyGetArgString())
+			continue
+		case f.Name == "runtime.getEnvString" && g.fillGetEnvString:
+			g.wm.AddCode(g.bodyGetEnvString())
 			continue
 		case f.Name == "syscall.js.valueOfString" && g.fillJSValueOfString:
 			g.wm.AddCode(g.bodyJSValueOfString())

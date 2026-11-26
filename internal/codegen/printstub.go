@@ -53,6 +53,9 @@ func (g *gen) ensurePrintStubs() error {
 	if f := g.m.LookupFunc("runtime.getArgString"); f != nil && emptyPrintBody(f) {
 		g.fillGetArgString = true
 	}
+	if f := g.m.LookupFunc("runtime.getEnvString"); f != nil && emptyPrintBody(f) {
+		g.fillGetEnvString = true
+	}
 	if f := g.m.LookupFunc("syscall.js.valueOfString"); f != nil && emptyPrintBody(f) {
 		g.fillJSValueOfString = true
 	}
@@ -60,7 +63,7 @@ func (g *gen) ensurePrintStubs() error {
 		g.fillJSValueToString = true
 	}
 	if !needString && !needInt && !needNL && !g.fillWriteHost && !g.fillGetArgString &&
-		!g.fillJSValueOfString && !g.fillJSValueToString {
+		!g.fillGetEnvString && !g.fillJSValueOfString && !g.fillJSValueToString {
 		return nil
 	}
 	if g.fillGetArgString && !g.hasMemory {
@@ -68,6 +71,12 @@ func (g *gen) ensurePrintStubs() error {
 	}
 	if g.fillGetArgString && !g.hostImported["runtime.getArg"] {
 		return fmt.Errorf("codegen: getArgString requires go.runtime.getArg import")
+	}
+	if g.fillGetEnvString && !g.hasMemory {
+		return fmt.Errorf("codegen: getEnvString requires linear memory")
+	}
+	if g.fillGetEnvString && !g.hostImported["runtime.getEnv"] {
+		return fmt.Errorf("codegen: getEnvString requires go.runtime.getEnv import")
 	}
 	if g.fillJSValueOfString && !g.hasMemory {
 		return fmt.Errorf("codegen: valueOfString requires linear memory")
