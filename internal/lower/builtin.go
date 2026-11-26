@@ -773,7 +773,9 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 				return nil, nil, err
 			}
 			stmts = append(stmts, cstmts...)
-			capEx = fl.ensureI32Len(e.Args[1], capEx)
+			var pstmts []ir.Stmt
+			capEx, pstmts = fl.ensureI32LenChecked(e.Args[1], capEx)
+			stmts = append(stmts, pstmts...)
 		}
 		return &ir.Instr{Op: ir.OpChanMake, Type: irt, Args: []ir.Expr{capEx}}, stmts, nil
 	}
@@ -806,7 +808,9 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 	if err != nil {
 		return nil, nil, err
 	}
-	lenEx = fl.ensureI32Len(e.Args[1], lenEx)
+	var pstmts []ir.Stmt
+	lenEx, pstmts = fl.ensureI32LenChecked(e.Args[1], lenEx)
+	stmts = append(stmts, pstmts...)
 	var capEx ir.Expr
 	if len(e.Args) >= 3 {
 		var cstmts []ir.Stmt
@@ -815,7 +819,8 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			return nil, nil, err
 		}
 		stmts = append(stmts, cstmts...)
-		capEx = fl.ensureI32Len(e.Args[2], capEx)
+		capEx, pstmts = fl.ensureI32LenChecked(e.Args[2], capEx)
+		stmts = append(stmts, pstmts...)
 	} else {
 		capEx = lenEx
 	}
@@ -823,6 +828,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 }
 
 // ensureI32Len wraps int64/uint64 make lengths down to i32 (WasmGC int).
+// Prefer ensureI32LenChecked when a truncated wide value must panic (make).
 func (fl *funcLower) ensureI32Len(arg ast.Expr, ex ir.Expr) ir.Expr {
 	if t := fl.typeOf(arg); t != nil {
 		if irt, err := fl.mapType(t); err == nil && irNumWidth(irt) == ir.I64 {
@@ -830,6 +836,35 @@ func (fl *funcLower) ensureI32Len(arg ast.Expr, ex ir.Expr) ir.Expr {
 		}
 	}
 	return ex
+}
+
+// ensureI32LenChecked wraps i64 lengths to i32 after panicking when the value
+// is negative or does not fit in int32 (bug273 biglen/bigcap/bigchancap).
+func (fl *funcLower) ensureI32LenChecked(arg ast.Expr, ex ir.Expr) (ir.Expr, []ir.Stmt) {
+	t := fl.typeOf(arg)
+	if t == nil {
+		return ex, nil
+	}
+	irt, err := fl.mapType(t)
+	if err != nil || irNumWidth(irt) != ir.I64 {
+		return ex, nil
+	}
+	unsigned := isUnsigned(t)
+	var oob ir.Expr
+	if unsigned {
+		oob = &ir.Instr{Op: ir.OpI64GtU, Args: []ir.Expr{ex, fl.i64const(0x7fffffff)}}
+	} else {
+		oob = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{ex, fl.i64const(0)}},
+			&ir.Instr{Op: ir.OpI64GtS, Args: []ir.Expr{ex, fl.i64const(0x7fffffff)}},
+		}}
+	}
+	wrapped := &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+	panicStmts := []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicmakeslicelen"}},
+		&ir.Unreachable{},
+	}
+	return wrapped, []ir.Stmt{&ir.If{Cond: oob, Then: &ir.Seq{Stmts: panicStmts}}}
 }
 
 func (fl *funcLower) builtinNew(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {

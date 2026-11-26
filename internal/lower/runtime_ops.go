@@ -761,6 +761,9 @@ func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
 
 // ensureZeroLenArrayGlobal returns a module-global canonical []T of length 0
 // (runtime.zerobase semantics for new([0]T) and identical *[0]T identities).
+// Use array.new_fixed with zero elems: array.new_default requires defaultable
+// element types and fails validation for (ref $go.string) / struct arrays
+// even at length 0 (broke convert4.go).
 func ensureZeroLenArrayGlobal(mod *ir.Module, arrName string) ir.Expr {
 	gname := "$go.zerolen." + sanitize(arrName)
 	if mod.LookupGlobal(gname) == nil {
@@ -769,9 +772,9 @@ func ensureZeroLenArrayGlobal(mod *ir.Module, arrName string) ir.Expr {
 			Typ:  &ir.Ref{Named: arrName},
 			Mut:  false,
 			Init: &ir.Instr{
-				Op:   ir.OpArrayNewDefault,
+				Op:   ir.OpArrayNewFixed,
 				Type: &ir.Ref{Named: arrName},
-				Args: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}},
+				Args: nil,
 			},
 		})
 	}

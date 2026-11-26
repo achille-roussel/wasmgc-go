@@ -2114,16 +2114,43 @@ func (fl *funcLower) stringToBytes(x ir.Expr, dst types.Type, dstIR ir.Type) (ir
 // intToString lowers string(r) via unicode/utf8.AppendRune then []byte→string.
 func (fl *funcLower) intToString(x ir.Expr, src types.Type) (ir.Expr, []ir.Stmt, error) {
 	var stmts []ir.Stmt
-	// Widen to i32 rune.
-	r := x
-	if irNumWidth(mustMapBasic(src)) == ir.I64 {
-		r = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{x}}
+	// string(int) uses a rune; out-of-range values become U+FFFD (issue15039).
+	const maxRune = 0x10FFFF
+	rv := fl.newVar("rune", ir.TypeI32)
+	width := irNumWidth(mustMapBasic(src))
+	unsigned := isUnsigned(src)
+	var outOfRange ir.Expr
+	var inRange ir.Expr
+	if width == ir.I64 {
+		if unsigned {
+			outOfRange = &ir.Instr{Op: ir.OpI64GtU, Args: []ir.Expr{x, fl.i64const(maxRune)}}
+		} else {
+			outOfRange = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{x, fl.i64const(0)}},
+				&ir.Instr{Op: ir.OpI64GtS, Args: []ir.Expr{x, fl.i64const(maxRune)}},
+			}}
+		}
+		inRange = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{x}}
+	} else if unsigned {
+		outOfRange = &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{x, fl.i32const(maxRune)}}
+		inRange = x
+	} else {
+		outOfRange = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{x, fl.i32const(0)}},
+			&ir.Instr{Op: ir.OpI32GtS, Args: []ir.Expr{x, fl.i32const(maxRune)}},
+		}}
+		inRange = x
 	}
+	stmts = append(stmts, &ir.If{
+		Cond: outOfRange,
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(rv, fl.i32const(0xFFFD))}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(rv, inRange)}},
+	})
 	nilSlice := &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.slice.i8"}}
 	call := &ir.Instr{
 		Op:   ir.OpCall,
 		Func: "unicode.utf8.AppendRune",
-		Args: []ir.Expr{nilSlice, r},
+		Args: []ir.Expr{nilSlice, fl.useVar(rv)},
 		Type: &ir.Ref{Null: true, Named: "$go.slice.i8"},
 	}
 	tmp := fl.newVar("rs", &ir.Ref{Null: true, Named: "$go.slice.i8"})

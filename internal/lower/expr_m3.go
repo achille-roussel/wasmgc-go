@@ -537,8 +537,14 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	}
 	stmts = append(stmts, istmts...)
 	// Wasm array/slice indices are i32; Go may compute them as int64/uint64.
+	// Bounds-check in i64 first so high-bit indices panic (bug272) instead of
+	// wrapping into a valid i32 slot.
+	idxIsI64 := false
+	var idxI64 ir.Expr
 	if it := fl.typeOf(e.Index); it != nil {
 		if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+			idxIsI64 = true
+			idxI64 = idx
 			idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
 		}
 	}
@@ -552,16 +558,18 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		stmts = append(stmts, fl.assignVar(sv, base))
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{base, idx}}, stmts, nil
 	}
 	if isSlice(xt) {
@@ -573,16 +581,18 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		stmts = append(stmts, fl.assignVar(sv, base))
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{base, idx}, Type: ty}, stmts, nil
 	}
 	if isArray(xt) || isPtrToArray(xt) {
@@ -635,19 +645,40 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 			arrTy = &ir.Ref{Named: arrName}
 		}
 		lenV := fl.newVar("alen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: op, Args: []ir.Expr{base, idx}, Type: at}, stmts, nil
 	}
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)
+}
+
+// panicIfI64IndexOOB emits a recoverable panic when a wide index is negative or
+// ≥ len (compared in i64 so wrapping to i32 cannot hide OOB, bug272).
+func (fl *funcLower) panicIfI64IndexOOB(idxI64, lenI32 ir.Expr) []ir.Stmt {
+	len64 := &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{lenI32}}
+	oob := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{idxI64, fl.i64const(0)}},
+		&ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{idxI64, len64}},
+	}}
+	// panicIndex wants i32 args; clamp display index to wrapped low bits.
+	idx32 := &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idxI64}}
+	return []ir.Stmt{&ir.If{
+		Cond: oob,
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx32, lenI32}}},
+			&ir.Unreachable{},
+		}},
+	}}
 }
 
 func (fl *funcLower) sliceBoundI32(e ast.Expr) (ir.Expr, []ir.Stmt, error) {

@@ -47,6 +47,11 @@ func Interrupt() {}
 // after time.Sleep call. This was observed on Windows XP SP3 (windows/386).
 func adjustDelay(t *testing.T, delay Duration) Duration {
 	if haveHighResSleep {
+		// wasmgc Node timers can wake ~1ms early; keep a small slack so
+		// TestSleep/TestAfter are not flaky under GOOS=js.
+		if delay > Millisecond {
+			return delay - Millisecond
+		}
 		return delay
 	}
 	t.Log("adjusting delay for low resolution sleep")

@@ -37,8 +37,6 @@ fixedbugs/bug246.go — unsupported: unsafe
 fixedbugs/bug257.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug262.go — output mismatch
-fixedbugs/bug272.go — wasm validate/compile error
-fixedbugs/bug273.go — wasm validate/compile error
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
@@ -46,7 +44,6 @@ fixedbugs/bug348.go — compile error: codegen
 fixedbugs/bug512.go — unsupported: unsafe
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
-fixedbugs/issue15039.go — failed: panic: big != bad
 fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
