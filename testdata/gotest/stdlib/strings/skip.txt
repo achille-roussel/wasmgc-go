@@ -1,4 +1,3 @@
 # strings — wasmgc-go test skips
-TestReplacer — range/slice testCases corruption or if-init arg reuse (write path)
 TestBuilderAllocs — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)
 TestBuilderGrow — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)

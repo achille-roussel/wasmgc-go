@@ -292,6 +292,12 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 			stmts = append(stmts, astmts...)
 			rt := fl.newTemp(recvWant)
 			stmts = append(stmts, fl.assignTemp(rt, rex))
+			// defer x.M() evaluates the method value at the defer site; a nil
+			// interface receiver must panic here (issue15975), not when the
+			// thunk later runs the call.
+			if ifaceRecv {
+				stmts = append(stmts, fl.panicIfNilRef(fl.useTemp(rt)))
+			}
 			addCap("recv", recvWant, fl.useTemp(rt))
 			nargs, err := fl.deferAddSigArgs(call, msig, addCap, &stmts)
 			if err != nil {
@@ -1124,13 +1130,52 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	// sees it. Important: return-path runDefers lives inside this same try, so
 	// an unrecovered panic from a nested defer (e.g. `defer func(){ defer
 	// panic(5) }()`) is caught HERE rather than propagating. After deferRun,
-	// rethrow if $g.panic is still unrecovered; only clear+return when
-	// recovered (or absent). Otherwise issue43942 / recover1 swallow panics.
+	// rethrow if $g.panic is still unrecovered — unless it is the same panic
+	// that was already pending at try entry (inherited outer panic after a
+	// nested recover; recover.go test111). Clearing that would steal the
+	// panic from the still-running deferred caller.
 	gTy := &ir.Ref{Named: "$go.g"}
 	gNonNull := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
 		&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
 	}}
 	panicSlot := fl.newVar("catchPanic", &ir.Ref{Null: true, Named: panicObjName})
+	entryPanic := fl.newVar("entryPanic", &ir.Ref{Null: true, Named: panicObjName})
+	// Snapshot $g.panic before the try body so the handler can tell an
+	// inherited outer panic from one thrown in this frame.
+	init = append(init, fl.assignVar(entryPanic, &ir.Instr{
+		Op: ir.OpStructGet, Type: gTy, Field: "panic",
+		Args: []ir.Expr{gNonNull},
+	}))
+	// Fresh Seq per branch — shared Stmt nodes break IR verify (temps
+	// appear in multiple regions; log.(*Logger).Prefix / goprint.go).
+	leaveInherited := func() *ir.Seq {
+		return &ir.Seq{Stmts: append(append([]ir.Stmt{}, fl.syncNamedResultCells()...), fl.resultReturn())}
+	}
+	clearAndReturn := func() *ir.Seq {
+		s := &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{
+				Op: ir.OpStructSet, Type: gTy, Field: "panic",
+				Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+						&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
+					}},
+					&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: panicObjName}},
+				},
+			}},
+		}}
+		s.Stmts = append(s.Stmts, fl.syncNamedResultCells()...)
+		s.Stmts = append(s.Stmts, fl.resultReturn())
+		return s
+	}
+	rethrow := func() *ir.Seq {
+		return &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{
+				Op:   ir.OpThrow,
+				Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+			}},
+			&ir.Unreachable{},
+		}}
+	}
 	handler := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
 		&ir.ExprStmt{X: &ir.Instr{
@@ -1146,41 +1191,36 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 			}}},
 		}),
 		&ir.If{
-			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(panicSlot)}},
-			}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(panicSlot)}},
+			Then: clearAndReturn(),
+			Else: &ir.Seq{Stmts: []ir.Stmt{
 				&ir.If{
-					Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
-						&ir.Instr{
-							Op: ir.OpStructGet, Type: &ir.Ref{Named: panicObjName}, Field: "recovered",
-							Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+					Cond: &ir.Instr{
+						Op: ir.OpStructGet, Type: &ir.Ref{Named: panicObjName}, Field: "recovered",
+						Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+					},
+					Then: clearAndReturn(),
+					Else: &ir.Seq{Stmts: []ir.Stmt{
+						&ir.If{
+							Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
+								&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(entryPanic)}},
+							}},
+							Then: &ir.Seq{Stmts: []ir.Stmt{
+								&ir.If{
+									Cond: &ir.Instr{Op: ir.OpRefEq, Args: []ir.Expr{
+										fl.useVar(panicSlot), fl.useVar(entryPanic),
+									}},
+									Then: leaveInherited(),
+									Else: rethrow(),
+								},
+							}},
+							Else: rethrow(),
 						},
-					}},
-					Then: &ir.Seq{Stmts: []ir.Stmt{
-						// Unrecovered: propagate to caller (do not clear).
-						&ir.ExprStmt{X: &ir.Instr{
-							Op:   ir.OpThrow,
-							Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
-						}},
-						&ir.Unreachable{},
 					}},
 				},
 			}},
 		},
-		// Recovered or no panic: clear stale panicObj.
-		&ir.ExprStmt{X: &ir.Instr{
-			Op: ir.OpStructSet, Type: gTy, Field: "panic",
-			Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
-					&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
-				}},
-				&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: panicObjName}},
-			},
-		}},
 	}}
-	handler.Stmts = append(handler.Stmts, fl.syncNamedResultCells()...)
-	handler.Stmts = append(handler.Stmts, fl.resultReturn())
 
 	// Normal edge: body already runs defers at returns; add fallthrough run+return.
 	if !endsWithReturn(newBody) {

@@ -36,6 +36,9 @@ func EnsurePrint(mod *ir.Module, rewriteDir string) error {
 		(!needPtr || hasPrintBody(mod, "runtime.printpointer")) &&
 		(!needStreq || hasPrintBody(mod, "runtime.stringeq")) &&
 		(!needCmpstr || hasPrintBody(mod, "runtime.cmpstring")) {
+		// printfloat* may already be linked while printF64bits is still
+		// body-less (PackageHigh / prior EnsurePrint); always fill it.
+		fillPrintF64bits(mod)
 		return nil
 	}
 	if rewriteDir == "" {

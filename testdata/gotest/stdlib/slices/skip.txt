@@ -3,5 +3,4 @@ TestConcat_too_large — runtime error
 TestInference — compile: load: typecheck slices_test:
 TestNilness — compile: load: typecheck slices_test:
 TestRepeat — runtime error
-TestReplaceOverlap — compile: load: typecheck slices_test:
 TestGrow — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)

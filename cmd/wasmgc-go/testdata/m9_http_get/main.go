@@ -6,7 +6,11 @@ import (
 )
 
 func main() {
-	url := os.Args[0]
+	if len(os.Args) < 2 {
+		println("err missing url")
+		return
+	}
+	url := os.Args[1]
 	resp, err := http.Get(url)
 	if err != nil {
 		println("err", err.Error())

@@ -1,7 +1,6 @@
 # time — wasmgc-go test skips
 TestAdjustTimers — lower/runtime gaps in time tests
 TestAfterFuncStarvation — lower/runtime gaps in time tests
-TestAfterTimes — Node OOM in joint time package after many timer tests
 TestAndroidTzdata — lower/runtime gaps in time tests
 TestAppendInt — lower/runtime gaps in time tests
 TestAusZoneAbbr — lower/runtime gaps in time tests
@@ -83,7 +82,6 @@ TestUnixNanoUTCAndBack — lower/runtime gaps in time tests
 TestUnixUTC — lower/runtime gaps in time tests
 TestUnixUTCAndBack — lower/runtime gaps in time tests
 TestUnmarshalInvalidTimes — lower/runtime gaps in time tests
-TestUnmarshalTextAllocations — lower/runtime gaps in time tests
 TestUSPacificZoneAbbr — lower/runtime gaps in time tests
 TestVersion3 — lower/runtime gaps in time tests
 TestYearDay — lower/runtime gaps in time tests
@@ -92,4 +90,3 @@ TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset
 TestLongAdjustTimers — lower/runtime: fails under wasmgc (timer adjust)
-TestTick — Tick() leaves uncancellable ticker; joint package timeout

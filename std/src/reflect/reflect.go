@@ -289,6 +289,13 @@ func (v Value) Interface() any {
 	if !v.IsValid() {
 		panic("reflect: call of reflect.Value.Interface on zero Value")
 	}
+	if v.flag&flagMakeFunc != 0 {
+		// Pack a real $go.clos trampoline so .(func…) asserts succeed and
+		// deferred MakeFunc values preserve recoverOk (recover.go test15).
+		if clos := runtime.ReflectMakeFuncClos(v.typ.rt, v.dataWord()); clos != nil {
+			return runtime.ReflectIface(v.typ.rt, clos)
+		}
+	}
 	// Scalars/strings may live in mutable boxes (New().Elem(), fields).
 	// Interface must return a snapshot so map storage / any assignment
 	// does not alias the box (json SetMapIndex, MapIndex round-trips).
@@ -616,18 +623,40 @@ func (v Value) MapIndex(key Value) Value {
 	return Value{typ: et, data: runtime.ReflectData(val)}
 }
 
-func (v Value) NumMethod() int   { return 0 }
-func (v Value) Method(int) Value { return Value{} }
+func (v Value) NumMethod() int {
+	if v.typ == nil || v.typ.rt == nil {
+		return 0
+	}
+	return runtime.ReflectNumMethod(v.typ.rt)
+}
+
+func (v Value) Method(i int) Value {
+	if v.typ == nil || v.typ.rt == nil {
+		panic("reflect: Method of nil Type")
+	}
+	n := runtime.ReflectNumMethod(v.typ.rt)
+	if i < 0 || i >= n {
+		panic("reflect: Method index out of range")
+	}
+	mtyp := wrap(runtime.ReflectMethodValueType(v.typ.rt, i))
+	if mtyp == nil || mtyp.rt == nil {
+		return Value{}
+	}
+	data := runtime.ReflectMethodValue(v.typ.rt, i, v.dataWord())
+	return Value{typ: mtyp, data: data}
+}
 
 func (v Value) MethodByName(name string) Value {
-	if v.typ == nil {
+	if v.typ == nil || v.typ.rt == nil {
 		return Value{}
 	}
-	m, ok := v.typ.MethodByName(name)
-	if !ok {
-		return Value{}
+	n := runtime.ReflectNumMethod(v.typ.rt)
+	for i := 0; i < n; i++ {
+		if runtime.ReflectMethodName(v.typ.rt, i) == name {
+			return v.Method(i)
+		}
 	}
-	return m.Func
+	return Value{}
 }
 
 // UnsafeAddr returns a uintptr for addressable values. On wasmgc there is no
@@ -857,8 +886,8 @@ type makeFuncImpl struct {
 }
 
 // MakeFunc returns a Value of type typ that invokes fn when Call'ed.
-// Converting that Value to a concrete func via Interface is not supported
-// yet (no host trampoline); callers that only use Value.Call work.
+// Interface().(func()) / .(func(func())) work via ReflectMakeFuncClos
+// trampolines for those shapes; other signatures still need Value.Call.
 func MakeFunc(typ Type, fn func(args []Value) (results []Value)) Value {
 	if typ == nil {
 		panic("reflect: MakeFunc of nil Type")
@@ -1467,9 +1496,31 @@ func (t *rtype) Comparable() bool {
 func (t *rtype) Size() uintptr     { return 0 }
 func (t *rtype) Align() int        { return 1 }
 func (t *rtype) FieldAlign() int   { return 1 }
-func (t *rtype) NumMethod() int    { return 0 }
-func (t *rtype) Method(int) Method { return Method{} }
-func (t *rtype) IsVariadic() bool  { return false }
+func (t *rtype) NumMethod() int {
+	if t == nil || t.rt == nil {
+		return 0
+	}
+	return runtime.ReflectNumMethod(t.rt)
+}
+
+func (t *rtype) Method(i int) Method {
+	if t == nil || t.rt == nil {
+		panic("reflect: Method of nil Type")
+	}
+	n := runtime.ReflectNumMethod(t.rt)
+	if i < 0 || i >= n {
+		panic("reflect: Method index out of range")
+	}
+	name := runtime.ReflectMethodName(t.rt, i)
+	mtyp := wrap(runtime.ReflectMethodType(t.rt, i))
+	var fn Value
+	if mtyp != nil && mtyp.rt != nil {
+		fn = Value{typ: mtyp, data: runtime.ReflectMethodFunc(t.rt, i)}
+	}
+	return Method{Name: name, Type: mtyp, Func: fn, Index: i}
+}
+
+func (t *rtype) IsVariadic() bool { return false }
 func (t *rtype) ChanDir() ChanDir  { return BothDir }
 
 // itoa is a tiny strconv-free decimal converter for Type.String.

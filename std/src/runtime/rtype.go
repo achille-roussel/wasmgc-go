@@ -240,3 +240,33 @@ func ReflectMapAccess(data unsafe.Pointer, key any) (any, bool) {
 	}
 	return mapAccess((*hmap)(data), key)
 }
+
+// ReflectNumMethod returns the number of methods on t (exported methods of a
+// concrete type, or all methods of an interface). Body-less: desc fills.
+func ReflectNumMethod(t *Rtype) int
+
+// ReflectMethodName returns the name of method i on t.
+// Body-less: desc fills.
+func ReflectMethodName(t *Rtype, i int) string
+
+// ReflectMethodType returns the type descriptor of method i's Func
+// (method expression: receiver is the first parameter).
+// Body-less: desc fills.
+func ReflectMethodType(t *Rtype, i int) *Rtype
+
+// ReflectMethodFunc returns a method-expression closure for method i
+// (no receiver bound). Body-less: desc fills.
+func ReflectMethodFunc(t *Rtype, i int) unsafe.Pointer
+
+// ReflectMethodValueType returns the type descriptor of a bound method value
+// (receiver removed from the signature). Body-less: desc fills.
+func ReflectMethodValueType(t *Rtype, i int) *Rtype
+
+// ReflectMethodValue returns a method-value closure for method i bound to the
+// receiver data word. Body-less: desc fills.
+func ReflectMethodValue(t *Rtype, i int, recv unsafe.Pointer) unsafe.Pointer
+
+// ReflectMakeFuncClos returns a $go.clos trampoline for a MakeFunc impl so
+// Value.Interface().(func…) type-asserts. Body-less: desc fills for func()
+// and func(func()) shapes used by GOROOT recover.go.
+func ReflectMakeFuncClos(t *Rtype, impl unsafe.Pointer) unsafe.Pointer
