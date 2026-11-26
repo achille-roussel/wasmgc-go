@@ -54,6 +54,19 @@ func panicTypeAssert() {
 	throwPanic(panicErr("interface conversion: type assertion failed"))
 }
 
+// panicTypeAssertNil reports x.(T) when x is a nil interface.
+// Matches gc: "interface conversion: SRC is nil, not WANT"
+// (typeparam/mdempsky/16 wants SRC like "interface { T() main.T }").
+func panicTypeAssertNil(src, want string) {
+	if src == "" {
+		src = "interface"
+	}
+	if want == "" {
+		want = "?"
+	}
+	throwPanic(panicErr("interface conversion: " + src + " is nil, not " + want))
+}
+
 // panicTypeAssertTypes reports a failed concrete type assertion.
 // kind is $go.type.kind (abi/reflect); message contains "GOT, not WANT"
 // so GOROOT recover3 checks match. Kind→name is inlined (no helper) so

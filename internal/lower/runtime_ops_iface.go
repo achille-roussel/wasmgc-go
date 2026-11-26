@@ -289,8 +289,14 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 
 	nilFail := &ir.Seq{}
 	if !commaOK {
-		nilFail.Stmts = append(nilFail.Stmts, rt.panicTypeAssertConcrete(
-			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Named: "$go.type", Null: true}}, typeKey)...)
+		// Prefer gc-shaped "SRC is nil, not WANT" when source iface display
+		// was recorded on Field (typeAssert). Fall back to kind/? form.
+		if in.Field != "" {
+			nilFail.Stmts = append(nilFail.Stmts, rt.panicTypeAssertNil(in.Field, typeKey)...)
+		} else {
+			nilFail.Stmts = append(nilFail.Stmts, rt.panicTypeAssertConcrete(
+				&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Named: "$go.type", Null: true}}, typeKey)...)
+		}
 	}
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
@@ -417,11 +423,66 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 	return pre, nil
 }
 
+// panicTypeAssertNil emits call runtime.panicTypeAssertNil(src, want).
+func (rt *runtimeLower) panicTypeAssertNil(srcDisp, typeKey string) []ir.Stmt {
+	want := assertWantDisplay(typeKey)
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.panicTypeAssertNil",
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStringLit, Str: srcDisp},
+				&ir.Instr{Op: ir.OpStringLit, Str: want},
+			},
+		}},
+		&ir.Unreachable{},
+	}
+}
+
+// assertWantDisplay turns a TypeKey / $go.type.* name into a gc-like string
+// (keep package.Name; strip LocalTypeSuffix _pN).
+func assertWantDisplay(typeKey string) string {
+	want := strings.TrimPrefix(typeKey, "$go.type.")
+	if want == "" {
+		return "?"
+	}
+	// Strip trailing _pN local-type suffixes (issue26094 scopes).
+	for i := 0; i+2 < len(want); i++ {
+		if want[i] != '_' || want[i+1] != 'p' {
+			continue
+		}
+		j := i + 2
+		if j >= len(want) {
+			continue
+		}
+		allDigit := true
+		for ; j < len(want); j++ {
+			if want[j] < '0' || want[j] > '9' {
+				allDigit = false
+				break
+			}
+		}
+		if allDigit {
+			want = want[:i]
+			break
+		}
+	}
+	return want
+}
+
 // panicTypeAssertConcrete emits call runtime.panicTypeAssertTypes(kind, want).
 func (rt *runtimeLower) panicTypeAssertConcrete(gotTyp ir.Expr, typeKey string) []ir.Stmt {
-	want := strings.TrimPrefix(typeKey, "$go.type.")
-	if i := strings.LastIndex(want, "."); i >= 0 {
-		want = want[i+1:]
+	want := assertWantDisplay(typeKey)
+	// Short name for non-qualified keys (basic kinds stay as-is).
+	if !strings.Contains(want, ".") && !strings.Contains(want, "/") {
+		// keep
+	} else if i := strings.LastIndex(want, "."); i >= 0 {
+		// Prefer pkg.Name form: TypeKey uses IR prefix; last segment is the
+		// type name. Keep "main.T" when already two components.
+		parts := strings.Split(want, ".")
+		if len(parts) >= 2 {
+			want = parts[len(parts)-2] + "." + parts[len(parts)-1]
+		}
 	}
 	if want == "" {
 		want = "?"
