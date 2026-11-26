@@ -276,7 +276,7 @@ func (l *pkgLower) ensureChanBaseTypes() {
 	}
 }
 
-// ensureGType interns $go.g with the proc.go field set (6 fields).
+// ensureGType interns $go.g with the proc.go field set (8 fields).
 func (l *pkgLower) ensureGType() {
 	if l.mod.LookupType(panicObjName) == nil {
 		l.mod.InternType(&ir.TypeDef{
@@ -309,7 +309,7 @@ func (l *pkgLower) ensureGType() {
 		})
 		return
 	}
-	if len(td.Fields) < 6 {
+	if len(td.Fields) < 8 {
 		td.Fields = gFields()
 	}
 }
@@ -322,6 +322,8 @@ func gFields() []ir.Field {
 		{Name: "recoverOk", Type: ir.TypeI32, Mut: true},
 		{Name: "sel", Type: &ir.Ref{Null: true, Named: "$go.select"}, Mut: true},
 		{Name: "waiting", Type: ir.TypeI32, Mut: true},
+		{Name: "deferDepth", Type: ir.TypeI32, Mut: true},
+		{Name: "deferStartDepth", Type: ir.TypeI32, Mut: true}, // deferRun entry depth
 	}
 }
 

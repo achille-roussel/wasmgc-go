@@ -22,12 +22,14 @@ const (
 // The Wasm global $g is shared across JSPI activations; park save/restore is
 // emitted around the park import (see gopark and the jspi-sched prototype).
 type g struct {
-	id        int32
-	park      int32
-	panic     *panicObj
-	recoverOk int32
-	sel       *select_
-	waiting   int32 // 1 while parked on a channel/sema/select
+	id         int32
+	park       int32
+	panic      *panicObj
+	recoverOk  int32
+	sel        *select_
+	waiting         int32 // 1 while parked on a channel/sema/select
+	deferDepth      int32 // nested runtime.deferRun count
+	deferStartDepth int32 // deferDepth at current deferRun entry (defer recover)
 }
 
 // runqnode is one entry on the FIFO of closures waiting for _sched.

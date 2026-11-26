@@ -30,7 +30,6 @@ escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug114.go — compile error: build: load: typecheck
-fixedbugs/bug177.go — output mismatch
 fixedbugs/bug196.go — wasm validate/compile error
 fixedbugs/bug242.go — runtime error
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
@@ -44,9 +43,7 @@ fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
 fixedbugs/bug347.go — compile error: codegen
 fixedbugs/bug348.go — compile error: codegen
-fixedbugs/bug461.go — failed: panic: int should be unexported
 fixedbugs/bug512.go — unsupported: unsafe
-fixedbugs/issue10332.go — output mismatch
 fixedbugs/issue14553.go — wasm validate/compile error
 fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue15039.go — failed: panic: big != bad
@@ -101,16 +98,12 @@ fixedbugs/issue39541.go — compile error: build: load: typecheck
 fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue43292.go — compile error: codegen
-fixedbugs/issue43942.go — runtime error: illegal cast / wrong select result
-fixedbugs/issue44830.go — failed: panic: unexpected t.PkgPath():
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue4562.go — compile error: codegen
 fixedbugs/issue4585.go — runtime error
 fixedbugs/issue46725.go — compile error: multi-value call / runtime.GC finalizers (needs multi-value + GC)
 fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign ref ref any to var h14789 of type i32 in main.main pipelin…
-fixedbugs/issue48289.go — failed: panic: got *ptr 1, want 0
 fixedbugs/issue48536.go — unsupported: unsafe
-fixedbugs/issue48898.go — failed: build: pipeline: IR verify: return has 0 values, function wants 1 in main.clos.4 pipeline: IR verify…
 fixedbugs/issue50190.go — failed: panic: FAIL
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
@@ -145,7 +138,6 @@ fixedbugs/issue79762.go — runtime error: null deref / stub Stack
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
 fixedbugs/issue80127.go — runtime error
-fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue81863.go — runtime error
@@ -172,7 +164,6 @@ peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte lim
 printbig.go — compile error: build: load: typecheck
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
-recover1.go — wasm validate/compile error
 recover3.go — compile error: IR verify: temp used outside defining region
 reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod2.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value

@@ -551,9 +551,10 @@ func (fl *funcLower) emitRangeYieldBody(name string, s *ast.RangeStmt, yieldSig 
 			Args: []ir.Expr{child.useVar(ci.orig)},
 		}))
 	}
-	if child.needsRecoverPrologue {
+	// Match pkg.go: applyDeferPass owns the recover prologue when hasDefer.
+	if child.needsRecoverPrologue && !child.hasDefer {
 		preamble = append(preamble, child.recoverPrologue()...)
-	} else {
+	} else if !child.needsRecoverPrologue {
 		preamble = append(preamble, child.clearRecoverOk()...)
 	}
 	bodySeq.Stmts = append(preamble, bodySeq.Stmts...)

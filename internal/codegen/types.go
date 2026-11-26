@@ -60,6 +60,7 @@ func (g *gen) emitPrelude() {
 		wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(iface))), false),     // value
 		wasm.Field(wasm.StorageVal(wasm.I32()), true),                                    // recovered mut
 		wasm.Field(wasm.StorageVal(wasm.RefNull(wasm.TypeIndexHeap(panicIdx))), false), // next
+		wasm.Field(wasm.StorageVal(wasm.I32()), false),                                   // depth
 	)
 	got := g.wm.AddRecGroup(wasm.Rec(wasm.SubFinal([]uint32{obj}, panicComp)))
 	g.types.ByName["$go.panicObj"] = got
@@ -706,6 +707,8 @@ func (g *gen) fieldIndex(typeName, field string) (uint32, error) {
 				return 1, nil
 			case "next", "2":
 				return 2, nil
+			case "depth", "3":
+				return 3, nil
 			}
 		case "$go.defer":
 			switch field {

@@ -262,6 +262,23 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 									return nil, err
 								}
 								out = append(out, defs...)
+								// Spill to a cell so each case execution can
+								// allocate a fresh one (loop &x; issue48289).
+								obj := fl.info.Defs[id]
+								if obj == nil {
+									continue
+								}
+								v := fl.vars[obj]
+								if v == nil {
+									continue
+								}
+								cellName, err := fl.pkg.ensureCellType(v.Typ)
+								if err != nil {
+									return nil, err
+								}
+								if err := fl.ensureLocalCell(obj, cellName, v.Typ); err != nil {
+									return nil, err
+								}
 							}
 						}
 					} else {
@@ -362,6 +379,37 @@ func (fl *funcLower) selectStmt(s *ast.SelectStmt) ([]ir.Stmt, error) {
 		}
 		meta := casesMeta[i]
 		body := &ir.Seq{}
+		// Fresh cells for DEFINE recv vars each time this case runs so
+		// &x across loop iterations does not alias (issue48289).
+		if meta.kind == 0 && meta.assign != nil && meta.assign.Tok == token.DEFINE {
+			for _, lhs := range meta.assign.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok || id.Name == "_" {
+					continue
+				}
+				obj := fl.info.Defs[id]
+				if obj == nil || fl.cells == nil {
+					continue
+				}
+				cv, ok := fl.cells[obj]
+				if !ok {
+					continue
+				}
+				cellTy, _ := cv.Typ.(*ir.Ref)
+				if cellTy == nil {
+					continue
+				}
+				z, err := fl.zeroValue(fl.vars[obj].Typ)
+				if err != nil {
+					return nil, err
+				}
+				body.Stmts = append(body.Stmts, fl.assignVar(cv, &ir.Instr{
+					Op:   ir.OpStructNew,
+					Type: &ir.Ref{Named: cellTy.Named},
+					Args: []ir.Expr{z},
+				}))
+			}
+		}
 		// Bind recv results from selectGo's returned iface/ok when assign form.
 		if meta.kind == 0 && meta.assign != nil {
 			lhs0 := meta.assign.Lhs[0]
