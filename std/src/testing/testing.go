@@ -132,6 +132,11 @@ func Main(matchString func(pat, str string) (bool, error), tests []InternalTest,
 
 // Run executes matching tests and returns a process exit code.
 func (m *M) Run() int {
+	// wasmgc: os.Args is filled in os.init, but importers may call Short() before
+	// Args is visible and cache flagsParsed with -test.v false. Re-read at suite start.
+	flagsParsed = false
+	verbose = false
+	shortFlag = false
 	matchPat := parseTestFlags()
 	failed := false
 	for _, tc := range m.tests {
@@ -139,7 +144,7 @@ func (m *M) Run() int {
 			continue
 		}
 		t := &T{name: tc.Name, chatty: verbose, matchPat: matchPat}
-		if verbose {
+		if Verbose() {
 			fmt.Fprintf(os.Stdout, "=== RUN   %s\n", t.name)
 		}
 		func() {
@@ -154,7 +159,7 @@ func (m *M) Run() int {
 			tc.F(t)
 		}()
 		if t.skipped {
-			if verbose {
+			if Verbose() {
 				fmt.Fprintf(os.Stdout, "--- SKIP: %s\n", t.name)
 			}
 			continue
@@ -164,7 +169,7 @@ func (m *M) Run() int {
 			fmt.Fprintf(os.Stdout, "--- FAIL: %s\n", t.name)
 			continue
 		}
-		if verbose {
+		if Verbose() {
 			fmt.Fprintf(os.Stdout, "--- PASS: %s\n", t.name)
 		}
 	}
