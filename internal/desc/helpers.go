@@ -88,6 +88,12 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectImplements()
 	g.fillReflectNew()
 	g.fillReflectMakeSlice()
+	if err := g.fillReflectMethodHelpers(); err != nil {
+		return err
+	}
+	if err := g.fillReflectMakeFuncHelpers(); err != nil {
+		return err
+	}
 	return nil
 }
 

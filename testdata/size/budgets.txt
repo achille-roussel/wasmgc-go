@@ -1,8 +1,9 @@
 # Hard ceilings (names off). Fail CI if a build exceeds the budget.
 # M10: generous headroom — size corpus is a loose regression guard only.
+# Reflect Method/REFLECTMETHOD keeps method graphs live (~2× fmt corpus).
 empty_main	512
 println	2048
-m8_fmt_hello	290000
-m8_fmt_map	320000
-m8_fmt_float	330000
-m8_fmt_quote	310000
+m8_fmt_hello	700000
+m8_fmt_map	720000
+m8_fmt_float	740000
+m8_fmt_quote	720000

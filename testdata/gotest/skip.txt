@@ -10,13 +10,10 @@ abi/convT64_criteria.go — output mismatch
 abi/idata.go — unsupported: unsafe
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
-args.go — failed: panic: argc
 blank.go — wasm validate/compile error
-chan/doubleselect.go — failed: panic: runtime error: slice bounds out of range
 chan/powser1.go — compile error: lower: copy: unsupported dst type
 chan/powser2.go — compile error: lower: field index 0 out of range for gotestcase.PS
 chan/sieve2.go — output mismatch
-closure2.go — failed: panic: g() != 1
 cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
 const4.go — output mismatch
@@ -25,7 +22,6 @@ convT2X.go — codegen: missing struct field
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 deferfin.go — unsupported: unsafe
 devirtualization_nil_panics.go — compile error: codegen
-escape.go — wasm validate/compile error
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
 fixedbugs/bug114.go — compile error: build: load: typecheck
@@ -46,8 +42,6 @@ fixedbugs/issue14646.go — output mismatch: runtime.Caller stub returns line=0
 fixedbugs/issue15281.go — output mismatch
 fixedbugs/issue15329.go — unsupported: unsafe
 fixedbugs/issue15528.go — unsupported: unsafe
-fixedbugs/issue15975.go — runtime error: nil iface defer Close null deref (need panic)
-fixedbugs/issue16331.go — compile error: build: load: typecheck
 fixedbugs/issue17039.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3df8cf8e0380 stack=[0x3d…
 fixedbugs/issue17381.go — unsupported: unsafe
 fixedbugs/issue18149.go — compile error: codegen
@@ -66,16 +60,13 @@ fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
-fixedbugs/issue25897b.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value
 fixedbugs/issue26094.go — failed: panic: <nil>
 fixedbugs/issue27201.go — compile error: codegen
 fixedbugs/issue27518a.go — compile error: codegen
 fixedbugs/issue27518b.go — compile error: codegen
-fixedbugs/issue27695.go — runtime error: reflect.Value.Interface on zero Value
 fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
 fixedbugs/issue28748.go — compile error: build: load: typecheck
-fixedbugs/issue29190.go — runtime error
 fixedbugs/issue29362.go — unsupported: unsafe
 fixedbugs/issue29362b.go — unsupported: unsafe
 fixedbugs/issue29504.go — compile error: codegen
@@ -117,7 +108,6 @@ fixedbugs/issue59293.go — runtime error
 fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice obj=*types.Builtin crypto/internal/fips140/subtle: lower: not a …
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
 fixedbugs/issue59411.go — failed: panic: BAD
-fixedbugs/issue6055.go — runtime error: nil iface defer Close null deref (need panic)
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
 fixedbugs/issue69507.go — failed: Error: wasmgc.js: module has no exported function run     at runInstance (file:///agent/repos/wasmgc…
@@ -129,7 +119,6 @@ fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.
 fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ratio loop
 fixedbugs/issue7690.go — compile error: lower: unsupported binary op &^ for width i32 regexp/syntax: lower: unsupported binary op &^ for wid…
 fixedbugs/issue77779.go — runtime error
-fixedbugs/issue78295.go — compile error: lower: field index 0 out of range for gotestcase.B
 fixedbugs/issue79762.go — runtime error: null deref / stub Stack
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
@@ -143,7 +132,6 @@ gcgort.go — compile error: IR verify complex64 nullability
 genmeth.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
 genmeth1.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
 genmeth2.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
-goprint.go — runtime error: printF64bits unreachable
 heapsampling.go — output mismatch
 init1.go — output mismatch
 initialize.go — failed: build: pipeline: IR verify: return value 0: have refnull $go.slice.i8, want i32 in $go.acc.go_array_…
@@ -159,14 +147,6 @@ nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
 range4.go — output mismatch
-recover.go — compile error: build: load: typecheck
-reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod2.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value
-reflectmethod3.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod4.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod5.go — compile error: codegen
-reflectmethod6.go — compile error: codegen
-reflectmethod7.go — failed: panic: FAIL
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error

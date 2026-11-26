@@ -58,10 +58,10 @@ type funcLower struct {
 	// plainDirty marks locals written via the plain var (not the cell) since
 	// the last cell sync. buildClosure syncs local→cell only when dirty so
 	// loop-carried closure writes to the cell are not wiped by a stale local.
-	plainDirty           map[types.Object]bool
-	hasDefer             bool
-	deferUsesList        bool
-	deferInLoop          bool
+	plainDirty map[types.Object]bool
+	hasDefer      bool
+	deferUsesList bool
+	deferInLoop   bool
 	deferCount           int
 	defersVar            *ir.Var
 	mayPanic             bool

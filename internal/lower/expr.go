@@ -2096,19 +2096,65 @@ func (fl *funcLower) bytesToString(x ir.Expr, src types.Type, srcIR ir.Type) (ir
 }
 
 func (fl *funcLower) stringToBytes(x ir.Expr, dst types.Type, dstIR ir.Type) (ir.Expr, []ir.Stmt, error) {
-	// Share string backing as a []byte slice header.
+	// Allocate and copy (docs/design/03): []byte(s) must not share the
+	// string's $go.bytes — Replacer and others mutate the slice in place.
 	st := typeString
-	data := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{x}}
-	off := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{x}}
-	len_ := &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{x}}
+	bytesTy := &ir.Ref{Null: true, Named: "$go.bytes"}
 	sliceTy := dstIR
 	if _, ok := sliceTy.(*ir.Ref); !ok {
 		sliceTy = &ir.Ref{Null: true, Named: "$go.slice.i8"}
 	}
-	return &ir.Instr{
-		Op: ir.OpStructNew, Type: sliceTy,
-		Args: []ir.Expr{data, off, len_, len_}, // cap = len
-	}, nil, nil
+	srcV := fl.newVar("s2bSrc", st)
+	lenV := fl.newVar("s2bLen", ir.TypeI32)
+	dstV := fl.newVar("s2bDst", bytesTy)
+	outV := fl.newVar("s2b", sliceTy)
+	var stmts []ir.Stmt
+	stmts = append(stmts,
+		fl.assignVar(srcV, x),
+		fl.assignVar(lenV, &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}),
+	)
+	empty := &ir.Seq{Stmts: []ir.Stmt{
+		fl.assignVar(outV, &ir.Instr{
+			Op: ir.OpStructNew, Type: sliceTy,
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpArrayNewDefault, Type: bytesTy, Args: []ir.Expr{fl.i32const(0)}},
+				}},
+				fl.i32const(0),
+				fl.i32const(0),
+				fl.i32const(0),
+			},
+		}),
+	}}
+	copyThen := &ir.Seq{}
+	copyThen.Stmts = append(copyThen.Stmts,
+		fl.assignVar(dstV, &ir.Instr{Op: ir.OpArrayNewDefault, Type: bytesTy, Args: []ir.Expr{fl.useVar(lenV)}}),
+		&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpArrayCopy, Type: bytesTy, Type2: bytesTy,
+			Args: []ir.Expr{
+				fl.useVar(dstV),
+				fl.i32const(0),
+				&ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
+				fl.useVar(lenV),
+			},
+		}},
+		fl.assignVar(outV, &ir.Instr{
+			Op: ir.OpStructNew, Type: sliceTy,
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dstV)}},
+				fl.i32const(0),
+				fl.useVar(lenV),
+				fl.useVar(lenV),
+			},
+		}),
+	)
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(lenV)}},
+		Then: empty,
+		Else: copyThen,
+	})
+	return fl.useVar(outV), stmts, nil
 }
 
 // intToString lowers string(r) via unicode/utf8.AppendRune then []byte→string.

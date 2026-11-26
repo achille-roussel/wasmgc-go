@@ -126,6 +126,15 @@ func (rt *runtimeLower) expandIfaceCall(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		pre = append(pre, &ir.VarDef{Var: v})
 	}
 	pre = append(pre, assignV(ifaceV, recv))
+	// Nil interface method call must panic recoverably (issue15975/6055),
+	// not trap on struct.get of a null $go.iface.
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
+	})
 	pre = append(pre, assignV(itabV, &ir.Instr{
 		Op:   ir.OpRefCast,
 		Type: itabTy,

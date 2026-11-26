@@ -524,7 +524,8 @@ func (g *gen) bodyDeferRun() wasm.Code {
 		wasm.ExnRef(),
 	})
 	enc := wasm.NewEncoder()
-	// locals: 0=d (param), 1=clos, 2=pobj, 3=exn, 4=prior (panic before call)
+	// locals: 0=d (param), 1=clos, 2=pobj, 3=exn, 4=prior (panic before call),
+	// 5=startPanic ($g.panic at deferRun entry), 6=walk (ancestor walk)
 	// Record entry depth then deferDepth++. defer recover() only succeeds when
 	// panic.depth < deferStartDepth (panic from an outer frame).
 	enc.GlobalGet(g.globals["$g"])
@@ -537,6 +538,14 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.I32Const(1)
 	enc.I32Add()
 	enc.StructSet(gTy, 6)
+	// Snapshot entry panic. End-of-deferRun must not rethrow an inherited
+	// outer panic that was already pending (or an ancestor left after a
+	// nested recover) — that aborts a still-running deferred frame
+	// (recover.go test111 / badstate). The caller's try handler rethrows
+	// when it is responsible for the panic.
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.LocalSet(5) // startPanic
 	enc.Block(wasm.BlockEmpty()) // $done
 	enc.Loop(wasm.BlockEmpty())  // $walk
 	enc.LocalGet(0)
@@ -641,7 +650,13 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.I32Const(1)
 	enc.I32Sub()
 	enc.StructSet(gTy, 6)
-	// If a live panic remains, rethrow so the caller's try handler decides.
+	// Rethrow a live panic only when it is new relative to entry:
+	//   - $g.panic == startPanic → leave for caller (handler rethrows if
+	//     this invocation was for that panic; normal return during an
+	//     outer panic must not abort the deferred frame — recover test111)
+	//   - $g.panic is a proper ancestor of startPanic → nested recover left
+	//     the outer panic; leave it for the deferred caller
+	//   - otherwise → new unrecovered panic from a defer; rethrow
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
 	enc.RefIsNull()
@@ -650,14 +665,77 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
 	enc.RefAsNonNull()
+	enc.StructGet(panicObj, 1) // recovered?
+	enc.If(wasm.BlockEmpty())
+	enc.Else()
+	// live unrecovered
+	enc.LocalGet(5) // startPanic
+	enc.RefIsNull()
+	enc.If(wasm.BlockEmpty())
+	// no entry panic → any live panic is new
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefAsNonNull()
+	enc.Throw(g.panicTagIdx)
+	enc.Unreachable()
+	enc.Else()
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.LocalGet(5)
+	enc.RefEq()
+	enc.If(wasm.BlockEmpty())
+	// same as entry — caller decides
+	enc.Else()
+	// walk startPanic.next* for $g.panic (proper ancestor?)
+	enc.LocalGet(5)
+	enc.LocalSet(6) // walk
+	enc.Block(wasm.BlockEmpty()) // $ancDone
+	enc.Loop(wasm.BlockEmpty())  // $ancWalk
+	enc.LocalGet(6)
+	enc.RefIsNull()
+	enc.BrIf(1)
+	enc.LocalGet(6)
+	enc.RefAsNonNull()
+	enc.StructGet(panicObj, 2) // next
+	enc.LocalSet(6)
+	enc.LocalGet(6)
+	enc.RefIsNull()
+	enc.BrIf(1)
+	enc.LocalGet(6)
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefEq()
+	enc.If(wasm.BlockEmpty())
+	enc.Br(2) // ancestor → $ancDone, no throw
+	enc.End()
+	enc.Br(0)
+	enc.End() // $ancWalk
+	enc.End() // $ancDone
+	// not an ancestor → new panic
+	enc.LocalGet(6)
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefEq()
+	enc.If(wasm.BlockEmpty())
+	// walked onto $g.panic (ancestor case already branched)
+	enc.Else()
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefAsNonNull()
 	enc.Throw(g.panicTagIdx)
 	enc.Unreachable()
 	enc.End()
+	enc.End() // not same as entry
+	enc.End() // startPanic non-null
+	enc.End() // not recovered
+	enc.End() // panic non-null
 	return wasm.CodeFrom([]wasm.Local{
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(closTy))},
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(panicObj))},
 		{Count: 1, Type: wasm.ExnRef()},
-		{Count: 1, Type: wasm.RefNull(wasm.TypeIndexHeap(panicObj))},
+		{Count: 1, Type: wasm.RefNull(wasm.TypeIndexHeap(panicObj))}, // prior
+		{Count: 1, Type: wasm.RefNull(wasm.TypeIndexHeap(panicObj))}, // startPanic
+		{Count: 1, Type: wasm.RefNull(wasm.TypeIndexHeap(panicObj))}, // walk
 	}, enc)
 }
 

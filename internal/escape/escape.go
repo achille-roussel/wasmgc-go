@@ -88,7 +88,9 @@ func markEscaping(r ir.Region, addrs map[string]*addrInfo) {
 					if s.Lhs[0].Temp != nil {
 						lhs = s.Lhs[0].Temp.Name
 					}
-					addrs[lhs] = &addrInfo{instr: info.instr, name: lhs}
+					// Share the same addrInfo so escape via a copy (e.g. fat-ptr
+					// compare temps) keeps the original OpAddr materialization.
+					addrs[lhs] = info
 				}
 			}
 			markUses(s.Rhs, addrs, false) // assigning addr to local does not escape by itself

@@ -549,35 +549,67 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 	// panicmakeslice* (recoverable), not Wasm "array too large" RuntimeError.
 	// maxMakeElems is well below engine array limits but above any realistic
 	// passing make; GOROOT makeslice tests use MaxInt32 / ^uint32(0).
+	// Zero-sized elems (e.g. struct{}) may be MaxInt — host Go allocates no
+	// backing store. Allow oversized len/cap and use a shared empty array only
+	// when cap exceeds maxMakeElems (small caps still allocate so &s[i] works).
 	const maxMakeElems = 1 << 28
+	zeroSize := rt.isZeroSizeArrayElem(arrName)
 	lenV := rt.newVar("mlen", ir.TypeI32)
 	capV := rt.newVar("mcap", ir.TypeI32)
 	pre = append(pre, &ir.VarDef{Var: lenV}, &ir.VarDef{Var: capV})
 	pre = append(pre, assignV(lenV, lenEx), assignV(capV, capEx))
-	maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
-	// len < 0 || uint(len) > max → makeslice: len out of range
-	pre = append(pre, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
-			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+	// len < 0 → makeslice: len out of range; also too-large when elems have size
+	lenBad := &ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: 0}}}
+	if !zeroSize {
+		maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
+		lenBad = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			lenBad,
 			&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{useV(lenV), maxC}},
-		}},
+		}}
+	}
+	pre = append(pre, &ir.If{
+		Cond: lenBad,
 		Then: &ir.Seq{Stmts: rt.panicMakeSliceLen()},
 	})
-	// cap < len || cap < 0 || uint(cap) > max → makeslice: cap out of range
+	// cap < len || cap < 0 [|| uint(cap) > max] → makeslice: cap out of range
+	capBad := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), useV(lenV)}},
+		&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+	}}
+	if !zeroSize {
+		maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
+		capBad = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			capBad,
+			&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{useV(capV), maxC}},
+		}}
+	}
 	pre = append(pre, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
-			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), useV(lenV)}},
-			&ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
-				&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(capV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
-				&ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{useV(capV), maxC}},
-			}},
-		}},
+		Cond: capBad,
 		Then: &ir.Seq{Stmts: rt.panicMakeSliceCap()},
 	})
 
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
-	alloc, allocPre := rt.allocArray(arrName, useV(capV))
-	pre = append(pre, allocPre...)
+	var alloc ir.Expr
+	var allocPre []ir.Stmt
+	if zeroSize {
+		// Huge zero-size slices: header carries len/cap; backing is shared empty
+		// (zerobase). Modest caps allocate so indexing / &elem stays in-bounds.
+		// Init dataV before the branch — (ref array) locals are non-defaultable.
+		maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
+		modest := &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(capV), maxC}}
+		allocOk, allocOkPre := rt.allocArray(arrName, useV(capV))
+		zerobase := ensureZeroLenArrayGlobal(rt.mod, arrName)
+		dataV := rt.newVar("mdata", &ir.Ref{Named: arrName})
+		pre = append(pre, &ir.VarDef{Var: dataV}, assignV(dataV, zerobase))
+		pre = append(pre, &ir.If{
+			Cond: modest,
+			Then: &ir.Seq{Stmts: append(append([]ir.Stmt{}, allocOkPre...), assignV(dataV, allocOk))},
+		})
+		alloc = useV(dataV)
+	} else {
+		alloc, allocPre = rt.allocArray(arrName, useV(capV))
+		pre = append(pre, allocPre...)
+	}
 	pre = append(pre, &ir.Assign{
 		Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}},
 		Rhs: alloc,
@@ -596,6 +628,19 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		},
 	})
 	return pre, nil
+}
+
+func (rt *runtimeLower) isZeroSizeArrayElem(arrName string) bool {
+	td := rt.mod.LookupType(arrName)
+	if td == nil || td.Kind != ir.TypeArray {
+		return false
+	}
+	r, ok := td.Elem.(*ir.Ref)
+	if !ok || !strings.HasPrefix(r.Named, "$go.struct.") {
+		return false
+	}
+	ntd := rt.mod.LookupType(r.Named)
+	return ntd != nil && ntd.Kind == ir.TypeStruct && len(ntd.Fields) == 0
 }
 
 func (rt *runtimeLower) panicMakeSliceLen() []ir.Stmt {
@@ -1304,6 +1349,19 @@ func (rt *runtimeLower) expandAppend(s *ir.Assign, in *ir.Instr, n *int) ([]ir.S
 	pre = append(pre,
 		assignV(nlenV, &ir.Instr{Op: ir.OpI32Add, Args: []ir.Expr{useV(lenV), &ir.Const{Op: ir.OpI32Const, I64: int64(add)}}}),
 	)
+	// Zero-sized elems may be MaxInt (issue29190): append past MaxInt must
+	// panicmakeslicelen, not Wasm "array too large". Non-zero elems keep the
+	// existing grow path (smoke tests lack panicmakeslicelen without rtlink).
+	if rt.isZeroSizeArrayElem(arrName) {
+		overflow := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{useV(nlenV), useV(lenV)}},
+			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{useV(nlenV), &ir.Const{Op: ir.OpI32Const, I64: 0}}},
+		}}
+		pre = append(pre, &ir.If{
+			Cond: overflow,
+			Then: &ir.Seq{Stmts: rt.panicMakeSliceLen()},
+		})
+	}
 
 	fits := &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(nlenV), useV(capV)}}
 	nnData := func(v *ir.Var) ir.Expr {

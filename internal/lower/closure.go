@@ -597,9 +597,12 @@ func (fl *funcLower) buildClosure(closName, funcTy, bodyName string, caps []capt
 			// Skip when vars[obj] is the cell itself (nested closure child that
 			// already bound the capture as a cell local — syncing would write
 			// the cell ref into field v).
-			// Also skip inside loops: the sync IR would re-run every iteration and
-			// clobber cell updates from earlier closures in the same iteration
-			// (e.g. `for a[func(){ q++ }()] = range … { g = func(){ return q } }`).
+			// Inside loops: if the plain write happened before the loop
+			// (loopEntryDirty), hoist the sync once before the loop so
+			// per-iteration closure creation does not wipe cell updates from
+			// child closures (closure2 `a[func(){ q++ }()] = range`). Writes
+			// that dirtied the plain local inside the body still sync each
+			// iteration (needed for testing.M and slices iterators).
 			if v := fl.vars[c.obj]; v != nil && v != cv && fl.plainDirty[c.obj] {
 				cellTy := cv.Typ.(*ir.Ref).Named
 				stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
@@ -1402,6 +1405,156 @@ func (fl *funcLower) markRangeIterVar(obj types.Object) {
 		fl.rangeIterVars = map[types.Object]bool{}
 	}
 	fl.rangeIterVars[obj] = true
+}
+
+// markForBodyIterVars marks for-loop body declarations that closures should
+// capture by value. Each iteration has a distinct binding; a shared cell would
+// make every closure see the last iteration's value (escape.go for_escapes3:
+// p := new(int) inside the loop). Skip variables that are assigned after
+// declaration — those need a cell so yield/closures share updates (slices
+// TestValues: ev := 0; for v := range Values(s) { ev++ }).
+func (fl *funcLower) markForBodyIterVars(body *ast.BlockStmt) {
+	if body == nil {
+		return
+	}
+	defs := map[types.Object]bool{}
+	assigned := map[types.Object]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			// Still walk nested lits for assignment uses of outer defs.
+			return true
+		case *ast.AssignStmt:
+			for _, lhs := range n.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if n.Tok == token.DEFINE {
+					if obj := fl.info.Defs[id]; obj != nil {
+						defs[obj] = true
+					}
+				}
+				if obj := fl.info.Uses[id]; obj != nil {
+					assigned[obj] = true
+				}
+				// Defs on DEFINE also count as the initial assign only; later
+				// Uses-as-LHS are tracked above. IncDec handled separately.
+			}
+		case *ast.IncDecStmt:
+			if id, ok := n.X.(*ast.Ident); ok {
+				if obj := fl.info.Uses[id]; obj != nil {
+					assigned[obj] = true
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range n.Names {
+				if obj := fl.info.Defs[name]; obj != nil {
+					defs[obj] = true
+				}
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.DEFINE {
+				if id, ok := n.Key.(*ast.Ident); ok {
+					if obj := fl.info.Defs[id]; obj != nil {
+						defs[obj] = true
+					}
+				}
+				if id, ok := n.Value.(*ast.Ident); ok {
+					if obj := fl.info.Defs[id]; obj != nil {
+						defs[obj] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	for obj := range defs {
+		if assigned[obj] {
+			continue
+		}
+		fl.markRangeIterVar(obj)
+	}
+}
+
+
+
+
+
+// ensureRangeAssignCell boxes an assign-form range key/value before the loop
+// body is lowered, so iteration writes go through the cell from the first
+// assignLocalSync (not only after a nested closure calls ensureLocalCell).
+
+
+
+// syncCellsToPlain copies each cell's value into its plain local. Used after
+// evaluating expressions that may run closures which write through cells
+// without updating the parent plain (nested capture writeVar).
+func (fl *funcLower) syncCellsToPlain() []ir.Stmt {
+	if fl.cells == nil {
+		return nil
+	}
+	var out []ir.Stmt
+	for obj, cv := range fl.cells {
+		v := fl.vars[obj]
+		if v == nil || v == cv {
+			continue
+		}
+		cellTy, ok := cv.Typ.(*ir.Ref)
+		if !ok {
+			continue
+		}
+		out = append(out, fl.assignVar(v, &ir.Instr{
+			Op:    ir.OpStructGet,
+			Type:  &ir.Ref{Named: cellTy.Named},
+			Field: "v",
+			Args:  []ir.Expr{fl.useVar(cv)},
+		}))
+	}
+	return out
+}
+
+// syncPlainToCells copies each plain local into its capture cell. Needed before
+// reading through cells when the plain was written without assignLocalSync
+// (e.g. i := 1 before assign-form `for i, x[i] = range` — cellInit at function
+// start captured the zero value).
+func (fl *funcLower) syncPlainToCells() []ir.Stmt {
+	if fl.cells == nil {
+		return nil
+	}
+	var out []ir.Stmt
+	for obj, cv := range fl.cells {
+		v := fl.vars[obj]
+		if v == nil || v == cv {
+			continue
+		}
+		cellTy, ok := cv.Typ.(*ir.Ref)
+		if !ok {
+			continue
+		}
+		out = append(out, &ir.ExprStmt{X: &ir.Instr{
+			Op:    ir.OpStructSet,
+			Type:  &ir.Ref{Named: cellTy.Named},
+			Field: "v",
+			Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
+		}})
+	}
+	return out
+}
+
+func (fl *funcLower) ensureRangeAssignCell(obj types.Object) {
+	if obj == nil || fl.vars[obj] == nil {
+		return
+	}
+	ty, err := fl.mapType(obj.Type())
+	if err != nil {
+		return
+	}
+	cell, err := fl.pkg.ensureCellType(ty)
+	if err != nil {
+		return
+	}
+	_ = fl.ensureLocalCell(obj, cell, ty)
 }
 
 // markPlainDirty records that obj was written via the plain local (not a cell).

@@ -390,11 +390,20 @@ func structOf(t types.Type) *types.Struct {
 	if t == nil {
 		return nil
 	}
-	if p, ok := types.Unalias(t).(*types.Pointer); ok {
-		t = p.Elem()
+	// Unwrap named types and pointers so `type T *struct{…}` / `type B *S`
+	// still resolve to the underlying struct (issue78295, issue23017, powser2).
+	for t != nil {
+		u := types.Unalias(t).Underlying()
+		if st, ok := u.(*types.Struct); ok {
+			return st
+		}
+		if p, ok := u.(*types.Pointer); ok {
+			t = p.Elem()
+			continue
+		}
+		break
 	}
-	st, _ := types.Unalias(t).Underlying().(*types.Struct)
-	return st
+	return nil
 }
 
 func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.Stmt, error) {
@@ -407,11 +416,9 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				if err != nil {
 					return nil, nil, err
 				}
-				// Prefer contextual want for rune/int consts used as uint64
-				// (e.g. u <= utf8.MaxRune in fmt.(*fmt).fmtUnicode).
-				if want != nil && irNumWidth(want) == ir.I64 && irNumWidth(ty) == ir.I32 {
-					ty = want
-				}
+				// Prefer contextual want for untyped numerics (float32 return of
+				// math.SmallestNonzeroFloat32; rune/int as uint64 in fmtUnicode).
+				ty = preferNumericWant(ty, want, c.Type())
 				ex, err := fl.constVal(c.Val(), ty)
 				return ex, nil, err
 			}

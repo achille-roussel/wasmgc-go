@@ -1663,11 +1663,10 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 	}
 	if len(s.Results) == 0 {
 		if len(fl.namedResults) > 0 {
-			var results []ir.Expr
-			for _, v := range fl.namedResults {
-				results = append(results, fl.useVar(v))
-			}
-			return []ir.Stmt{&ir.Return{Results: results}}, nil
+			// Sync cell-boxed named results (e.g. written by a goroutine
+			// closure) into plain locals before returning (escape.go defer1).
+			out := fl.syncNamedResultCells()
+			return append(out, fl.resultReturn()), nil
 		}
 		return []ir.Stmt{&ir.Return{}}, nil
 	}
@@ -1905,6 +1904,10 @@ func (fl *funcLower) forStmt(s *ast.ForStmt, goLabel string) ([]ir.Stmt, error) 
 		}
 		out = append(out, init...)
 	}
+	// Body-declared variables are per-iteration: closures must capture by
+	// value (the iteration's binding), not a shared cell updated each trip
+	// (escape.go for_escapes3: p := new(int) inside the loop).
+	fl.markForBodyIterVars(s.Body)
 
 	var breakL, contL, loopL string
 	if goLabel != "" {
@@ -2018,6 +2021,9 @@ func (fl *funcLower) emitRangeAssignForm(
 	valObj types.Object, valVar *ir.Var,
 ) ([]ir.Stmt, error) {
 	var out []ir.Stmt
+	// Plains may be ahead of cells (cellInit at fn start vs later i:=1). Refresh
+	// cells before prepare so IndexExpr indices see the pre-assign values.
+	out = append(out, fl.syncPlainToCells()...)
 	var keyTmp, valTmp *ir.Temp
 	if needKey {
 		kt := ir.Type(ir.TypeI32)
@@ -2101,6 +2107,9 @@ func (fl *funcLower) emitRangeAssignForm(
 	for _, p := range preps {
 		out = append(out, p.prep...)
 	}
+	// Index exprs may run closures that update cells (closure2 q++); keep
+	// parent plains in sync so a later plain→cell sync does not wipe them.
+	out = append(out, fl.syncCellsToPlain()...)
 	pi := 0
 	commit := func(p prepared, rhs ir.Expr, obj types.Object, v *ir.Var) error {
 		if p.kind == 1 {
@@ -2245,6 +2254,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 				}
 			} else if obj := fl.info.Uses[id]; obj != nil {
 				keyObj = obj
+				fl.markAssigned(obj)
+				fl.ensureRangeAssignCell(obj)
 			}
 			if !keyAliasIndex {
 				v, defs, err := fl.defineLocal(id)
@@ -2264,6 +2275,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 				fl.markRangeIterVar(valObj)
 			} else if obj := fl.info.Uses[id]; obj != nil {
 				valObj = obj
+				fl.markAssigned(obj)
+				fl.ensureRangeAssignCell(obj)
 			}
 			v, defs, err := fl.defineLocal(id)
 			if err != nil {
@@ -2435,6 +2448,8 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 				keyAliasIndex = true
 			} else if obj := fl.info.Uses[id]; obj != nil {
 				keyObj = obj
+				fl.markAssigned(obj)
+				fl.ensureRangeAssignCell(obj)
 			}
 			if !keyAliasIndex {
 				v, defs, err := fl.defineLocal(id)
