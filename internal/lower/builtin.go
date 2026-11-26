@@ -774,7 +774,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			}
 			stmts = append(stmts, cstmts...)
 			var pstmts []ir.Stmt
-			capEx, pstmts = fl.ensureI32LenChecked(e.Args[1], capEx)
+			capEx, pstmts = fl.ensureI32LenChecked(e.Args[1], capEx, "chan")
 			stmts = append(stmts, pstmts...)
 		}
 		return &ir.Instr{Op: ir.OpChanMake, Type: irt, Args: []ir.Expr{capEx}}, stmts, nil
@@ -809,7 +809,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 		return nil, nil, err
 	}
 	var pstmts []ir.Stmt
-	lenEx, pstmts = fl.ensureI32LenChecked(e.Args[1], lenEx)
+	lenEx, pstmts = fl.ensureI32LenChecked(e.Args[1], lenEx, "len")
 	stmts = append(stmts, pstmts...)
 	var capEx ir.Expr
 	if len(e.Args) >= 3 {
@@ -819,7 +819,7 @@ func (fl *funcLower) builtinMake(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.S
 			return nil, nil, err
 		}
 		stmts = append(stmts, cstmts...)
-		capEx, pstmts = fl.ensureI32LenChecked(e.Args[2], capEx)
+		capEx, pstmts = fl.ensureI32LenChecked(e.Args[2], capEx, "cap")
 		stmts = append(stmts, pstmts...)
 	} else {
 		capEx = lenEx
@@ -840,7 +840,8 @@ func (fl *funcLower) ensureI32Len(arg ast.Expr, ex ir.Expr) ir.Expr {
 
 // ensureI32LenChecked wraps i64 lengths to i32 after panicking when the value
 // is negative or does not fit in int32 (bug273 biglen/bigcap/bigchancap).
-func (fl *funcLower) ensureI32LenChecked(arg ast.Expr, ex ir.Expr) (ir.Expr, []ir.Stmt) {
+// kind is "len", "cap", or "chan" and selects the panic wording.
+func (fl *funcLower) ensureI32LenChecked(arg ast.Expr, ex ir.Expr, kind string) (ir.Expr, []ir.Stmt) {
 	t := fl.typeOf(arg)
 	if t == nil {
 		return ex, nil
@@ -860,8 +861,15 @@ func (fl *funcLower) ensureI32LenChecked(arg ast.Expr, ex ir.Expr) (ir.Expr, []i
 		}}
 	}
 	wrapped := &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{ex}}
+	panicFn := "runtime.panicmakeslicelen"
+	switch kind {
+	case "cap":
+		panicFn = "runtime.panicmakeslicecap"
+	case "chan":
+		panicFn = "runtime.panicmakechansize"
+	}
 	panicStmts := []ir.Stmt{
-		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicmakeslicelen"}},
+		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: panicFn}},
 		&ir.Unreachable{},
 	}
 	return wrapped, []ir.Stmt{&ir.If{Cond: oob, Then: &ir.Seq{Stmts: panicStmts}}}
