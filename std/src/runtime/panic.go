@@ -38,6 +38,13 @@ func panicNil() {
 	throwPanic(panicErr("runtime error: invalid memory address or nil pointer dereference"))
 }
 
+// panicWrapNil reports a value-method call through a nil *T interface
+// concrete (fixedbugs/issue19040). Matches gc runtime.panicwrap text:
+// "value method pkg.T.F called using nil *T pointer".
+func panicWrapNil(method, typ string) {
+	throwPanic(panicErr("value method " + method + " called using nil " + typ + " pointer"))
+}
+
 func panicDivide() {
 	throwPanic(panicErr("runtime error: integer divide by zero"))
 }

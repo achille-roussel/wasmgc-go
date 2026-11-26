@@ -193,6 +193,7 @@ var panicSyms = []string{
 	"runtime.panicSliceToArray",
 	"runtime.panicSliceB",
 	"runtime.panicNil",
+	"runtime.panicWrapNil",
 	"runtime.panicDivide",
 	"runtime.panicNegativeShift",
 	"runtime.panicUncomparable",
