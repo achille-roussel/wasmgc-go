@@ -736,23 +736,64 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	}
 	switch ut := ut.(type) {
 	case *types.Slice:
-		var args []ir.Expr
 		var stmts []ir.Stmt
 		elemGo := ut.Elem()
 		elemWant, err := fl.mapType(elemGo)
 		if err != nil {
 			return nil, nil, fl.errorf(e, "%v", err)
 		}
+		keyed := false
 		for _, el := range e.Elts {
-			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				el = kv.Value
+			if _, ok := el.(*ast.KeyValueExpr); ok {
+				keyed = true
+				break
 			}
-			ex, st, err := fl.coerceExpr(el, elemGo, elemWant)
+		}
+		if !keyed {
+			var args []ir.Expr
+			for _, el := range e.Elts {
+				ex, st, err := fl.coerceExpr(el, elemGo, elemWant)
+				if err != nil {
+					return nil, nil, err
+				}
+				stmts = append(stmts, st...)
+				args = append(args, ex)
+			}
+			return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+		}
+		maxIdx := -1
+		for _, el := range e.Elts {
+			kv := el.(*ast.KeyValueExpr)
+			c, ok := fl.constInt(kv.Key)
+			if !ok {
+				return nil, nil, fl.errorf(kv.Key, "slice literal key must be a constant integer")
+			}
+			if c < 0 {
+				return nil, nil, fl.errorf(kv.Key, "slice literal index %d out of bounds", c)
+			}
+			if int(c) > maxIdx {
+				maxIdx = int(c)
+			}
+		}
+		length := maxIdx + 1
+		args := make([]ir.Expr, length)
+		for i := range args {
+			z, err := fl.zeroValue(elemWant)
+			if err != nil {
+				return nil, nil, err
+			}
+			args[i] = z
+		}
+		for _, el := range e.Elts {
+			kv := el.(*ast.KeyValueExpr)
+			c, _ := fl.constInt(kv.Key)
+			idx := int(c)
+			ex, st, err := fl.coerceExpr(kv.Value, elemGo, elemWant)
 			if err != nil {
 				return nil, nil, err
 			}
 			stmts = append(stmts, st...)
-			args = append(args, ex)
+			args[idx] = ex
 		}
 		return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
 	case *types.Struct:

@@ -1576,13 +1576,21 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 	}
 	rt.ensureSliceTypes(sliceName, arrName)
 	st := &ir.Ref{Named: sliceName}
+	slTy := &ir.Ref{Null: true, Named: sliceName}
+	slV := rt.newVar("slh", slTy)
+	pre = append(pre, &ir.VarDef{Var: slV}, assignV(slV, sl))
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(slV)}},
+		Then: &ir.Seq{Stmts: append(rt.panicIndex(idx, &ir.Const{Op: ir.OpI32Const, I64: 0}), &ir.Unreachable{})},
+	})
+	slHdr := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(slV)}}
 	lenT := &ir.Temp{Name: rt.fresh("len"), Typ: ir.TypeI32}
 	offT := &ir.Temp{Name: rt.fresh("off"), Typ: ir.TypeI32}
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
 	pre = append(pre,
-		&ir.Assign{Lhs: []ir.Dest{{Temp: lenT, Name: lenT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: lenT, Name: lenT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{slHdr}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{slHdr}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{slHdr}}},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
 			Then: &ir.Seq{Stmts: rt.panicIndex(idx, &ir.Name{Temp: lenT, Raw: lenT.Name})},

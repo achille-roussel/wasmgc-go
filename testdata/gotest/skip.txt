@@ -90,7 +90,6 @@ fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30116.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30116u.go — IR verify: cannot assign i32 to var data9000 of type refnull any (tabwriter/nil)
 fixedbugs/issue30977.go — compile error: codegen
-fixedbugs/issue31987.go — failed: panic: runtime error: index out of range [7] with length 1
 fixedbugs/issue32477.go — compile error: codegen
 fixedbugs/issue33724.go — runtime error: null deref / stub stack
 fixedbugs/issue34123.go — compile error: codegen
@@ -150,7 +149,6 @@ fixedbugs/issue8047b.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue81863.go — runtime error
-fixedbugs/issue8336.go — runtime error: Wasm null deref on select <-(*X)(nil).c (not recoverable Go panic)
 fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
 gcgort.go — compile error: IR verify complex64 nullability
@@ -168,7 +166,6 @@ ken/chan1.go — output mismatch
 mallocfin.go — compile error: codegen
 maymorestack.go — compile error: codegen
 newexpr.go — wasm validate/compile error
-nil.go — runtime error: nil *[N]T element access (range/len compile OK)
 nilptr.go — unsupported: unsafe
 nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
