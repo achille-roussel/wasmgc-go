@@ -408,7 +408,7 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 	return pre, nil
 }
 
-// panicTypeAssertConcrete emits call runtime.panicTypeAssertTypes(got, want).
+// panicTypeAssertConcrete emits call runtime.panicTypeAssertTypes(kind, want).
 func (rt *runtimeLower) panicTypeAssertConcrete(gotTyp ir.Expr, typeKey string) []ir.Stmt {
 	want := strings.TrimPrefix(typeKey, "$go.type.")
 	if i := strings.LastIndex(want, "."); i >= 0 {
@@ -417,19 +417,27 @@ func (rt *runtimeLower) panicTypeAssertConcrete(gotTyp ir.Expr, typeKey string) 
 	if want == "" {
 		want = "?"
 	}
-	gotName := rt.newVar("gn", &ir.Ref{Named: "$go.string"})
+	kindV := rt.newVar("ak", ir.TypeI32)
 	return []ir.Stmt{
-		&ir.VarDef{Var: gotName},
-		assignV(gotName, &ir.Instr{
-			Op:   ir.OpCall,
-			Func: "runtime.TypeAssertGotName",
-			Args: []ir.Expr{gotTyp},
-			Type: &ir.Ref{Named: "$go.string"},
-		}),
+		&ir.VarDef{Var: kindV},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{gotTyp}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				assignV(kindV, &ir.Const{Op: ir.OpI32Const, I64: 0}),
+			}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				assignV(kindV, &ir.Instr{
+					Op:    ir.OpStructGet,
+					Type:  &ir.Ref{Named: "$go.type"},
+					Field: "kind",
+					Args:  []ir.Expr{gotTyp},
+				}),
+			}},
+		},
 		&ir.ExprStmt{X: &ir.Instr{
 			Op:   ir.OpCall,
 			Func: "runtime.panicTypeAssertTypes",
-			Args: []ir.Expr{useV(gotName), &ir.Instr{Op: ir.OpStringLit, Str: want}},
+			Args: []ir.Expr{useV(kindV), &ir.Instr{Op: ir.OpStringLit, Str: want}},
 		}},
 		&ir.Unreachable{},
 	}
