@@ -450,7 +450,7 @@ func packConstBytes(c *Const) []byte {
 }
 
 func flatArrayType(kinds []Op) (typeName string, getOp Op) {
-	hasI64, hasF64, hasF32 := false, false, false
+	hasI64, hasF64, hasF32, hasI32 := false, false, false, false
 	for _, op := range kinds {
 		switch op {
 		case OpI64Const:
@@ -459,13 +459,21 @@ func flatArrayType(kinds []Op) (typeName string, getOp Op) {
 			hasF64 = true
 		case OpF32Const:
 			hasF32 = true
+		case OpI32Const:
+			hasI32 = true
 		}
 	}
+	// Prefer integer backing when int and float of the same width are mixed.
+	// Loading mixed bit patterns through an f32/f64 array can NaN-canonicalize
+	// and corrupt integer fields (issue14553: struct{float32; uint32}).
 	switch {
-	case hasF64:
-		return "$go.array.f64", OpArrayGet
-	case hasI64:
+	case hasI64 || hasF64:
+		if hasF64 && !hasI64 {
+			return "$go.array.f64", OpArrayGet
+		}
 		return "$go.array.i64", OpArrayGet
+	case hasF32 && hasI32:
+		return "$go.array.i32", OpArrayGet
 	case hasF32:
 		return "$go.array.f32", OpArrayGet
 	default:
@@ -489,6 +497,19 @@ func coerceFlatGet(get Expr, want Op, flatName string) Expr {
 	}
 	if want == OpI32Const && flatName == "$go.array.i64" {
 		return &Instr{Op: OpI32WrapI64, Args: []Expr{get}}
+	}
+	// Mixed float/int same-width: reinterpret bit patterns.
+	if want == OpF32Const && flatName == "$go.array.i32" {
+		return &Instr{Op: OpF32ReinterpretI32, Args: []Expr{get}}
+	}
+	if want == OpI32Const && flatName == "$go.array.f32" {
+		return &Instr{Op: OpI32ReinterpretF32, Args: []Expr{get}}
+	}
+	if want == OpF64Const && flatName == "$go.array.i64" {
+		return &Instr{Op: OpF64ReinterpretI64, Args: []Expr{get}}
+	}
+	if want == OpI64Const && flatName == "$go.array.f64" {
+		return &Instr{Op: OpI64ReinterpretF64, Args: []Expr{get}}
 	}
 	return get
 }
