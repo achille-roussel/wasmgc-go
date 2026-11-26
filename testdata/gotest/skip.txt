@@ -66,12 +66,10 @@ fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
-fixedbugs/issue25897b.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value
 fixedbugs/issue26094.go — failed: panic: <nil>
 fixedbugs/issue27201.go — compile error: codegen
 fixedbugs/issue27518a.go — compile error: codegen
 fixedbugs/issue27518b.go — compile error: codegen
-fixedbugs/issue27695.go — runtime error: reflect.Value.Interface on zero Value
 fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
 fixedbugs/issue28748.go — compile error: build: load: typecheck
@@ -159,14 +157,7 @@ nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
 range4.go — output mismatch
-recover.go — compile error: build: load: typecheck
-reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod2.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value
-reflectmethod3.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod4.go — runtime: reflect.Type/Value.Method stub returns zero Value
-reflectmethod5.go — compile error: codegen
-reflectmethod6.go — compile error: codegen
-reflectmethod7.go — failed: panic: FAIL
+recover.go — failed: panic: <non-string> (Method works; panic value boxing)
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error
