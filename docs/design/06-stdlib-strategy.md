@@ -70,15 +70,27 @@ Seeded from a scan of `go1.27.4` `src`, excluding `cmd`, `runtime`, and `interna
 | `sync` | `cond.go` | Delete the `copyChecker` that stores `uintptr(unsafe.Pointer(c))`. Copy detection of `Cond` is not available. The rest of `Cond` stays. |
 | `sync` | `pool.go` | `indexLocal` cannot advance an `unsafe.Pointer` by `i * sizeof`. `Pool` in v1 is a single local plus the victim list, not a per-P array. `runtime_procPin` returns 0. The pool still caches. |
 | `fmt` | `print.go` | `fmtPointer` used `uintptr(value.UnsafePointer())`. Overlay prints `0x0` / `0x?` placeholders. Missed by the text scan in `05`. |
+| `errors` | `wrap.go` | Upstream `Is`/`Unwrap`/`Join`; overlay `As` uses interface type-assert targets (e.g. `Timeout`) instead of reflect walks that need more of the universe. |
+| `regexp` | `onepass.go` | `compileOnePass` stubbed (`makeOnePass` panics); the NFA engine stays. |
+| `math/bits` | `bits_errors.go` | Local `divideError` / `overflowError` (no `var` linkname into the runtime). |
+| `strings` | `builder.go` | `Builder` without `abi.NoEscape` / `MakeNoZero`; `String` shares the `[]byte` backing. |
 | `encoding/binary` | `native_endian_little.go` | Upstream is tagged with `wasm` among little-endian archs; `GOARCH=wasmgc` drops it. Overlay restores little-endian `NativeEndian` for wasmgc. |
 | `internal/cpu` | `cpu_wasmgc.go` | Added. Upstream `cpu_wasm.go` is dropped by the `*_wasm.go` filename rule; wasmgc needs `CacheLinePadSize` / `doinit`. |
 | `internal/goarch` | `goarch_wasmgc.go`, `zgoarch_wasmgc.go` | Same twin pattern. `GOARCH=wasmgc`, `IsWasm=0`. |
 | `hash/maphash` | `maphash.go` | Deferred: no rejected conversion on this pin (`unsafe.Pointer(&buf[0])` is supported). Overlay later when Comparable needs the descriptor `hash` funcref. |
 | `crypto/internal/fips140/alias` | `alias.go` | `AnyOverlap` uses the same backing-identity test as `slices.overlaps`. Upstream compares addresses. |
 | `os` | — | Under wasmgc, `file_unix.go` / `stat_js.go` are tagged `js && wasm` and drop. M8 uses a rewrite placeholder for stdio so `fmt` type-checks. M9 replaces it. |
-| `math` | `floor_asm.s` and the arch files | Not copied. The generic `floor_noasm.go` path is selected when the arch is `wasmgc`. Stays vendor. |
+| `math` | `floor_asm.s` and the arch files | Not copied. The generic `floor_noasm.go` path is selected when the arch is `wasmgc`. Stays **vendor**. |
 
-`strings.Builder` needs no overlay on this pin: `copyCheck` uses `abi.NoEscape(unsafe.Pointer(b))`, and `String` uses `unsafe.String`. Both are supported.
+### Additional rewrites (post-M8)
+
+| Package | Why |
+|---|---|
+| `math/rand/v2` | Minimal `IntN` / `New` / `NewPCG` stub for `sort` / `slices` tests. |
+| `internal/testenv` | Thin `Builder` / `OptimizationOff` / `MustHaveExec` stubs; avoids `os/exec` and `SysProcAttr`. |
+| `time` | Still a **rewrite**: `Now` / `Since` / `Sub` via `runtime.Walltime`, `Sleep` via `TimeSleep`. `Format` / `Parse` / `AppendFormat` are a thin subset (Kitchen, DateOnly, TimeOnly, RFC3339/RFC3339Nano always Z; other layouts fall back to Unix-nano decimal) — not a full upstream layout engine. |
+
+Upstream `strings.Builder` on this pin used `abi.NoEscape`; the overlay above is what the materializer installs.
 
 ### Inventory findings (stream H, go1.27.4)
 

@@ -737,10 +737,10 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is) and
-	// array/struct value-clone helpers (docs/design/03). Tighten once clone
-	// is shared/pruned across packages.
-	runM8(t, "m8_fmt_hello", "hello\n", 700*1024) // Method/REFLECTMETHOD keeps fmt/reflect graph live
+	// ~294 KiB after REFLECTMETHOD prune (itab RefFunc alone must not keep
+	// every exported method). Ceiling leaves headroom for #66–#71 defer/
+	// reflect/stdlib growth vs pre-#66 (~127 KiB / 172 KiB e2e).
+	runM8(t, "m8_fmt_hello", "hello\n", 320*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {

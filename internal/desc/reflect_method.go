@@ -4,6 +4,7 @@ import (
 	"go/token"
 	"go/types"
 	"strconv"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
@@ -28,14 +29,159 @@ type reflectMethTable struct {
 	ms   []reflectMeth
 }
 
+// isReflectMethodAPI reports whether name is a reflect Method/MethodByName
+// entry or an itab wrapper for one. An itab RefFunc to these must not keep
+// every exported method live — only an actual OpCall does (cmd/link REFLECTMETHOD).
+func isReflectMethodAPI(name string) bool {
+	switch name {
+	case "reflect.Value.Method", "reflect.Value.MethodByName",
+		"reflect.(*rtype).Method", "reflect.(*rtype).MethodByName":
+		return true
+	}
+	// itab wrappers: $go.wrap.reflect_Type.… .Method / .MethodByName
+	if strings.Contains(name, "reflect") {
+		if strings.HasSuffix(name, ".Method") || strings.HasSuffix(name, ".MethodByName") {
+			return true
+		}
+	}
+	return false
+}
+
+// needsReflectMethodBodies reports whether the program can reach
+// reflect.Value/Type.Method or MethodByName via a real call (OpCall or
+// call_ref of the ifacefn). Itab RefFunc edges alone do not count
+// (fmt.Println imports reflect.Type whose itab lists Method).
+func (g *gen) needsReflectMethodBodies() bool {
+	live := g.reachableFuncsRefFuncSkipMethodAPI()
+	for name := range live {
+		if isReflectMethodAPI(name) {
+			return true
+		}
+		f := g.mod.LookupFunc(name)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		found := false
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			// desc.Populate runs before RuntimeOps expands OpIfaceCall → call_ref.
+			// Match reflect.Type/Value and user ifaces that re-export Method
+			// (reflectmethod2/3 MyType); itab RefFunc alone must not match.
+			if in.Op == ir.OpIfaceCall && isReflectMethodSelector(in.Func) {
+				found = true
+			}
+			if in.Op == ir.OpCallRef && callRefIsReflectMethod(in) {
+				found = true
+			}
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func isReflectMethodSelector(name string) bool {
+	return name == "Method" || name == "MethodByName"
+}
+
+// callRefIsReflectMethod reports a call_ref of reflect.Type/Value.Method
+// or MethodByName (ifacefn type name encodes the selector).
+func callRefIsReflectMethod(in *ir.Instr) bool {
+	n := ifaceFnName(in.Type)
+	if n == "" {
+		return false
+	}
+	if !strings.Contains(n, "ifacefn.reflect_Type.") && !strings.Contains(n, "ifacefn.reflect_Value.") {
+		return false
+	}
+	return strings.HasSuffix(n, ".Method") || strings.HasSuffix(n, ".MethodByName")
+}
+
+func ifaceFnName(t ir.Type) string {
+	if x, ok := t.(*ir.Ref); ok {
+		return x.Named
+	}
+	return ""
+}
+
+// reachableFuncsRefFuncSkipMethodAPI is like reachableFuncs, but RefFunc
+// edges into Method/MethodByName APIs do not mark them live. OpCall still does.
+func (g *gen) reachableFuncsRefFuncSkipMethodAPI() map[string]bool {
+	live := map[string]bool{}
+	var q []string
+	mark := func(name string) {
+		if name == "" || live[name] {
+			return
+		}
+		if g.mod.LookupFunc(name) == nil {
+			return
+		}
+		live[name] = true
+		q = append(q, name)
+	}
+	for _, seed := range []string{"main.run", "main.main", "runtime.init", "main.init"} {
+		mark(seed)
+	}
+	for _, f := range g.mod.Funcs {
+		if strings.Contains(f.Name, ".init") || strings.HasSuffix(f.Name, ".init.0") {
+			mark(f.Name)
+		}
+		if f.Export != "" {
+			mark(f.Name)
+		}
+	}
+	for len(q) > 0 {
+		fn := q[0]
+		q = q[1:]
+		f := g.mod.LookupFunc(fn)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpCall && in.Func != "" {
+				mark(in.Func)
+			}
+			if in.Op == ir.OpRefFunc && in.Func != "" {
+				if isReflectMethodAPI(in.Func) {
+					return
+				}
+				mark(in.Func)
+			}
+		})
+	}
+	return live
+}
+
 // fillReflectMethodHelpers implements runtime.ReflectNumMethod / Method*
-// when reflect.Type/Value.Method is reachable. Emits method-expression and
-// method-value closures so Interface().(func…) works and DCE keeps the
-// underlying methods (REFLECTMETHOD).
+// when reflect.Type/Value.Method is reachable via a real call. Emits
+// method-expression and method-value closures so Interface().(func…) works
+// and DCE keeps the underlying methods (REFLECTMETHOD). When Method is only
+// present on reflect.Type's itab (fmt.Println), stubs return empty/nil so
+// exported methods stay pruneable.
 func (g *gen) fillReflectMethodHelpers() error {
 	if g.mod.LookupFunc("runtime.ReflectNumMethod") == nil {
 		return nil
 	}
+	if !g.needsReflectMethodBodies() {
+		g.fillReflectNumMethod(nil)
+		g.fillReflectMethodName(nil)
+		g.fillReflectMethodTypeOf(nil, true)
+		g.fillReflectMethodTypeOf(nil, false)
+		g.fillReflectMethodFunc(nil)
+		_ = g.fillReflectMethodValue(nil)
+		return nil
+	}
+
+	keepNames := g.reflectMethodByNameConstants() // nil ⇒ keep all exported
+
 	var tables []reflectMethTable
 	keys := make([]string, 0, len(g.types))
 	for k := range g.types {
@@ -58,6 +204,9 @@ func (g *gen) fillReflectMethodHelpers() error {
 			sel := ms.At(i)
 			fn, ok := sel.Obj().(*types.Func)
 			if !ok || !fn.Exported() {
+				continue
+			}
+			if keepNames != nil && !keepNames[fn.Name()] {
 				continue
 			}
 			// Only methods lowered into this module. Stdlib descriptors may
@@ -115,6 +264,91 @@ func (g *gen) fillReflectMethodHelpers() error {
 	g.fillReflectMethodTypeOf(tables, false)
 	g.fillReflectMethodFunc(tables)
 	return g.fillReflectMethodValue(tables)
+}
+
+// reflectMethodByNameConstants returns the set of method names if every
+// reachable Method/MethodByName use is MethodByName with a string literal
+// (OpCall or OpIfaceCall). nil means keep all exported methods (e.g. when
+// Method(index) is used, or any name is non-constant).
+func (g *gen) reflectMethodByNameConstants() map[string]bool {
+	live := g.reachableFuncsRefFuncSkipMethodAPI()
+	byName := false
+	index := false
+	names := map[string]bool{}
+	ok := true
+	for fnName := range live {
+		if isReflectMethodAPI(fnName) {
+			if strings.HasSuffix(fnName, "MethodByName") {
+				byName = true
+			} else if strings.HasSuffix(fnName, ".Method") || fnName == "reflect.Value.Method" {
+				index = true
+			}
+		}
+		f := g.mod.LookupFunc(fnName)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, okE := e.(*ir.Instr)
+			if !okE {
+				return
+			}
+			switch in.Op {
+			case ir.OpCall:
+				if !isReflectMethodAPI(in.Func) {
+					return
+				}
+				if strings.HasSuffix(in.Func, "MethodByName") {
+					byName = true
+					if len(in.Args) < 1 {
+						ok = false
+						return
+					}
+					s, isLit := stringConstArg(in.Args[len(in.Args)-1])
+					if !isLit {
+						ok = false
+						return
+					}
+					names[s] = true
+					return
+				}
+				index = true
+			case ir.OpIfaceCall:
+				if !isReflectMethodSelector(in.Func) {
+					return
+				}
+				if in.Func == "MethodByName" {
+					byName = true
+					if len(in.Args) < 1 {
+						ok = false
+						return
+					}
+					s, isLit := stringConstArg(in.Args[len(in.Args)-1])
+					if !isLit {
+						ok = false
+						return
+					}
+					names[s] = true
+					return
+				}
+				index = true
+			}
+		})
+		if !ok {
+			return nil
+		}
+	}
+	if index || !byName || len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func stringConstArg(e ir.Expr) (string, bool) {
+	if c, ok := e.(*ir.Const); ok && c.Op == ir.OpStringLit {
+		return c.Str, true
+	}
+	return "", false
 }
 
 func (g *gen) ensureFuncTypeDesc(key string, sig *types.Signature) {

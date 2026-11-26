@@ -312,7 +312,21 @@ A named type does not get its own Wasm type. `type ID int32` is `i32`. `type Nam
 
 The descriptor fields beyond `id`, `kind`, and `name` live in `$extra`, whose concrete subtype depends on the kind: a struct type points at a field list (name, tag, type descriptor, Wasm field index), an array or slice or chan or pointer points at the element descriptor, a map points at key and element, a func points at the signature. `reflect` reads these (`05-unsafe-and-reflect.md`). They are real fields, not an `abi.Type` byte blob walked with pointer arithmetic. wasm3's descriptor was an empty object whose identity mattered and whose fields did not (`docs/wasm3-study/01-type-mapping.md`).
 
+### Type-identity keys (`TypeKey`)
+
+Descriptor identity follows `internal/desc.TypeKey`, not raw `types.Type.String()`:
+
+- **`byte` / `rune`** are the specified aliases of `uint8` / `int32`: one descriptor each, so type switches and asserts treat them as identical.
+- **Function-/block-local named types** append `LocalTypeSuffix` (`_pN` from the declaration position) so a local `type B struct{}` does not collide with a package-level `B` (#52). The suffix avoids `$`, which would split IR/Wasm name tokens.
+- **Struct keys** use field names plus `TypeKey` of each field type (and tags), so `struct{Int}` (alias) differs from `struct{int}`, and two block-local aliases of the same name with different underlyings do not collapse.
+- **`[]T` vs `[]*T`** (and arrays) keep the pointer in the key (`[]*pkg.T` ≠ `[]pkg.T`); object-pointer elements also use distinct Wasm array names `$go.array.ptr.*` so `make`/`append` leave nulls (#65). `Sanitize` distinguishes `[]T` from `[N]T` so itab/type names do not collide.
+- **`complex64` / `complex128`** are distinct kinds (`KindComplex64` / `KindComplex128`) with `$go.complex64` / `$go.complex128` structs (mutable when addressable for `reflect.SetComplex`).
+
 Generics are monomorphized (`01-architecture.md`). A generic struct `Pair[T, U]` becomes one Wasm struct per instantiation that is allocated. The descriptor of `Pair[int, string]` is not the descriptor of `Pair[string, int]`.
+
+### Generic methods and parameterized interfaces
+
+When a concrete generic type is converted to an interface, the itab funcrefs must name **instantiated** method bodies (`mono.EnsureMethod`), not the generic origin (#53). Instantiation also covers constraint method calls and method values/expressions. **Parameterized interface** methods (`Abs[T].Abs`, `A2[T].m2`) have no bodies: `methodNeedsMono` skips them and dispatch stays ordinary itab `call_ref` (#54).
 
 ## Nil, in one place
 
