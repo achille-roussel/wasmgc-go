@@ -1918,7 +1918,16 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if !isNumericIR(actualSrc) || !isNumericIR(dstIR) {
 		return nil, nil, fl.errorf(e, "unsupported conversion %s → %s", src, dst)
 	}
-	conv, err := numericConv(actualSrc, dstIR, isUnsigned(src), isUnsigned(dst))
+	// Float → sub-width uint (uint8/uint16): Go truncates via signed i32/i64
+	// then masks to the type (convert5 golden: -1.0→255, -126.0→130).
+	// Full-width uint32/uint64 keep unsigned saturating truncation.
+	dstU := isUnsigned(dst)
+	if isFloat(src) && dstU {
+		if bits := goIntBits(dst); bits > 0 && bits < 32 {
+			dstU = false
+		}
+	}
+	conv, err := numericConv(actualSrc, dstIR, isUnsigned(src), dstU)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
