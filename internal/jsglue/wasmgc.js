@@ -317,8 +317,28 @@ function buildImports(module, opts) {
         };
         break;
       case "runtime.getEnv":
-        // Environ linear-memory copies land with a later os.Environ wire-up.
-        fn = () => 0;
+        // getEnv(keyPtr, keyLen, outPtr, max) → value byte length, or -1 if
+        // absent. Key/value UTF-8 live in linear memory (docs/design/07).
+        fn = (keyPtr, keyLen, outPtr, max) => {
+          const mem = getMemory();
+          const keyBytes = new Uint8Array(
+            mem.buffer,
+            keyPtr >>> 0,
+            keyLen >>> 0,
+          );
+          const key = new TextDecoder().decode(keyBytes);
+          const env = typeof process !== "undefined" && process.env ? process.env : {};
+          if (!Object.prototype.hasOwnProperty.call(env, key)) {
+            return -1;
+          }
+          const bytes = new TextEncoder().encode(String(env[key]));
+          const cap = max >>> 0;
+          const n = bytes.length < cap ? bytes.length : cap;
+          if (n > 0) {
+            new Uint8Array(mem.buffer, outPtr >>> 0, n).set(bytes.subarray(0, n));
+          }
+          return bytes.length | 0;
+        };
         break;
       case "js.get":
         fn = (obj, prop) => obj[prop];
