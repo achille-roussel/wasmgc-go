@@ -362,6 +362,11 @@ func (g *gen) collectFromProgram() {
 			}
 		}
 	}
+	// Mono-substituted anonymous interfaces (typeswitch7 case interface{bar() T}
+	// → interface{bar() int}) appear as OpIfaceAssert keys but not in TypesInfo.
+	// Apply each instance's Subst so synthesizeAssertItabs can lookupIface them.
+	g.attachMonoAppliedTypes()
+
 	// Resolve go types for itab keys.
 	for _, it := range g.itabs {
 		it.concrete = g.lookupType(it.concKey)
@@ -374,6 +379,36 @@ func (g *gen) collectFromProgram() {
 		}
 	}
 	g.closeUniverse()
+}
+
+// attachMonoAppliedTypes registers Subst.Apply(t) for types in generic bodies
+// so descriptor keys from mono lowering (iface.interface{bar() int}) get goType.
+func (g *gen) attachMonoAppliedTypes() {
+	if g.prog == nil || g.prog.Mono == nil {
+		return
+	}
+	tab, _ := g.prog.Mono.(*mono.Table)
+	if tab == nil {
+		return
+	}
+	for _, inst := range tab.ByName {
+		if inst == nil || len(inst.Subst) == 0 || inst.Origin == nil {
+			continue
+		}
+		info := tab.InfoFor[inst.Origin]
+		if info == nil {
+			continue
+		}
+		for _, tv := range info.Types {
+			if tv.Type == nil {
+				continue
+			}
+			applied := inst.Subst.Apply(tv.Type)
+			if applied != nil {
+				g.attachGoType(applied)
+			}
+		}
+	}
 }
 
 // synthesizeAssertItabs emits itabs for iface→iface assert targets.

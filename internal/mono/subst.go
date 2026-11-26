@@ -143,7 +143,7 @@ func (s Subst) apply(t types.Type) types.Type {
 	case *types.Struct:
 		return s.applyStruct(t)
 	case *types.Interface:
-		return t
+		return s.applyInterface(t)
 	case *types.Tuple:
 		return s.applyTuple(t)
 	default:
@@ -151,13 +151,99 @@ func (s Subst) apply(t types.Type) types.Type {
 	}
 }
 
+// applyInterface rebuilds an interface with type params in method
+// signatures replaced (typeswitch7/dottype: interface{bar() T} → interface{bar() int}).
+func (s Subst) applyInterface(iface *types.Interface) types.Type {
+	n := iface.NumExplicitMethods()
+	if n == 0 && iface.NumEmbeddeds() == 0 {
+		return iface
+	}
+	methods := make([]*types.Func, 0, n)
+	changed := false
+	for i := 0; i < n; i++ {
+		m := iface.ExplicitMethod(i)
+		sig, _ := m.Type().(*types.Signature)
+		if sig == nil {
+			methods = append(methods, m)
+			continue
+		}
+		// Apply params/results only — Signature.Recv for an interface method
+		// is the enclosing interface (go/types Complete), which would recurse.
+		ns := s.applySignatureNoRecv(sig)
+		if ns == sig {
+			methods = append(methods, m)
+			continue
+		}
+		changed = true
+		methods = append(methods, types.NewFunc(m.Pos(), m.Pkg(), m.Name(), ns))
+	}
+	var embeddeds []types.Type
+	for i := 0; i < iface.NumEmbeddeds(); i++ {
+		e := iface.EmbeddedType(i)
+		ne := s.apply(e)
+		if ne != e {
+			changed = true
+		}
+		embeddeds = append(embeddeds, ne)
+	}
+	if !changed {
+		return iface
+	}
+	return types.NewInterfaceType(methods, embeddeds).Complete()
+}
+
+// applySignatureNoRecv substitutes params/results without touching Recv
+// (used for interface methods whose Recv is the interface itself).
+func (s Subst) applySignatureNoRecv(sig *types.Signature) *types.Signature {
+	changed := false
+	params := sig.Params()
+	if p := s.applyTuple(params); p != params {
+		changed = true
+		params = p.(*types.Tuple)
+	}
+	results := sig.Results()
+	if r := s.applyTuple(results); r != results {
+		changed = true
+		results = r.(*types.Tuple)
+	}
+	if !changed {
+		return sig
+	}
+	// Preserve original recv; Complete() on a new interface resets it.
+	return types.NewSignatureType(sig.Recv(), nil, nil, params, results, sig.Variadic())
+}
+
 func (s Subst) applySignature(sig *types.Signature) types.Type {
+	changed := false
 	var recv *types.Var
 	if r := sig.Recv(); r != nil {
-		recv = types.NewVar(r.Pos(), r.Pkg(), r.Name(), s.apply(r.Type()))
+		// Interface method receivers are the enclosing interface — skip to
+		// avoid applyInterface ↔ applySignature cycles.
+		if _, isIface := r.Type().Underlying().(*types.Interface); isIface {
+			recv = r
+		} else {
+			rt := s.apply(r.Type())
+			if rt != r.Type() {
+				changed = true
+				recv = types.NewVar(r.Pos(), r.Pkg(), r.Name(), rt)
+			} else {
+				recv = r
+			}
+		}
 	}
-	params := s.applyTuple(sig.Params()).(*types.Tuple)
-	results := s.applyTuple(sig.Results()).(*types.Tuple)
+	params := sig.Params()
+	if p := s.applyTuple(params); p != params {
+		changed = true
+		params = p.(*types.Tuple)
+	}
+	results := sig.Results()
+	if r := s.applyTuple(results); r != results {
+		changed = true
+		results = r.(*types.Tuple)
+	}
+	if !changed {
+		return sig
+	}
 	return types.NewSignatureType(recv, nil, nil, params, results, sig.Variadic())
 }
 
