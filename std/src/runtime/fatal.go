@@ -6,6 +6,7 @@ type panicObj struct {
 	value     interface{}
 	recovered int32
 	next      *panicObj
+	depth     int32 // $g.deferDepth when this panic was thrown
 }
 
 // throw panics with s (recoverable channel/runtime errors).

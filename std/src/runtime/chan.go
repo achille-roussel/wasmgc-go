@@ -92,10 +92,14 @@ type makechanError struct{ msg string }
 
 func (e makechanError) Error() string { return e.msg }
 
+func panicmakechansize() {
+	panic(makechanError{msg: "makechan: size out of range"})
+}
+
 func makechan(size int32) *hchan {
 	// Match upstream wording: "makechan: size out of range".
 	if size < 0 || size > 1<<30 {
-		panic(makechanError{msg: "makechan: size out of range"})
+		panicmakechansize()
 	}
 	var buf any
 	if size > 0 {

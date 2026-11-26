@@ -759,6 +759,32 @@ func (rt *runtimeLower) arrayElemZero(arrName string) (ir.Expr, bool) {
 	return nil, false
 }
 
+// ensureZeroLenArrayGlobal returns a module-global canonical []T of length 0
+// (runtime.zerobase semantics for new([0]T) and identical *[0]T identities).
+// Use array.new_fixed with zero elems: array.new_default requires defaultable
+// element types and fails validation for (ref $go.string) / struct arrays
+// even at length 0 (broke convert4.go).
+func ensureZeroLenArrayGlobal(mod *ir.Module, arrName string) ir.Expr {
+	gname := "$go.zerolen." + sanitize(arrName)
+	if mod.LookupGlobal(gname) == nil {
+		mod.Globals = append(mod.Globals, &ir.Global{
+			Name: gname,
+			Typ:  &ir.Ref{Named: arrName},
+			Mut:  false,
+			Init: &ir.Instr{
+				Op:   ir.OpArrayNewFixed,
+				Type: &ir.Ref{Named: arrName},
+				Args: nil,
+			},
+		})
+	}
+	return &ir.Instr{Op: ir.OpGlobalGet, Global: gname}
+}
+
+func (rt *runtimeLower) ensureZeroLenArrayGlobal(arrName string) ir.Expr {
+	return ensureZeroLenArrayGlobal(rt.mod, arrName)
+}
+
 func (rt *runtimeLower) ensureSliceTypes(sliceName, arrName string) {
 	if arrName != "$go.bytes" && arrName != "$go.i16s" && rt.mod.LookupType(arrName) == nil {
 		elem := elemOfArrayName(arrName)
@@ -1138,6 +1164,9 @@ func (rt *runtimeLower) expandNew(s *ir.Assign, in *ir.Instr, n *int) ([]ir.Stmt
 		nElems := int64(in.I32)
 		if nElems < 0 {
 			nElems = 0
+		}
+		if nElems == 0 {
+			return []ir.Stmt{&ir.Assign{Lhs: s.Lhs, Rhs: rt.ensureZeroLenArrayGlobal(tname)}}, nil
 		}
 		alloc, pre := rt.allocArray(tname, &ir.Const{Op: ir.OpI32Const, I64: nElems})
 		pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: alloc})
@@ -1550,13 +1579,21 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 	}
 	rt.ensureSliceTypes(sliceName, arrName)
 	st := &ir.Ref{Named: sliceName}
+	slTy := &ir.Ref{Null: true, Named: sliceName}
+	slV := rt.newVar("slh", slTy)
+	pre = append(pre, &ir.VarDef{Var: slV}, assignV(slV, sl))
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(slV)}},
+		Then: &ir.Seq{Stmts: append(rt.panicIndex(idx, &ir.Const{Op: ir.OpI32Const, I64: 0}), &ir.Unreachable{})},
+	})
+	slHdr := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{useV(slV)}}
 	lenT := &ir.Temp{Name: rt.fresh("len"), Typ: ir.TypeI32}
 	offT := &ir.Temp{Name: rt.fresh("off"), Typ: ir.TypeI32}
 	dataT := &ir.Temp{Name: rt.fresh("data"), Typ: &ir.Ref{Named: arrName}}
 	pre = append(pre,
-		&ir.Assign{Lhs: []ir.Dest{{Temp: lenT, Name: lenT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{sl}}},
-		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{sl}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: lenT, Name: lenT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "len", Args: []ir.Expr{slHdr}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: offT, Name: offT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "off", Args: []ir.Expr{slHdr}}},
+		&ir.Assign{Lhs: []ir.Dest{{Temp: dataT, Name: dataT.Name}}, Rhs: &ir.Instr{Op: ir.OpStructGet, Type: st, Field: "data", Args: []ir.Expr{slHdr}}},
 		&ir.If{
 			Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, &ir.Name{Temp: lenT, Raw: lenT.Name}}},
 			Then: &ir.Seq{Stmts: rt.panicIndex(idx, &ir.Name{Temp: lenT, Raw: lenT.Name})},

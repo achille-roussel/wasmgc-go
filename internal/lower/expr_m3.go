@@ -446,6 +446,20 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 			return nil, nil, err
 		}
 		xt := fl.typeOf(e.X)
+		// p.f on nil *struct (or *T with struct fields) must panic (issue23837).
+		if xt != nil && isPointer(xt) && isObjectPointer(xt) {
+			ptrTy, err := fl.mapType(xt)
+			if err != nil {
+				return nil, nil, err
+			}
+			pv := fl.newVar("pf", ptrTy)
+			stmts = append(stmts, fl.assignVar(pv, base))
+			stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+			base = fl.useVar(pv)
+			if p, ok := types.Unalias(xt).(*types.Pointer); ok {
+				xt = p.Elem()
+			}
+		}
 		ty := want
 		if ty == nil {
 			ty, _ = fl.mapType(fl.typeOf(e))
@@ -470,6 +484,20 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 						}
 					}
 				}
+			}
+			// String fields must be copied out of the struct slot so a later
+			// assign (e.g. if s := tc.r.Replace(tc.in)) cannot clobber tc.in
+			// before another use (strings_test.TestReplacer WriteString).
+			if sel.Type() != nil && isString(sel.Type()) {
+				sv := fl.newVar("sfld", typeString)
+				stmts = append(stmts, fl.assignVar(sv, ex))
+				ex = fl.useVar(sv)
+			}
+			// Copy string fields out of the struct slot (strings_test.TestReplacer).
+			if sel.Type() != nil && isString(sel.Type()) {
+				sv := fl.newVar("sfld", typeString)
+				stmts = append(stmts, fl.assignVar(sv, ex))
+				ex = fl.useVar(sv)
 			}
 			return ex, stmts, nil
 		}
@@ -509,8 +537,14 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 	}
 	stmts = append(stmts, istmts...)
 	// Wasm array/slice indices are i32; Go may compute them as int64/uint64.
+	// Bounds-check in i64 first so high-bit indices panic (bug272) instead of
+	// wrapping into a valid i32 slot.
+	idxIsI64 := false
+	var idxI64 ir.Expr
 	if it := fl.typeOf(e.Index); it != nil {
 		if irt, err := fl.mapType(it); err == nil && irNumWidth(irt) == ir.I64 {
+			idxIsI64 = true
+			idxI64 = idx
 			idx = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idx}}
 		}
 	}
@@ -524,16 +558,18 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		stmts = append(stmts, fl.assignVar(sv, base))
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: ir.OpStringGet, Args: []ir.Expr{base, idx}}, stmts, nil
 	}
 	if isSlice(xt) {
@@ -545,16 +581,18 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 		stmts = append(stmts, fl.assignVar(sv, base))
 		base = fl.useVar(sv)
 		lenV := fl.newVar("slen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpLen, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: ir.OpSliceGet, Args: []ir.Expr{base, idx}, Type: ty}, stmts, nil
 	}
 	if isArray(xt) || isPtrToArray(xt) {
@@ -607,19 +645,40 @@ func (fl *funcLower) indexExpr(e *ast.IndexExpr, want ir.Type) (ir.Expr, []ir.St
 			arrTy = &ir.Ref{Named: arrName}
 		}
 		lenV := fl.newVar("alen", ir.TypeI32)
-		stmts = append(stmts,
-			fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}),
-			&ir.If{
+		stmts = append(stmts, fl.assignVar(lenV, &ir.Instr{Op: ir.OpArrayLen, Type: arrTy, Args: []ir.Expr{base}}))
+		if idxIsI64 {
+			stmts = append(stmts, fl.panicIfI64IndexOOB(idxI64, fl.useVar(lenV))...)
+		} else {
+			stmts = append(stmts, &ir.If{
 				Cond: &ir.Instr{Op: ir.OpI32GeU, Args: []ir.Expr{idx, fl.useVar(lenV)}},
 				Then: &ir.Seq{Stmts: []ir.Stmt{
 					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx, fl.useVar(lenV)}}},
 					&ir.Unreachable{},
 				}},
-			},
-		)
+			})
+		}
 		return &ir.Instr{Op: op, Args: []ir.Expr{base, idx}, Type: at}, stmts, nil
 	}
 	return nil, nil, fl.errorf(e, "index of type %s not supported", xt)
+}
+
+// panicIfI64IndexOOB emits a recoverable panic when a wide index is negative or
+// ≥ len (compared in i64 so wrapping to i32 cannot hide OOB, bug272).
+func (fl *funcLower) panicIfI64IndexOOB(idxI64, lenI32 ir.Expr) []ir.Stmt {
+	len64 := &ir.Instr{Op: ir.OpI64ExtendI32U, Args: []ir.Expr{lenI32}}
+	oob := &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+		&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{idxI64, fl.i64const(0)}},
+		&ir.Instr{Op: ir.OpI64GeU, Args: []ir.Expr{idxI64, len64}},
+	}}
+	// panicIndex wants i32 args; clamp display index to wrapped low bits.
+	idx32 := &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{idxI64}}
+	return []ir.Stmt{&ir.If{
+		Cond: oob,
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicIndex", Args: []ir.Expr{idx32, lenI32}}},
+			&ir.Unreachable{},
+		}},
+	}}
 }
 
 func (fl *funcLower) sliceBoundI32(e ast.Expr) (ir.Expr, []ir.Stmt, error) {
@@ -708,23 +767,64 @@ func (fl *funcLower) compositeLit(e *ast.CompositeLit, want ir.Type) (ir.Expr, [
 	}
 	switch ut := ut.(type) {
 	case *types.Slice:
-		var args []ir.Expr
 		var stmts []ir.Stmt
 		elemGo := ut.Elem()
 		elemWant, err := fl.mapType(elemGo)
 		if err != nil {
 			return nil, nil, fl.errorf(e, "%v", err)
 		}
+		keyed := false
 		for _, el := range e.Elts {
-			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				el = kv.Value
+			if _, ok := el.(*ast.KeyValueExpr); ok {
+				keyed = true
+				break
 			}
-			ex, st, err := fl.coerceExpr(el, elemGo, elemWant)
+		}
+		if !keyed {
+			var args []ir.Expr
+			for _, el := range e.Elts {
+				ex, st, err := fl.coerceExpr(el, elemGo, elemWant)
+				if err != nil {
+					return nil, nil, err
+				}
+				stmts = append(stmts, st...)
+				args = append(args, ex)
+			}
+			return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
+		}
+		maxIdx := -1
+		for _, el := range e.Elts {
+			kv := el.(*ast.KeyValueExpr)
+			c, ok := fl.constInt(kv.Key)
+			if !ok {
+				return nil, nil, fl.errorf(kv.Key, "slice literal key must be a constant integer")
+			}
+			if c < 0 {
+				return nil, nil, fl.errorf(kv.Key, "slice literal index %d out of bounds", c)
+			}
+			if int(c) > maxIdx {
+				maxIdx = int(c)
+			}
+		}
+		length := maxIdx + 1
+		args := make([]ir.Expr, length)
+		for i := range args {
+			z, err := fl.zeroValue(elemWant)
+			if err != nil {
+				return nil, nil, err
+			}
+			args[i] = z
+		}
+		for _, el := range e.Elts {
+			kv := el.(*ast.KeyValueExpr)
+			c, _ := fl.constInt(kv.Key)
+			idx := int(c)
+			ex, st, err := fl.coerceExpr(kv.Value, elemGo, elemWant)
 			if err != nil {
 				return nil, nil, err
 			}
 			stmts = append(stmts, st...)
-			args = append(args, ex)
+			args[idx] = ex
 		}
 		return &ir.Instr{Op: ir.OpLiteral, Type: irt, Args: args}, stmts, nil
 	case *types.Struct:
@@ -1106,6 +1206,9 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		n := u.Len()
 		if n < 0 {
 			n = 0
+		}
+		if n == 0 {
+			return ensureZeroLenArrayGlobal(fl.mod, r.Named), true
 		}
 		// array.new_default fills ref elements with null. Go zeros for
 		// structs/strings/nested arrays are non-null values.

@@ -31,6 +31,7 @@ func (l *pkgLower) ensureDeferTypes() {
 				{Name: "value", Type: typeIface},
 				{Name: "recovered", Type: ir.TypeI32, Mut: true},
 				{Name: "next", Type: &ir.Ref{Null: true, Named: panicObjName}},
+				{Name: "depth", Type: ir.TypeI32}, // $g.deferDepth at throw (defer recover)
 			},
 		})
 	}
@@ -667,11 +668,48 @@ func (fl *funcLower) deferredBuiltin(name string, nargs int, fieldOf func(string
 			&ir.Unreachable{},
 		}, nil
 	case "recover":
-		ex, _, err := fl.builtinRecover(nil)
-		if err != nil {
-			return nil, err
+		// defer recover() is a wrapper frame. Allow only when the current
+		// panic was thrown at a shallower deferDepth than this deferRun's
+		// entry (outer-frame panic). Same-frame panic → no-op (recover1
+		// test7); outer panic seen from nested deferRun → recover (test5/6).
+		fl.pkg.ensureDeferTypes()
+		gTy := &ir.Ref{Named: "$go.g"}
+		gGet := func() ir.Expr {
+			return &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
+			}}
 		}
-		return []ir.Stmt{&ir.ExprStmt{X: ex}, &ir.Return{}}, nil
+		panicSlot := fl.newVar("drPanic", &ir.Ref{Null: true, Named: panicObjName})
+		startDepth := fl.newVar("drStart", ir.TypeI32)
+		ok := fl.newVar("drOk", ir.TypeI32)
+		return []ir.Stmt{
+			fl.assignVar(panicSlot, &ir.Instr{
+				Op: ir.OpStructGet, Type: gTy, Field: "panic", Args: []ir.Expr{gGet()},
+			}),
+			fl.assignVar(startDepth, &ir.Instr{
+				Op: ir.OpStructGet, Type: gTy, Field: "deferStartDepth", Args: []ir.Expr{gGet()},
+			}),
+			fl.assignVar(ok, fl.i32const(0)),
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
+					&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(panicSlot)}},
+				}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					fl.assignVar(ok, &ir.Instr{
+						Op: ir.OpI32LtS,
+						Args: []ir.Expr{
+							&ir.Instr{
+								Op: ir.OpStructGet, Type: &ir.Ref{Named: panicObjName}, Field: "depth",
+								Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+							},
+							fl.useVar(startDepth),
+						},
+					}),
+				}},
+			},
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.gorecover", Args: []ir.Expr{fl.useVar(ok)}}},
+			&ir.Return{},
+		}, nil
 	default:
 		return nil, fl.errorf(nil, "unsupported deferred builtin %s", name)
 	}
@@ -1081,14 +1119,18 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 	// Sync cell-boxed named results into plain locals after deferRun so a
 	// recover defer that wrote `b = true` through the cell is visible
 	// (panics() helper). Cell allocs are hoisted outside try above.
+	//
 	// Re-install the caught panic on $g before walking defers so recover()
-	// sees it. After deferRun returns (recovered — else it would have
-	// rethrown), clear $g.panic so an outer unrecoveredPanic wrapper cannot
-	// observe a stale panicObj from this frame.
+	// sees it. Important: return-path runDefers lives inside this same try, so
+	// an unrecovered panic from a nested defer (e.g. `defer func(){ defer
+	// panic(5) }()`) is caught HERE rather than propagating. After deferRun,
+	// rethrow if $g.panic is still unrecovered; only clear+return when
+	// recovered (or absent). Otherwise issue43942 / recover1 swallow panics.
 	gTy := &ir.Ref{Named: "$go.g"}
 	gNonNull := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
 		&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
 	}}
+	panicSlot := fl.newVar("catchPanic", &ir.Ref{Null: true, Named: panicObjName})
 	handler := &ir.Seq{Stmts: []ir.Stmt{
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpDrop, Args: []ir.Expr{fl.useVar(exn)}}},
 		&ir.ExprStmt{X: &ir.Instr{
@@ -1096,6 +1138,37 @@ func (fl *funcLower) applyDeferPass(body *ir.Seq) (*ir.Seq, error) {
 			Args: []ir.Expr{gNonNull, fl.useVar(payload)},
 		}},
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.deferRun", Args: []ir.Expr{fl.useVar(fl.defersVar)}}},
+		// Read $g.panic after deferRun.
+		fl.assignVar(panicSlot, &ir.Instr{
+			Op: ir.OpStructGet, Type: gTy, Field: "panic",
+			Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: "$g"},
+			}}},
+		}),
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(panicSlot)}},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.If{
+					Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{
+						&ir.Instr{
+							Op: ir.OpStructGet, Type: &ir.Ref{Named: panicObjName}, Field: "recovered",
+							Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+						},
+					}},
+					Then: &ir.Seq{Stmts: []ir.Stmt{
+						// Unrecovered: propagate to caller (do not clear).
+						&ir.ExprStmt{X: &ir.Instr{
+							Op:   ir.OpThrow,
+							Args: []ir.Expr{&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(panicSlot)}}},
+						}},
+						&ir.Unreachable{},
+					}},
+				},
+			}},
+		},
+		// Recovered or no panic: clear stale panicObj.
 		&ir.ExprStmt{X: &ir.Instr{
 			Op: ir.OpStructSet, Type: gTy, Field: "panic",
 			Args: []ir.Expr{

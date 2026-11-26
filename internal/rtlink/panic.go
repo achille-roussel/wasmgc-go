@@ -188,6 +188,8 @@ var panicSyms = []string{
 	"runtime.panicNegativeShift",
 	"runtime.panicUncomparable",
 	"runtime.panicTypeAssert",
+	"runtime.panicTypeAssertTypes",
+	"runtime.panicTypeAssertMissing",
 	"runtime.panicmakeslicelen",
 	"runtime.panicmakeslicecap",
 	"runtime.panicrangestate",

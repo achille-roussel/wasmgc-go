@@ -399,6 +399,11 @@ func (v Value) Field(i int) Value {
 	ft := runtime.ReflectStructFieldType(extra, i)
 	fd := runtime.ReflectCallGetField(extra, v.data, i)
 	fl := v.flag & (flagAddr | flagRO)
+	// Unexported fields are read-only (CanSet/CanInterface false), matching go/src/reflect.
+	sf := v.typ.Field(i)
+	if sf.PkgPath != "" || (len(sf.Name) > 0 && sf.Name[0] >= 'a' && sf.Name[0] <= 'z') {
+		fl |= flagRO
+	}
 	out := Value{typ: wrap(ft), data: fd, flag: fl}
 	if fl&flagAddr != 0 {
 		out.flag |= flagField
@@ -821,7 +826,18 @@ func (v Value) FieldByIndex(index []int) Value {
 	}
 	return v2
 }
-func (v Value) FieldByName(name string) Value { return Value{} }
+func (v Value) FieldByName(name string) Value {
+	if v.Kind() != Struct {
+		return Value{}
+	}
+	n := v.NumField()
+	for i := 0; i < n; i++ {
+		if v.Type().Field(i).Name == name {
+			return v.Field(i)
+		}
+	}
+	return Value{}
+}
 func (v Value) Call(in []Value) []Value {
 	if v.flag&flagMakeFunc != 0 {
 		impl := (*makeFuncImpl)(v.data)
@@ -1207,12 +1223,36 @@ func (t *rtype) Name() string {
 		return ""
 	}
 	if t.rt != nil {
-		return runtime.ReflectTypeName(t.rt)
+		n := runtime.ReflectTypeName(t.rt)
+		// Display names are "pkg.Type" (or "encoding/json.Decoder"); Name is the
+		// final identifier. Unnamed types have an empty display name.
+		if i := lastDot(n); i >= 0 {
+			return n[i+1:]
+		}
+		return n
 	}
 	return ""
 }
 
-func (t *rtype) PkgPath() string { return "" }
+func (t *rtype) PkgPath() string {
+	if t == nil || t.rt == nil {
+		return ""
+	}
+	n := runtime.ReflectTypeName(t.rt)
+	if i := lastDot(n); i >= 0 {
+		return n[:i]
+	}
+	return ""
+}
+
+func lastDot(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '.' {
+			return i
+		}
+	}
+	return -1
+}
 
 func (t *rtype) String() string {
 	if t == nil {
@@ -1320,12 +1360,38 @@ func (t *rtype) Field(i int) StructField {
 		return StructField{}
 	}
 	extra := runtime.ReflectExtra(t.rt)
-	return StructField{
+	f := StructField{
 		Name:  runtime.ReflectStructFieldName(extra, i),
 		Type:  wrap(runtime.ReflectStructFieldType(extra, i)),
 		Tag:   StructTag(runtime.ReflectStructFieldTag(extra, i)),
 		Index: []int{i},
 	}
+	typeKey := ""
+	if t.rt != nil {
+		typeKey = runtime.ReflectTypeName(t.rt)
+	}
+	// Unexported fields carry the defining package path (issue10332).
+	if f.Name != "" && f.Name[0] >= 'a' && f.Name[0] <= 'z' {
+		if i := lastDot(typeKey); i >= 0 {
+			f.PkgPath = typeKey[:i]
+		}
+	}
+	// Anonymous fields are named after their type (or the pointed-to type
+	// for *T embeddings). Match without a separate rtype flag (bug177).
+	// Type.Name may be package-qualified ("main.S1"); field Name is bare.
+	if f.Type != nil && f.Name != "" {
+		tn := f.Type.Name()
+		if tn == "" && f.Type.Kind() == Ptr {
+			if e := f.Type.Elem(); e != nil {
+				tn = e.Name()
+			}
+		}
+		if i := lastDot(tn); i >= 0 {
+			tn = tn[i+1:]
+		}
+		f.Anonymous = tn != "" && f.Name == tn
+	}
+	return f
 }
 
 func (t *rtype) FieldByName(name string) (StructField, bool) {

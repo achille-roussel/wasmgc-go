@@ -113,6 +113,8 @@ type gen struct {
 	fillWriteHost bool
 	// runtime.getArgString: host getArg → linear memory → Go string.
 	fillGetArgString bool
+	// runtime.getEnvString: key → host getEnv → Go string + found flag.
+	fillGetEnvString bool
 	// syscall/js string bridge fills (Go string ↔ JS string via linear memory).
 	fillJSValueOfString bool
 	fillJSValueToString bool
@@ -217,7 +219,7 @@ func (g *gen) scanNeeds() {
 					switch e.Func {
 					case "runtime.printstring", "runtime.printint", "runtime.printnl",
 						"go.runtime.write", "syscall.writeHost", "runtime.getArgString",
-						"runtime.getArg",
+						"runtime.getArg", "runtime.getEnvString", "runtime.getEnv",
 						"syscall.js.valueOfString", "syscall.js.valueToString",
 						"syscall.js.jsValue", "syscall.js.jsStringCopy":
 						g.needsMemory = true
@@ -255,7 +257,7 @@ func (g *gen) scanNeeds() {
 	// Body-less print/write/arg decls still need memory + string prelude.
 	for _, name := range []string{
 		"runtime.printstring", "runtime.printint", "runtime.printnl",
-		"syscall.writeHost", "runtime.getArgString",
+		"syscall.writeHost", "runtime.getArgString", "runtime.getEnvString",
 		"syscall.js.valueOfString", "syscall.js.valueToString",
 	} {
 		if f := g.m.LookupFunc(name); f != nil && emptyPrintBody(f) {

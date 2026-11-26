@@ -54,6 +54,80 @@ func panicTypeAssert() {
 	throwPanic(panicErr("interface conversion: type assertion failed"))
 }
 
+// panicTypeAssertTypes reports a failed concrete type assertion.
+// kind is $go.type.kind (abi/reflect); message contains "GOT, not WANT"
+// so GOROOT recover3 checks match. Kind→name is inlined (no helper) so
+// EnsurePanic re-link does not duplicate a second symbol.
+func panicTypeAssertTypes(kind int32, want string) {
+	got := "?"
+	switch kind {
+	case 1:
+		got = "bool"
+	case 2:
+		got = "int"
+	case 3:
+		got = "int8"
+	case 4:
+		got = "int16"
+	case 5:
+		got = "int32"
+	case 6:
+		got = "int64"
+	case 7:
+		got = "uint"
+	case 8:
+		got = "uint8"
+	case 9:
+		got = "uint16"
+	case 10:
+		got = "uint32"
+	case 11:
+		got = "uint64"
+	case 12:
+		got = "uintptr"
+	case 13:
+		got = "float32"
+	case 14:
+		got = "float64"
+	case 15:
+		got = "complex64"
+	case 16:
+		got = "complex128"
+	case 17:
+		got = "array"
+	case 18:
+		got = "chan"
+	case 19:
+		got = "func"
+	case 20:
+		got = "interface"
+	case 21:
+		got = "map"
+	case 22:
+		got = "ptr"
+	case 23:
+		got = "slice"
+	case 24:
+		got = "string"
+	case 25:
+		got = "struct"
+	case 26:
+		got = "unsafe.Pointer"
+	}
+	if want == "" {
+		want = "?"
+	}
+	throwPanic(panicErr("interface conversion: " + got + ", not " + want))
+}
+
+// panicTypeAssertMissing reports a failed iface assertion (missing method).
+func panicTypeAssertMissing(method string) {
+	if method == "" {
+		method = "?"
+	}
+	throwPanic(panicErr("interface conversion: missing method " + method))
+}
+
 func panicmakeslicelen() {
 	throwPanic(panicErr("runtime error: makeslice: len out of range"))
 }

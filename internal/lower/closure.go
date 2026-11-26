@@ -544,9 +544,12 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			Args: []ir.Expr{child.useVar(ci.orig)},
 		}))
 	}
-	if child.needsRecoverPrologue {
+	// Match pkg.go / mono.go: when hasDefer, applyDeferPass installs the
+	// recover prologue. Doing it here as well would capture allow, clear
+	// recoverOk, then capture again as 0 (recover1 test2+).
+	if child.needsRecoverPrologue && !child.hasDefer {
 		preamble = append(preamble, child.recoverPrologue()...)
-	} else {
+	} else if !child.needsRecoverPrologue {
 		preamble = append(preamble, child.clearRecoverOk()...)
 	}
 	seq.Stmts = append(preamble, seq.Stmts...)

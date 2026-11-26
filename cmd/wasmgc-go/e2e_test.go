@@ -739,7 +739,7 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	// Hard ceiling raised for iface→iface assert itabs (errors Unwrap/Is) and
 	// array/struct value-clone helpers (docs/design/03). Tighten once clone
 	// is shared/pruned across packages.
-	runM8(t, "m8_fmt_hello", "hello\n", 260*1024) // time rewrite ParseDuration/String pulls into fmt
+	runM8(t, "m8_fmt_hello", "hello\n", 290*1024) // defer/recover + reflect Name/PkgPath grow fmt
 }
 
 func TestM8FmtIntE2E(t *testing.T) {
@@ -1077,8 +1077,8 @@ func TestM7SizeBudgets(t *testing.T) {
 		name string
 		want int
 	}{
-		{"empty_main", 369}, // +fat-ptr scalar/class types from ReflectFatPtrGet fill
-		{"println", 1400},   // float/complex print + fat-ptr scalar types
+		{"empty_main", 371}, // +panicObj.depth / g.deferDepth fields
+		{"println", 1402},   // float/complex print + fat-ptr scalar types
 	} {
 		dir := t.TempDir()
 		srcDir := filepath.Join("testdata", tc.name)

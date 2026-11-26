@@ -27,6 +27,8 @@ type TestConfig struct {
 	GoVersion string
 	// WorkDir holds generated/stripped files; created if empty.
 	WorkDir string
+	// ModuleRoot is the wasmgc-go module (for std/overlay test file overrides).
+	ModuleRoot string
 }
 
 // TestProgram extends Program with suite metadata.
@@ -81,6 +83,16 @@ func LoadTest(cfg TestConfig) (*TestProgram, error) {
 	}
 	if len(testFiles) == 0 {
 		return nil, fmt.Errorf("load: LoadTest: no *_test.go for %s in %s", cfg.ImportPath, upDir)
+	}
+	if cfg.ModuleRoot != "" {
+		ovlDir := filepath.Join(cfg.ModuleRoot, "std", "overlay", filepath.FromSlash(cfg.ImportPath))
+		for i, tf := range testFiles {
+			base := filepath.Base(tf)
+			ovl := filepath.Join(ovlDir, base)
+			if _, err := os.Stat(ovl); err == nil {
+				testFiles[i] = ovl
+			}
+		}
 	}
 
 	scan, err := testmain.Scan(cfg.ImportPath, testFiles, cfg.Skip)

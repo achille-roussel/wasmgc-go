@@ -1918,7 +1918,16 @@ func (fl *funcLower) conversion(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.St
 	if !isNumericIR(actualSrc) || !isNumericIR(dstIR) {
 		return nil, nil, fl.errorf(e, "unsupported conversion %s → %s", src, dst)
 	}
-	conv, err := numericConv(actualSrc, dstIR, isUnsigned(src), isUnsigned(dst))
+	// Float → sub-width uint (uint8/uint16): Go truncates via signed i32/i64
+	// then masks to the type (convert5 golden: -1.0→255, -126.0→130).
+	// Full-width uint32/uint64 keep unsigned saturating truncation.
+	dstU := isUnsigned(dst)
+	if isFloat(src) && dstU {
+		if bits := goIntBits(dst); bits > 0 && bits < 32 {
+			dstU = false
+		}
+	}
+	conv, err := numericConv(actualSrc, dstIR, isUnsigned(src), dstU)
 	if err != nil {
 		return nil, nil, fl.errorf(e, "%v", err)
 	}
@@ -2105,16 +2114,43 @@ func (fl *funcLower) stringToBytes(x ir.Expr, dst types.Type, dstIR ir.Type) (ir
 // intToString lowers string(r) via unicode/utf8.AppendRune then []byte→string.
 func (fl *funcLower) intToString(x ir.Expr, src types.Type) (ir.Expr, []ir.Stmt, error) {
 	var stmts []ir.Stmt
-	// Widen to i32 rune.
-	r := x
-	if irNumWidth(mustMapBasic(src)) == ir.I64 {
-		r = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{x}}
+	// string(int) uses a rune; out-of-range values become U+FFFD (issue15039).
+	const maxRune = 0x10FFFF
+	rv := fl.newVar("rune", ir.TypeI32)
+	width := irNumWidth(mustMapBasic(src))
+	unsigned := isUnsigned(src)
+	var outOfRange ir.Expr
+	var inRange ir.Expr
+	if width == ir.I64 {
+		if unsigned {
+			outOfRange = &ir.Instr{Op: ir.OpI64GtU, Args: []ir.Expr{x, fl.i64const(maxRune)}}
+		} else {
+			outOfRange = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpI64LtS, Args: []ir.Expr{x, fl.i64const(0)}},
+				&ir.Instr{Op: ir.OpI64GtS, Args: []ir.Expr{x, fl.i64const(maxRune)}},
+			}}
+		}
+		inRange = &ir.Instr{Op: ir.OpI32WrapI64, Args: []ir.Expr{x}}
+	} else if unsigned {
+		outOfRange = &ir.Instr{Op: ir.OpI32GtU, Args: []ir.Expr{x, fl.i32const(maxRune)}}
+		inRange = x
+	} else {
+		outOfRange = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpI32LtS, Args: []ir.Expr{x, fl.i32const(0)}},
+			&ir.Instr{Op: ir.OpI32GtS, Args: []ir.Expr{x, fl.i32const(maxRune)}},
+		}}
+		inRange = x
 	}
+	stmts = append(stmts, &ir.If{
+		Cond: outOfRange,
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(rv, fl.i32const(0xFFFD))}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(rv, inRange)}},
+	})
 	nilSlice := &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.slice.i8"}}
 	call := &ir.Instr{
 		Op:   ir.OpCall,
 		Func: "unicode.utf8.AppendRune",
-		Args: []ir.Expr{nilSlice, r},
+		Args: []ir.Expr{nilSlice, fl.useVar(rv)},
 		Type: &ir.Ref{Null: true, Named: "$go.slice.i8"},
 	}
 	tmp := fl.newVar("rs", &ir.Ref{Null: true, Named: "$go.slice.i8"})
@@ -3178,6 +3214,13 @@ func (fl *funcLower) lowerArgsWithSig(e *ast.CallExpr, sig *types.Signature) ([]
 			return nil, nil, err
 		}
 		stmts = append(stmts, st...)
+		// Fresh temp per string argument so a later local (e.g. if-init s :=
+		// tc.r.Replace(tc.in)) cannot alias the same lowering as a later call.
+		if want != nil && ir.TypesEqual(want, typeString) {
+			tmp := fl.newTemp(want)
+			stmts = append(stmts, fl.assignTemp(tmp, ex))
+			ex = fl.useTemp(tmp)
+		}
 		args = append(args, ex)
 	}
 

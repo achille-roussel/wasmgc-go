@@ -48,7 +48,7 @@ func (g *gen) ensureEHTypes() {
 	}
 	if _, ok := g.types.ByName["$go.g"]; !ok {
 		panicIdx := g.types.ByName["$go.panicObj"]
-		// Match proc.go: id, park, panic, recoverOk, sel, waiting.
+		// Match proc.go: id, park, panic, recoverOk, sel, waiting, deferDepth, deferStartDepth.
 		selIdx, hasSel := g.types.ByName["$go.select"]
 		var selField wasm.FieldType
 		if hasSel {
@@ -63,6 +63,8 @@ func (g *gen) ensureEHTypes() {
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			selField,
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
+			wasm.Field(wasm.StorageVal(wasm.I32()), true), // deferDepth
+			wasm.Field(wasm.StorageVal(wasm.I32()), true), // deferStartDepth
 		)))
 	}
 }
@@ -82,7 +84,8 @@ func (g *gen) scanEHNeeds() bool {
 			case "runtime.throwPanic", "runtime.deferRun", "runtime.gorecover",
 				"runtime.unrecoveredPanic", "runtime.panicIndex", "runtime.panicSliceB",
 				"runtime.panicNil", "runtime.panicDivide", "runtime.panicNegativeShift",
-				"runtime.panicUncomparable", "runtime.panicTypeAssert", "runtime.panicrangestate":
+				"runtime.panicUncomparable", "runtime.panicTypeAssert", "runtime.panicTypeAssertTypes",
+				"runtime.panicTypeAssertMissing", "runtime.panicrangestate":
 				need = true
 			}
 		})
@@ -157,7 +160,7 @@ func (g *gen) ensureGGlobal() error {
 	if _, ok := g.globals["$g"]; ok {
 		return nil
 	}
-	// Prefer IR-declared $go.g; otherwise synthesize (6 fields, proc.go).
+	// Prefer IR-declared $go.g; otherwise synthesize (8 fields, proc.go).
 	gIdx, ok := g.types.ByName["$go.g"]
 	if !ok {
 		obj := g.types.ByName["$go.object"]
@@ -176,6 +179,8 @@ func (g *gen) ensureGGlobal() error {
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
 			selField,
 			wasm.Field(wasm.StorageVal(wasm.I32()), true),
+			wasm.Field(wasm.StorageVal(wasm.I32()), true), // deferDepth
+			wasm.Field(wasm.StorageVal(wasm.I32()), true), // deferStartDepth
 		)))
 		g.types.ByName["$go.g"] = gIdx
 	}
@@ -216,6 +221,8 @@ func (g *gen) synthGInitExpr() ir.Expr {
 		&ir.Const{Op: ir.OpI32Const, I64: 0},
 		&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.select"}},
 		&ir.Const{Op: ir.OpI32Const, I64: 0},
+		&ir.Const{Op: ir.OpI32Const, I64: 0}, // deferDepth
+		&ir.Const{Op: ir.OpI32Const, I64: 0}, // deferStartDepth
 	}
 	return &ir.Instr{Op: ir.OpStructNew, Type: gTy, Args: args}
 }
@@ -231,6 +238,8 @@ func (g *gen) writeGInit(enc *wasm.Encoder, gIdx uint32) error {
 		enc.RefNull(wasm.HeapTypeAny())
 	}
 	enc.I32Const(0) // waiting
+	enc.I32Const(0) // deferDepth
+	enc.I32Const(0) // deferStartDepth
 	enc.StructNew(gIdx)
 	return nil
 }
@@ -433,10 +442,13 @@ func (g *gen) bodyThrowPanic() wasm.Code {
 	panicObj := g.types.ByName["$go.panicObj"]
 	gTy := g.types.ByName["$go.g"]
 	enc := wasm.NewEncoder()
+	// panicObj{value, recovered=0, next=$g.panic, depth=$g.deferDepth}
 	enc.LocalGet(0)
 	enc.I32Const(0)
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 6) // deferDepth
 	enc.StructNew(panicObj)
 	enc.LocalTee(1)
 	enc.GlobalGet(g.globals["$g"])
@@ -468,14 +480,20 @@ func (g *gen) bodyGorecover() wasm.Code {
 	enc.RefAsNonNull()
 	enc.LocalSet(1)
 	enc.LocalGet(1)
+	enc.StructGet(panicObj, 1)
+	enc.I32Eqz()
+	enc.If(wasm.BlockVal(wasm.RefNull(wasm.TypeIndexHeap(iface))))
+	// Mark recovered but keep $g.panic pointing here so a second recover()
+	// in the same deferred frame sees p.recovered and returns nil (recover1).
+	// deferRun unwinds the recovered chain after the call returns.
+	enc.LocalGet(1)
 	enc.I32Const(1)
 	enc.StructSet(panicObj, 1)
-	enc.GlobalGet(g.globals["$g"])
-	enc.LocalGet(1)
-	enc.StructGet(panicObj, 2)
-	enc.StructSet(gTy, 2)
 	enc.LocalGet(1)
 	enc.StructGet(panicObj, 0)
+	enc.Else()
+	enc.RefNull(wasm.TypeIndexHeap(iface))
+	enc.End()
 	enc.End()
 	enc.Else()
 	enc.RefNull(wasm.TypeIndexHeap(iface))
@@ -506,7 +524,19 @@ func (g *gen) bodyDeferRun() wasm.Code {
 		wasm.ExnRef(),
 	})
 	enc := wasm.NewEncoder()
-	// locals: 0=d (param), 1=clos, 2=pobj, 3=exn
+	// locals: 0=d (param), 1=clos, 2=pobj, 3=exn, 4=prior (panic before call)
+	// Record entry depth then deferDepth++. defer recover() only succeeds when
+	// panic.depth < deferStartDepth (panic from an outer frame).
+	enc.GlobalGet(g.globals["$g"])
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 6) // deferDepth
+	enc.StructSet(gTy, 7) // deferStartDepth =
+	enc.GlobalGet(g.globals["$g"])
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 6)
+	enc.I32Const(1)
+	enc.I32Add()
+	enc.StructSet(gTy, 6)
 	enc.Block(wasm.BlockEmpty()) // $done
 	enc.Loop(wasm.BlockEmpty())  // $walk
 	enc.LocalGet(0)
@@ -520,6 +550,14 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.RefAsNonNull()
 	enc.StructGet(deferTy, 1)
 	enc.LocalSet(0)
+	// Snapshot panic before the deferred call. A fresh nested panic from
+	// this call chains prior as next; abort that prior so recover of the
+	// new panic does not resume it (issue43942). A rethrow of the same
+	// panicObj keeps prior==pobj and must not abort the outer chain
+	// (recover1 nested recover of panic 1 after recovering panic 2).
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.LocalSet(4)
 	enc.GlobalGet(g.globals["$g"])
 	enc.I32Const(1)
 	enc.StructSet(gTy, 3)
@@ -543,17 +581,67 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.LocalSet(2) // pobj — already on $g via throwPanic
 	enc.LocalGet(3)
 	enc.Drop()
+	// Abort prior when this catch is a nested panic that chained it.
+	enc.LocalGet(4)
+	enc.RefIsNull()
+	enc.If(wasm.BlockEmpty())
+	enc.Else()
+	enc.LocalGet(2)
+	enc.LocalGet(4)
+	enc.RefEq()
+	enc.If(wasm.BlockEmpty())
+	// Same object rethrown — keep chain.
+	enc.Else()
+	enc.LocalGet(2)
+	enc.StructGet(panicObj, 2) // next
+	enc.LocalGet(4)
+	enc.RefEq()
+	enc.If(wasm.BlockEmpty())
+	enc.LocalGet(4)
+	enc.RefAsNonNull()
+	enc.I32Const(1)
+	enc.StructSet(panicObj, 1)
+	enc.End()
+	enc.End()
+	enc.End()
 	enc.End() // $cont
 	enc.GlobalGet(g.globals["$g"])
 	enc.I32Const(0)
 	enc.StructSet(gTy, 3)
+	// Unwind recovered/aborted panics after each call so a later defer
+	// (e.g. defer recover()) can see the next live panic (recover1 test6).
+	enc.Block(wasm.BlockEmpty()) // $unwindDone
+	enc.Loop(wasm.BlockEmpty())  // $unwind
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefIsNull()
+	enc.BrIf(1)
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefAsNonNull()
+	enc.StructGet(panicObj, 1)
+	enc.I32Eqz()
+	enc.BrIf(1)
+	enc.GlobalGet(g.globals["$g"])
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 2)
+	enc.RefAsNonNull()
+	enc.StructGet(panicObj, 2)
+	enc.StructSet(gTy, 2)
+	enc.Br(0)
+	enc.End()
+	enc.End()
 	enc.Br(0) // → $walk
 	enc.End() // $walk
 	enc.End() // $done
-	// After the walk: if the current panic was never recovered, rethrow so
-	// the caller's try handler can decide (unrecovered vs return).
-	// If it was recovered, clear $g.panic so a later frame does not observe
-	// a stale recovered panicObj.
+	// deferDepth--
+	enc.GlobalGet(g.globals["$g"])
+	enc.GlobalGet(g.globals["$g"])
+	enc.StructGet(gTy, 6)
+	enc.I32Const(1)
+	enc.I32Sub()
+	enc.StructSet(gTy, 6)
+	// If a live panic remains, rethrow so the caller's try handler decides.
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
 	enc.RefIsNull()
@@ -562,23 +650,14 @@ func (g *gen) bodyDeferRun() wasm.Code {
 	enc.GlobalGet(g.globals["$g"])
 	enc.StructGet(gTy, 2)
 	enc.RefAsNonNull()
-	enc.StructGet(panicObj, 1) // recovered?
-	enc.If(wasm.BlockEmpty())
-	enc.GlobalGet(g.globals["$g"])
-	enc.RefNull(wasm.TypeIndexHeap(panicObj))
-	enc.StructSet(gTy, 2)
-	enc.Else()
-	enc.GlobalGet(g.globals["$g"])
-	enc.StructGet(gTy, 2)
-	enc.RefAsNonNull()
 	enc.Throw(g.panicTagIdx)
 	enc.Unreachable()
-	enc.End()
 	enc.End()
 	return wasm.CodeFrom([]wasm.Local{
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(closTy))},
 		{Count: 1, Type: wasm.Ref(wasm.TypeIndexHeap(panicObj))},
 		{Count: 1, Type: wasm.ExnRef()},
+		{Count: 1, Type: wasm.RefNull(wasm.TypeIndexHeap(panicObj))},
 	}, enc)
 }
 

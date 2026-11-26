@@ -48,6 +48,7 @@ func CompileTest(opts TestOptions) (*Result, *load.TestProgram, error) {
 		GOROOT:      goroot,
 		UpstreamSrc: upstream,
 		Skip:        opts.Skip,
+		ModuleRoot:  opts.ModuleRoot,
 		Tags:        opts.Tags,
 		WorkDir:     opts.WorkDir,
 	})
