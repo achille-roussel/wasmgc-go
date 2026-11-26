@@ -826,7 +826,18 @@ func (v Value) FieldByIndex(index []int) Value {
 	}
 	return v2
 }
-func (v Value) FieldByName(name string) Value { return Value{} }
+func (v Value) FieldByName(name string) Value {
+	if v.Kind() != Struct {
+		return Value{}
+	}
+	n := v.NumField()
+	for i := 0; i < n; i++ {
+		if v.Type().Field(i).Name == name {
+			return v.Field(i)
+		}
+	}
+	return Value{}
+}
 func (v Value) Call(in []Value) []Value {
 	if v.flag&flagMakeFunc != 0 {
 		impl := (*makeFuncImpl)(v.data)

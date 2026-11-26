@@ -91,3 +91,4 @@ TestZoneBounds — lower/runtime gaps in time tests
 TestZoneData — lower/runtime gaps in time tests
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset
 TestLongAdjustTimers — lower/runtime: fails under wasmgc (timer adjust)
+TestTick — Tick() leaves uncancellable ticker; joint package timeout

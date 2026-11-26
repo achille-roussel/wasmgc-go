@@ -274,19 +274,14 @@ func (rt *runtimeLower) expandIfaceAssert(s *ir.Assign, in *ir.Instr, n *int) ([
 	thenSeq.Stmts = append(thenSeq.Stmts, assignV(valV, ubExpr))
 	elseSeq := &ir.Seq{}
 	if !commaOK {
-		elseSeq.Stmts = append(elseSeq.Stmts,
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
-			&ir.Unreachable{},
-		)
+		elseSeq.Stmts = append(elseSeq.Stmts, rt.panicTypeAssertConcrete(useV(typV), typeKey)...)
 	}
 	match.Stmts = append(match.Stmts, &ir.If{Cond: useV(okV), Then: thenSeq, Else: elseSeq})
 
 	nilFail := &ir.Seq{}
 	if !commaOK {
-		nilFail.Stmts = append(nilFail.Stmts,
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
-			&ir.Unreachable{},
-		)
+		nilFail.Stmts = append(nilFail.Stmts, rt.panicTypeAssertConcrete(
+			&ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Named: "$go.type", Null: true}}, typeKey)...)
 	}
 	pre = append(pre, &ir.If{
 		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{useV(ifaceV)}},
@@ -407,13 +402,56 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 	pre = append(pre, &ir.If{
 		Cond: useV(okV),
 		Then: &ir.Seq{},
-		Else: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicTypeAssert"}},
-			&ir.Unreachable{},
-		}},
+		Else: &ir.Seq{Stmts: rt.panicTypeAssertIface(typeKey)},
 	})
 	pre = append(pre, &ir.Assign{Lhs: s.Lhs, Rhs: useV(outV)})
 	return pre, nil
+}
+
+// panicTypeAssertConcrete emits call runtime.panicTypeAssertTypes(got, want).
+func (rt *runtimeLower) panicTypeAssertConcrete(gotTyp ir.Expr, typeKey string) []ir.Stmt {
+	want := strings.TrimPrefix(typeKey, "$go.type.")
+	if i := strings.LastIndex(want, "."); i >= 0 {
+		want = want[i+1:]
+	}
+	if want == "" {
+		want = "?"
+	}
+	gotName := rt.newVar("gn", &ir.Ref{Named: "$go.string"})
+	return []ir.Stmt{
+		&ir.VarDef{Var: gotName},
+		assignV(gotName, &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.TypeAssertGotName",
+			Args: []ir.Expr{gotTyp},
+			Type: &ir.Ref{Named: "$go.string"},
+		}),
+		&ir.ExprStmt{X: &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.panicTypeAssertTypes",
+			Args: []ir.Expr{useV(gotName), &ir.Instr{Op: ir.OpStringLit, Str: want}},
+		}},
+		&ir.Unreachable{},
+	}
+}
+
+// panicTypeAssertIface emits missing-method wording for iface asserts (recover3).
+func (rt *runtimeLower) panicTypeAssertIface(typeKey string) []ir.Stmt {
+	meth := strings.TrimPrefix(typeKey, "$go.type.")
+	if i := strings.LastIndex(meth, "."); i >= 0 {
+		meth = meth[i+1:]
+	}
+	if meth == "" {
+		meth = "?"
+	}
+	return []ir.Stmt{
+		&ir.ExprStmt{X: &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.panicTypeAssertMissing",
+			Args: []ir.Expr{&ir.Instr{Op: ir.OpStringLit, Str: meth}},
+		}},
+		&ir.Unreachable{},
+	}
 }
 
 type testResult struct {

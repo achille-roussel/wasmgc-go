@@ -54,6 +54,26 @@ func panicTypeAssert() {
 	throwPanic(panicErr("interface conversion: type assertion failed"))
 }
 
+// panicTypeAssertTypes reports a failed concrete type assertion.
+// Message contains "GOT, not WANT" so GOROOT recover3 checks match.
+func panicTypeAssertTypes(got, want string) {
+	if got == "" {
+		got = "?"
+	}
+	if want == "" {
+		want = "?"
+	}
+	throwPanic(panicErr("interface conversion: " + got + ", not " + want))
+}
+
+// panicTypeAssertMissing reports a failed iface assertion (missing method).
+func panicTypeAssertMissing(method string) {
+	if method == "" {
+		method = "?"
+	}
+	throwPanic(panicErr("interface conversion: missing method " + method))
+}
+
 func panicmakeslicelen() {
 	throwPanic(panicErr("runtime error: makeslice: len out of range"))
 }

@@ -161,7 +161,6 @@ peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte lim
 printbig.go — compile error: build: load: typecheck
 range4.go — output mismatch
 recover.go — compile error: build: load: typecheck
-recover3.go — compile error: IR verify: temp used outside defining region
 reflectmethod1.go — runtime: reflect.Type/Value.Method stub returns zero Value
 reflectmethod2.go — failed: panic: reflect: call of reflect.Value.Interface on zero Value
 reflectmethod3.go — runtime: reflect.Type/Value.Method stub returns zero Value
