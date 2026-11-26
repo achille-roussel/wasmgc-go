@@ -737,10 +737,10 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// ~294 KiB after REFLECTMETHOD prune (itab RefFunc alone must not keep
-	// every exported method). Ceiling leaves headroom for #66–#71 defer/
-	// reflect/stdlib growth vs pre-#66 (~127 KiB / 172 KiB e2e).
-	runM8(t, "m8_fmt_hello", "hello\n", 320*1024)
+	// ~248 KiB after AssertItabs filter + no bulk TypeName registration
+	// (cuts dead time.Ticker / Stringer leaks from #66–#71). Same-env #65 is
+	// ~175 KiB; remaining gap is fmt/reflect/map/panic-assert.
+	runM8(t, "m8_fmt_hello", "hello\n", 270*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {

@@ -219,9 +219,9 @@ func (g *gen) reachableFuncs() map[string]bool {
 			q = append(q, seed)
 		}
 	}
-	// Also seed package init.* functions.
+	// Also seed package init.* functions and exports.
 	for _, f := range g.mod.Funcs {
-		if strings.Contains(f.Name, ".init") || strings.HasSuffix(f.Name, ".init.0") {
+		if strings.Contains(f.Name, ".init") || strings.HasSuffix(f.Name, ".init.0") || f.Export != "" {
 			if !live[f.Name] {
 				live[f.Name] = true
 				q = append(q, f.Name)

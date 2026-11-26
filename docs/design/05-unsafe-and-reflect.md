@@ -106,6 +106,10 @@ The descriptor in `03-type-mapping.md` carries kind, name, package path, size an
 
 `reflect.Value` of a value the compiler boxed into an interface carries the descriptor and the data word. Field access, indexing, map iteration, `Len`, `IsNil`, `Interface`, `Set` on an addressable value, and method calls go through funcrefs the compiler generated for that concrete type: `getField(data, i) any`, `setField(data, i, v any)`, `index`, `setIndex`, `mapRange`. The same funcref idea is what wasm3's design note called M6 and never connected (`docs/wasm3-study/02-runtime-and-abi.md`). Generating them per reachable type is the implementation.
 
+### Descriptor / itab seeding (reachability)
+
+`RuntimeOps` expands `iface.make` before DCE. Live iface→iface asserts used to `global.get` every `$go.itab.<J>.@.*`, so itabs from dead bodies (e.g. `time.NewTicker` boxing `time.Time`) kept Stringer/GoStringer methods alive. `desc` still registers those itabs so dead bodies typecheck, but records `Module.AssertItabs` for itabs from Call/RefFunc-reachable makes (plus `synthesizeAssertItabs` for those concretes). `expandIfaceToIfaceAssert` only loads that set. Package-scope `TypeName` walk only **attaches** `go/types` to keys already needed.
+
 ### `Method` / `MethodByName` reachability (REFLECTMETHOD)
 
 Exported methods stay live for reflection only when the program can **call** `reflect.Value.Method` / `MethodByName` or `reflect.Type.Method` / `MethodByName` — matching cmd/link's `REFLECTMETHOD`. An itab `ref.func` edge into those APIs (every program that imports `reflect.Type` for `fmt`) must **not** open the floodgate: `desc.fillReflectMethodHelpers` stubs `runtime.ReflectNumMethod` and friends when no real `OpCall` / `OpIfaceCall` / `call_ref` of Method is reachable, so DCE can prune unused methods. When Method is reachable, helpers emit method-expression and method-value closures with `ref.func` to the underlying methods. If every reachable use is `MethodByName` with a string literal, only those named methods are kept.
