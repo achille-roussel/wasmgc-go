@@ -1834,7 +1834,26 @@ func (fl *funcLower) returnStmt(s *ast.ReturnStmt) ([]ir.Stmt, error) {
 	return out, nil
 }
 
+func ifInitScopeVars(fl *funcLower, init ast.Stmt) []types.Object {
+	as, ok := init.(*ast.AssignStmt)
+	if !ok || as.Tok != token.DEFINE {
+		return nil
+	}
+	var objs []types.Object
+	for _, lhs := range as.Lhs {
+		id, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if obj := fl.info.Defs[id]; obj != nil {
+			objs = append(objs, obj)
+		}
+	}
+	return objs
+}
+
 func (fl *funcLower) ifStmt(s *ast.IfStmt) ([]ir.Stmt, error) {
+	initScope := ifInitScopeVars(fl, s.Init)
 	var out []ir.Stmt
 	if s.Init != nil {
 		init, err := fl.stmt(s.Init)
@@ -1871,6 +1890,9 @@ func (fl *funcLower) ifStmt(s *ast.IfStmt) ([]ir.Stmt, error) {
 		}
 	}
 	out = append(out, &ir.If{Cond: cond, Then: thenR, Else: elseR})
+	for _, obj := range initScope {
+		delete(fl.vars, obj)
+	}
 	return out, nil
 }
 

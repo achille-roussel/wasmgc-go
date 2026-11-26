@@ -493,6 +493,12 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				stmts = append(stmts, fl.assignVar(sv, ex))
 				ex = fl.useVar(sv)
 			}
+			// Copy string fields out of the struct slot (strings_test.TestReplacer).
+			if sel.Type() != nil && isString(sel.Type()) {
+				sv := fl.newVar("sfld", typeString)
+				stmts = append(stmts, fl.assignVar(sv, ex))
+				ex = fl.useVar(sv)
+			}
 			return ex, stmts, nil
 		}
 		// Fat-pointer path for other bases: set ptr kind from field type.
