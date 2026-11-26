@@ -64,7 +64,9 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 		wrappers:    map[string]bool{},
 		equals:      map[string]bool{},
 		boxes:       map[string]bool{},
-		nointerface: map[string]bool{},
+		nointerface:      map[string]bool{},
+		liveAnyConcretes: map[string]bool{},
+		assertItabs:      map[string]bool{},
 	}
 	g.ensurePreludeShapes()
 	g.scanModule()
@@ -76,6 +78,9 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 	if err := g.emitAll(); err != nil {
 		return err
 	}
+	// Restrict iface→iface assert expansion to itabs from live makes /
+	// synthesizeAssertItabs (see lower.expandIfaceToIfaceAssert).
+	g.mod.AssertItabs = g.assertItabs
 	return nil
 }
 
@@ -116,8 +121,10 @@ type gen struct {
 	wrappers     map[string]bool
 	equals       map[string]bool
 	boxes        map[string]bool
-	nointerface  map[string]bool // //go:nointerface methods (fn.String() keys)
-	nextID       int32
+	nointerface      map[string]bool // //go:nointerface methods (fn.String() keys)
+	liveAnyConcretes map[string]bool // concretes boxed as any from live funcs
+	assertItabs      map[string]bool // itab globals live asserts may global.get
+	nextID           int32
 	// emitting tracks type globals currently being built so recursive /
 	// cyclic types (type T []T) do not re-enter emitTypeGlobal forever.
 	emitting map[string]bool
@@ -203,10 +210,16 @@ func (g *gen) ensurePreludeShapes() {
 }
 
 func (g *gen) scanModule() {
+	// Register itabs from every body (RuntimeOps expands before DCE). Record
+	// which any-concretes / itab names come from Call/RefFunc-reachable funcs
+	// so synthesizeAssertItabs and expandIfaceToIfaceAssert do not keep
+	// methods for types only boxed in dead code (time.NewTicker leak).
+	live := g.reachableFuncs()
 	for _, f := range g.mod.Funcs {
 		if f.Body == nil {
 			continue
 		}
+		inLive := live[f.Name]
 		walkRegion(f.Body, func(e ir.Expr) {
 			in, ok := e.(*ir.Instr)
 			if !ok {
@@ -216,48 +229,66 @@ func (g *gen) scanModule() {
 			case ir.OpIfaceMake:
 				if in.Global != "" {
 					g.needItabFromName(in.Global)
+					if inLive {
+						g.assertItabs[in.Global] = true
+						g.noteLiveAnyConcrete(in.Global)
+					}
 				}
 				if in.Str != "" && strings.HasPrefix(in.Str, "type:") {
 					g.needTypeKey(strings.TrimPrefix(in.Str, "type:"))
 				}
+			case ir.OpGlobalGet:
+				if strings.HasPrefix(in.Global, "$go.itab.") {
+					g.needItabFromName(in.Global)
+					if inLive {
+						g.assertItabs[in.Global] = true
+						g.noteLiveAnyConcrete(in.Global)
+					}
+				}
+				if strings.HasPrefix(in.Global, "$go.type.") {
+					g.needTypeKey(strings.TrimPrefix(in.Global, "$go.type."))
+				}
 			case ir.OpIfaceAssert:
 				if in.Global != "" {
-					g.needTypeKey(in.Global) // type key
-					// iface→iface asserts (and iface type-switch arms) need
-					// $go.itab.<J>.@.<C> globals for every live concrete C that
-					// implements J. OpIfaceMake alone only emits itabs for the
-					// conversion site's interface, not assert destinations.
+					g.needTypeKey(in.Global)
 					if strings.HasPrefix(in.Str, "iface") {
 						g.asserts[in.Global] = true
 						g.ifaces[in.Global] = true
 					}
 				}
 			case ir.OpChanRecv, ir.OpChanSend:
-				// Typed moves / comma-ok unbox need the element descriptor
-				// even when the program never boxes that type via iface.make
-				// (e.g. recv-only from a closed chan).
 				if in.Global != "" {
 					g.needTypeKey(in.Global)
 				}
 			case ir.OpConv:
 				if in.Str == "iface.eq" {
-					// equality uses descriptors already registered via makes
 				}
 			case ir.OpIfaceCall:
-				// Need itabtype layout even when no concrete itab was made yet
-				// (e.g. type-assert to Formatter then call Format).
 				if in.Global != "" {
 					g.ifaces[in.Global] = true
 					g.needTypeKey(in.Global)
 				}
 			case ir.OpCall:
-				// structCompare / arrayCompare stash TypeKey in Global so
-				// $go.eq.* is emitted for local T == T never boxed via iface.
 				if in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
 					g.needTypeKey(in.Global)
 				}
 			}
 		})
+	}
+}
+
+func (g *gen) noteLiveAnyConcrete(itabGlobal string) {
+	// Name kept for call sites; records every concrete boxed from a live
+	// iface.make (any interface), not only any/@ boxes.
+	var concKey string
+	rest := strings.TrimPrefix(itabGlobal, "$go.itab.")
+	if i := strings.Index(rest, ".@."); i >= 0 {
+		concKey = rest[i+3:]
+	} else if i := strings.Index(rest, "@"); i >= 0 {
+		concKey = rest[i+1:]
+	}
+	if concKey != "" {
+		g.liveAnyConcretes[concKey] = true
 	}
 }
 
@@ -315,25 +346,16 @@ func (g *gen) collectFromProgram() {
 	if g.prog == nil {
 		return
 	}
+	// Do not needTypeKey every package-scope / Defs TypeName: importing os→io/fs
+	// pulls time into prog.Packages, and bulk-registering time.Time (and friends)
+	// inflated ReflectTypeName, $go.eq/dispatchEq, and fmt Stringer/GoStringer
+	// itabs for types never boxed. Descriptors are seeded from IR (scanModule)
+	// and itabs only; attachGoType fills goType on keys already needed.
+	// Local T == T is covered by $go.eq.* Global TypeKey on OpCall.
 	for _, pkg := range g.prog.Packages {
 		if pkg == nil || pkg.Types == nil {
 			continue
 		}
-		scope := pkg.Types.Scope()
-		for _, name := range scope.Names() {
-			obj := scope.Lookup(name)
-			if tn, ok := obj.(*types.TypeName); ok {
-				key := TypeKey(tn.Type())
-				g.needTypeKey(key)
-				if tr := g.types[key]; tr != nil {
-					tr.goType = tn.Type()
-				}
-			}
-		}
-		// Anonymous structs/slices/maps appear in TypesInfo but not in the
-		// package scope — attach them so struct extras (NumField/getField) work.
-		// Function-local named types also live only in Defs (not package Scope);
-		// register them so $go.eq.* / descriptors exist for local T == T.
 		if pkg.Info != nil {
 			for _, tv := range pkg.Info.Types {
 				if tv.Type == nil {
@@ -344,13 +366,6 @@ func (g *gen) collectFromProgram() {
 			for _, obj := range pkg.Info.Defs {
 				if obj == nil {
 					continue
-				}
-				if tn, ok := obj.(*types.TypeName); ok {
-					key := TypeKey(tn.Type())
-					g.needTypeKey(key)
-					if tr := g.types[key]; tr != nil && tr.goType == nil {
-						tr.goType = tn.Type()
-					}
 				}
 				g.attachGoType(obj.Type())
 			}
@@ -389,8 +404,12 @@ func (g *gen) synthesizeAssertItabs() {
 	}
 	seen := map[string]bool{}
 	var concretes []conc
+	restrict := len(g.liveAnyConcretes) > 0
 	for _, it := range g.itabs {
 		if it.concKey == "" || it.concrete == nil || seen[it.concKey] {
+			continue
+		}
+		if restrict && !g.liveAnyConcretes[it.concKey] {
 			continue
 		}
 		seen[it.concKey] = true
@@ -427,6 +446,7 @@ func (g *gen) synthesizeAssertItabs() {
 				name = "$go.itab." + ifaceKey + ".@." + c.key
 			}
 			g.needItabFromName(name)
+			g.assertItabs[name] = true
 			if it := g.itabs[name]; it != nil {
 				if it.concrete == nil {
 					it.concrete = c.typ
@@ -461,11 +481,15 @@ func (g *gen) synthesizeAppendFilesErrorItabs() {
 		if it.concKey == "" {
 			continue
 		}
+		if len(g.liveAnyConcretes) > 0 && !g.liveAnyConcretes[it.concKey] {
+			continue
+		}
 		if g.mod.LookupFunc(it.concKey+".Error") == nil {
 			continue
 		}
 		name := "$go.itab.error.@." + it.concKey
 		g.needItabFromName(name)
+		g.assertItabs[name] = true
 		if dest := g.itabs[name]; dest != nil {
 			if dest.iface == nil {
 				dest.iface = iface

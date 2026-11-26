@@ -336,9 +336,13 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 	prefix := "$go.itab." + key + ".@."
 	var itabs []string
 	for _, g := range rt.mod.Globals {
-		if strings.HasPrefix(g.Name, prefix) {
-			itabs = append(itabs, g.Name)
+		if !strings.HasPrefix(g.Name, prefix) {
+			continue
 		}
+		if rt.mod.AssertItabs != nil && !rt.mod.AssertItabs[g.Name] {
+			continue
+		}
+		itabs = append(itabs, g.Name)
 	}
 
 	outV := rt.newVar("i2i", ifaceTy)

@@ -69,11 +69,11 @@ Standard-library tests run as `wasmgc-go test` on the vendored packages, in the 
 
 ## Size tracking
 
-`testdata/size/corpus.txt` lists programs. CI compiles each with `-names` off and records section sizes in `testdata/size/sizes.txt`. A commit that changes a size updates the file in the same commit. The budgets from `00-overview.md` are hard failures:
+`testdata/size/corpus.txt` lists programs. CI compiles each with `-names` off and records section sizes in `testdata/size/sizes.txt`. A commit that changes a size updates the file in the same commit. Hard ceilings live in `testdata/size/budgets.txt` (aligned with `00-overview.md`):
 
-- empty `main` over 2048 bytes
-- builtin println hello over 8192 bytes
-- `fmt.Println("hello")` over 131072 bytes, once that program compiles
+- empty `main` over 512 bytes
+- builtin println hello over 2048 bytes
+- `fmt.Println("hello")` over 270000 bytes (stretch target remains 128 KiB)
 
 The report prints the section breakdown (type, code, data, custom) so a regression that is "the name section came back" is visible. wasm3's empty main at HEAD carried a tag section it did not use and 922 bytes of data (`docs/wasm3-study/00-overview.md`). The size test is where that kind of leftover gets caught.
 

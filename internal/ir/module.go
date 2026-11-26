@@ -9,6 +9,9 @@ type Module struct {
 	// Low is false until the runtime-lowering pass finishes.
 	// Codegen refuses a module that is not Low.
 	Low bool
+	// AssertItabs lists $go.itab.<J>.@.<C> globals that iface→iface asserts
+	// may global.get. Nil means unrestricted (tests / pre-desc modules).
+	AssertItabs map[string]bool
 	// Filename is the source path for diagnostics (set by the parser).
 	Filename string
 }

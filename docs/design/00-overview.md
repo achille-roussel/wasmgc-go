@@ -109,7 +109,7 @@ Checked in CI by the corpus in `08-testing.md`. Sizes are uncompressed Wasm, nam
 |---|---|
 | empty `main` | ≤ 2 KiB. Stretch: the M2 1,775-byte snapshot. |
 | `println("hello, world")` using the builtin, not `fmt` | ≤ 8 KiB |
-| `fmt.Println("hello")` | ≤ 128 KiB, stretch ≤ 64 KiB |
+| `fmt.Println("hello")` | ≤ 270 KiB hard (CI); stretch ≤ 128 KiB (M8 exit), aspirational ≤ 64 KiB |
 | any of the above, relative to `GOARCH=wasm` empty main (~1.8 MB) | under 10% for `fmt`, under 1% for the builtin println |
 
 Language metrics, in the order the bootstrap plan demands them:

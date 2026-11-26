@@ -1,10 +1,12 @@
 # Hard ceilings (names off). Fail CI if a build exceeds the budget.
-# Method/REFLECTMETHOD prune restored (~294 KiB hello vs ~610 KiB with #70's
-# always-on Method tables). Remaining headroom vs pre-#66 (~127 KiB) is
-# justified by #66–#71 defer/reflect/stdlib growth, not method reachability.
+# After #72 REFLECTMETHOD prune, #66–#71 still leaked ~45 KiB into fmt hello:
+# dead-body itabs (time.NewTicker → time.Time) were global.get by live
+# iface→iface asserts. Module.AssertItabs + no bulk TypeName registration
+# cut hello ~294 KiB → ~248 KiB. Remaining gap vs same-env #65 (~175 KiB):
+# fmt/reflect/map/panic-assert growth — see PR attribution.
 empty_main	512
 println	2048
-m8_fmt_hello	320000
-m8_fmt_map	350000
-m8_fmt_float	370000
-m8_fmt_quote	340000
+m8_fmt_hello	270000
+m8_fmt_map	300000
+m8_fmt_float	315000
+m8_fmt_quote	290000
