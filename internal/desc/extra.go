@@ -109,6 +109,23 @@ func (g *gen) ensureExtraShapes() {
 			{Name: "elem", Type: &ir.Ref{Named: "$go.type"}},
 		},
 	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:    "$go.fn.paramType",
+		Kind:    ir.TypeFunc,
+		Params:  []ir.Type{ir.TypeI32},
+		Results: []ir.Type{&ir.Ref{Null: true, Named: "$go.type"}},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.extra.func",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "numIn", Type: ir.TypeI32},
+			{Name: "numOut", Type: ir.TypeI32},
+			{Name: "inType", Type: &ir.Ref{Named: "$go.fn.paramType"}},
+			{Name: "outType", Type: &ir.Ref{Named: "$go.fn.paramType"}},
+		},
+	})
 	// Reflect Set* on New().Elem() scalars mutates the interface box in place.
 	g.ensureMutableBoxes()
 }
@@ -130,6 +147,8 @@ func (g *gen) emitTypeExtra(tr *typeRec) ir.Expr {
 		return g.emitPtrExtra(tr)
 	case KindMap:
 		return g.emitMapExtra(tr)
+	case KindFunc:
+		return g.emitFuncExtra(tr)
 	default:
 		return nullObj
 	}
@@ -1141,6 +1160,84 @@ func (g *gen) emitMapExtra(tr *typeRec) ir.Expr {
 			&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.type." + ek},
 		},
 	}
+}
+
+func (g *gen) emitFuncExtra(tr *typeRec) ir.Expr {
+	if tr.goType == nil {
+		return &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}}
+	}
+	sig, ok := tr.goType.Underlying().(*types.Signature)
+	if !ok {
+		return &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}}
+	}
+	g.ensureExtraShapes()
+	var inTypes, outTypes []types.Type
+	if sig.Params() != nil {
+		for i := 0; i < sig.Params().Len(); i++ {
+			pt := sig.Params().At(i).Type()
+			inTypes = append(inTypes, pt)
+			fk := TypeKey(pt)
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = pt
+			}
+		}
+	}
+	if sig.Results() != nil {
+		for i := 0; i < sig.Results().Len(); i++ {
+			rt := sig.Results().At(i).Type()
+			outTypes = append(outTypes, rt)
+			fk := TypeKey(rt)
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = rt
+			}
+		}
+	}
+	inFn := g.emitParamTypeFunc(tr, "in", inTypes)
+	outFn := g.emitParamTypeFunc(tr, "out", outTypes)
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: "$go.extra.func"},
+		Args: []ir.Expr{
+			&ir.Const{Op: ir.OpI32Const, I64: int64(len(inTypes))},
+			&ir.Const{Op: ir.OpI32Const, I64: int64(len(outTypes))},
+			&ir.Instr{Op: ir.OpRefFunc, Func: inFn},
+			&ir.Instr{Op: ir.OpRefFunc, Func: outFn},
+		},
+	}
+}
+
+func (g *gen) emitParamTypeFunc(tr *typeRec, which string, params []types.Type) string {
+	name := "$go.func." + which + "Type." + sanitize(tr.key)
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	nullT := &ir.Instr{Op: ir.OpRefNull, Type: typeTy}
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{nullT}}
+	for li := len(params) - 1; li >= 0; li-- {
+		fk := TypeKey(params[li])
+		g.needTypeKey(fk)
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "i", Var: idx},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.type." + fk},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{idx},
+		Results: []ir.Type{typeTy},
+		Body:    &ir.Seq{Stmts: []ir.Stmt{chain, &ir.Unreachable{}}},
+	})
+	return name
 }
 
 func (g *gen) emitFieldTypeFunc(tr *typeRec, fields []*types.Var) string {

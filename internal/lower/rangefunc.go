@@ -567,6 +567,7 @@ func (fl *funcLower) emitRangeYieldBody(name string, s *ast.RangeStmt, yieldSig 
 		}
 	}
 
+	child.markForBodyIterVars(s.Body)
 	inner, err := child.stmtBlock(s.Body)
 	if err != nil {
 		return err

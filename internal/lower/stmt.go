@@ -2590,6 +2590,8 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, elem))
 		}
 	}
+	// Same as forStmt: body locals are per-iteration (issue19113 args/n capture).
+	fl.markForBodyIterVars(s.Body)
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
 		return nil, err
@@ -2761,6 +2763,7 @@ func (fl *funcLower) rangeStringStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stm
 		bodySeq.Stmts = append(bodySeq.Stmts, as...)
 	}
 
+	fl.markForBodyIterVars(s.Body)
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
 		return nil, err
@@ -2964,6 +2967,7 @@ func (fl *funcLower) rangeIntStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 		Label: breakL,
 		Cond:  &ir.Instr{Op: geOp, Args: []ir.Expr{fl.useVar(i), fl.useVar(nV)}},
 	})
+	fl.markForBodyIterVars(s.Body)
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
 		return nil, err
@@ -3075,6 +3079,7 @@ func (fl *funcLower) rangeChanStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt,
 	if valVar != nil {
 		bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, fl.useTemp(vt)))
 	}
+	fl.markForBodyIterVars(s.Body)
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
 		return nil, err
