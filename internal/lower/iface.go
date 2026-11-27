@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
@@ -404,10 +405,86 @@ func (fl *funcLower) typeAssert(e *ast.TypeAssertExpr, want ir.Type, commaOk boo
 		Str:    str,
 		Args:   []ir.Expr{x},
 	}
+	// Source iface display for nil-assert panics (mdempsky/16).
+	if src := fl.typeOf(e.X); src != nil && isIface(src) {
+		in.Field = typeAssertDisplaySubst(src, fl.pkg)
+	}
 	if commaOk {
 		in.I32 = 1
 	}
 	return in, stmts, nil
+}
+
+// typeAssertDisplay formats t like gc panic text: "interface { M() main.T }",
+// "main.T". Qualifier uses package Name (not Path) to match gotestcase→main.
+func typeAssertDisplay(t types.Type) string {
+	return typeAssertDisplaySubst(t, nil)
+}
+
+func typeAssertDisplaySubst(t types.Type, pkg *pkgLower) string {
+	if t == nil {
+		return ""
+	}
+	q := func(p *types.Package) string {
+		if p == nil {
+			return ""
+		}
+		return p.Name()
+	}
+	// Substitute type params in the printed form without rebuilding the
+	// go/types.Interface (Complete can recurse via Apply elsewhere).
+	s := types.TypeString(t, func(p *types.Package) string {
+		return q(p)
+	})
+	if pkg != nil && len(pkg.subst) > 0 {
+		for tp, conc := range pkg.subst {
+			if tp == nil || conc == nil {
+				continue
+			}
+			from := tp.String() // e.g. "T"
+			to := types.TypeString(conc, q)
+			if from != "" && to != "" && from != to {
+				s = replaceTypeParamName(s, from, to)
+			}
+		}
+	}
+	if strings.HasPrefix(s, "interface{") {
+		s = "interface { " + strings.TrimPrefix(s, "interface{")
+		s = strings.TrimSuffix(s, "}") + " }"
+	}
+	return s
+}
+
+// replaceTypeParamName replaces standalone type-param identifiers in a
+// TypeString (word boundaries) so T → main.T without touching main.T itself.
+// Skips method names (identifier followed by '('), e.g. interface{T() T}.
+func replaceTypeParamName(s, from, to string) string {
+	if from == "" || from == to {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], from) {
+			beforeOK := i == 0 || !isTypeNameByte(s[i-1])
+			after := i + len(from)
+			afterOK := after >= len(s) || !isTypeNameByte(s[after])
+			// Method name in interface{M() …}: do not rewrite M.
+			notMethod := after >= len(s) || s[after] != '('
+			if beforeOK && afterOK && notMethod {
+				b.WriteString(to)
+				i = after
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func isTypeNameByte(c byte) bool {
+	return c == '_' || c == '.' ||
+		(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *types.Selection) (ir.Expr, []ir.Stmt, error) {

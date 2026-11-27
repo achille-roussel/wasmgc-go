@@ -667,15 +667,24 @@ func (e *parseDurationError) Error() string {
 	return "time: " + e.message + " " + strconv.Quote(e.value)
 }
 
-var unitMap = map[string]uint64{
-	"ns": uint64(Nanosecond),
-	"us": uint64(Microsecond),
-	"µs": uint64(Microsecond),
-	"μs": uint64(Microsecond),
-	"ms": uint64(Millisecond),
-	"s":  uint64(Second),
-	"m":  uint64(Minute),
-	"h":  uint64(Hour),
+// unitLookup avoids a package-level map so programs that import time
+// (via os→io/fs) without calling ParseDuration do not pull map runtime.
+func unitLookup(u string) (uint64, bool) {
+	switch u {
+	case "ns":
+		return uint64(Nanosecond), true
+	case "us", "µs", "μs":
+		return uint64(Microsecond), true
+	case "ms":
+		return uint64(Millisecond), true
+	case "s":
+		return uint64(Second), true
+	case "m":
+		return uint64(Minute), true
+	case "h":
+		return uint64(Hour), true
+	}
+	return 0, false
 }
 
 func leadingInt(s string) (x uint64, rem string, err error) {
@@ -779,7 +788,7 @@ func ParseDuration(s string) (Duration, error) {
 		}
 		u := s[:i]
 		s = s[i:]
-		unit, ok := unitMap[u]
+		unit, ok := unitLookup(u)
 		if !ok {
 			return 0, &parseDurationError{"unknown unit " + strconv.Quote(u) + " in duration", orig}
 		}

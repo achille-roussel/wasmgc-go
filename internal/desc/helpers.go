@@ -51,9 +51,77 @@ func typeDisplayName(tr *typeRec) string {
 			}
 			return obj.Name()
 		}
+		// Func types: omit parameter names (issue48645a wants
+		// "func(func(int) bool)" not "func(fn func(int) bool)").
+		if sig, ok := tr.goType.Underlying().(*types.Signature); ok {
+			return signatureDisplay(sig)
+		}
 		return tr.goType.String()
 	}
 	return tr.name
+}
+
+// signatureDisplay formats a signature like reflect.Type.String / gc Type.String
+// without parameter or result names.
+func signatureDisplay(sig *types.Signature) string {
+	q := func(p *types.Package) string {
+		if p == nil {
+			return ""
+		}
+		return p.Name()
+	}
+	var b strings.Builder
+	b.WriteString("func(")
+	if sig.Params() != nil {
+		for i := 0; i < sig.Params().Len(); i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if sig.Variadic() && i == sig.Params().Len()-1 {
+				b.WriteString("...")
+				t := sig.Params().At(i).Type()
+				if sl, ok := t.Underlying().(*types.Slice); ok {
+					b.WriteString(types.TypeString(sl.Elem(), q))
+				} else {
+					b.WriteString(types.TypeString(t, q))
+				}
+			} else {
+				pt := sig.Params().At(i).Type()
+				if psig, ok := pt.Underlying().(*types.Signature); ok {
+					b.WriteString(signatureDisplay(psig))
+				} else {
+					b.WriteString(types.TypeString(pt, q))
+				}
+			}
+		}
+	}
+	b.WriteByte(')')
+	if sig.Results() != nil && sig.Results().Len() > 0 {
+		if sig.Results().Len() == 1 {
+			rt := sig.Results().At(0).Type()
+			b.WriteByte(' ')
+			if rsig, ok := rt.Underlying().(*types.Signature); ok {
+				b.WriteString(signatureDisplay(rsig))
+			} else {
+				b.WriteString(types.TypeString(rt, q))
+			}
+		} else {
+			b.WriteString(" (")
+			for i := 0; i < sig.Results().Len(); i++ {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				rt := sig.Results().At(i).Type()
+				if rsig, ok := rt.Underlying().(*types.Signature); ok {
+					b.WriteString(signatureDisplay(rsig))
+				} else {
+					b.WriteString(types.TypeString(rt, q))
+				}
+			}
+			b.WriteByte(')')
+		}
+	}
+	return b.String()
 }
 
 func (g *gen) fillReflectHelpers() error {
@@ -207,9 +275,13 @@ func (g *gen) fillReflectTypeName() {
 			continue
 		}
 		// Named pkg.Type display names for fmt %#v / reflect.Type.String and
-		// unhashable map-key panics (recover2).
+		// unhashable map-key panics (recover2). Also func types for
+		// TypeOf(fn).String() (issue48645a: "func(func(int) bool)").
 		n := typeDisplayName(tr)
-		if n == "" || !namedDisplay(n) {
+		if n == "" {
+			continue
+		}
+		if !namedDisplay(n) && !strings.HasPrefix(n, "func(") && n != "func()" {
 			continue
 		}
 		entries = append(entries, idName{id: tr.id, name: n})

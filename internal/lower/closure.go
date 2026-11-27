@@ -364,6 +364,12 @@ func freeVars(body *ast.BlockStmt, info *types.Info, outer map[types.Object]*ir.
 		if declared[obj] {
 			return true
 		}
+		// Package-level vars/funcs are GlobalGet / top-level, never captures
+		// (nilptr2: var intp + func lit in a package composite lit must not
+		// cell-capture intp — that dropped the fat-ptr nil check).
+		if v, ok := obj.(*types.Var); ok && v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+			return true
+		}
 		if _, ok := outer[obj]; !ok {
 			return true
 		}

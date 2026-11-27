@@ -2,7 +2,7 @@
 # more than ±4096 B (TestSizeCorpus slack). Budgets are the hard CI ceilings.
 empty_main	371
 println	1402
-m8_fmt_hello	248372
-m8_fmt_map	273810
-m8_fmt_float	289431
-m8_fmt_quote	263324
+m8_fmt_hello	230368
+m8_fmt_map	273238
+m8_fmt_float	280740
+m8_fmt_quote	245149

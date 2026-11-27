@@ -377,6 +377,11 @@ func (g *gen) collectFromProgram() {
 			}
 		}
 	}
+	// Mono-substituted anonymous interfaces (typeswitch7 case interface{bar() T}
+	// → interface{bar() int}) appear as OpIfaceAssert keys but not in TypesInfo.
+	// Apply each instance's Subst so synthesizeAssertItabs can lookupIface them.
+	g.attachMonoAppliedTypes()
+
 	// Resolve go types for itab keys.
 	for _, it := range g.itabs {
 		it.concrete = g.lookupType(it.concKey)
@@ -389,6 +394,36 @@ func (g *gen) collectFromProgram() {
 		}
 	}
 	g.closeUniverse()
+}
+
+// attachMonoAppliedTypes registers Subst.Apply(t) for types in generic bodies
+// so descriptor keys from mono lowering (iface.interface{bar() int}) get goType.
+func (g *gen) attachMonoAppliedTypes() {
+	if g.prog == nil || g.prog.Mono == nil {
+		return
+	}
+	tab, _ := g.prog.Mono.(*mono.Table)
+	if tab == nil {
+		return
+	}
+	for _, inst := range tab.ByName {
+		if inst == nil || len(inst.Subst) == 0 || inst.Origin == nil {
+			continue
+		}
+		info := tab.InfoFor[inst.Origin]
+		if info == nil {
+			continue
+		}
+		for _, tv := range info.Types {
+			if tv.Type == nil {
+				continue
+			}
+			applied := inst.Subst.Apply(tv.Type)
+			if applied != nil {
+				g.attachGoType(applied)
+			}
+		}
+	}
 }
 
 // synthesizeAssertItabs emits itabs for iface→iface assert targets.
@@ -1478,6 +1513,29 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 	if err != nil {
 		return "", err
 	}
+	// Pointer concrete + value method: gc panicwrap before deref/call
+	// (fixedbugs/issue19040: "value method main.T.F called using nil *T pointer").
+	if _, concIsPtr := types.Unalias(concrete).Underlying().(*types.Pointer); concIsPtr {
+		if _, recvIsPtr := types.Unalias(recvGo).Underlying().(*types.Pointer); !recvIsPtr {
+			elem := derefIfPtr(concrete)
+			method, typ := panicWrapNames(fn, elem)
+			nilChk := &ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "data", Var: data}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{
+						Op:   ir.OpCall,
+						Func: "runtime.panicWrapNil",
+						Args: []ir.Expr{
+							&ir.Instr{Op: ir.OpStringLit, Str: method},
+							&ir.Instr{Op: ir.OpStringLit, Str: typ},
+						},
+					}},
+					&ir.Unreachable{},
+				}},
+			}
+			stmts = append([]ir.Stmt{nilChk}, stmts...)
+		}
+	}
 	callArgs := []ir.Expr{recvExpr}
 	for i := 0; i < msig.Params().Len(); i++ {
 		callArgs = append(callArgs, &ir.Name{Raw: fmt.Sprintf("a%d", i), Var: params[i+1]})
@@ -2476,6 +2534,34 @@ func scalarBoxOf(t ir.Type) (boxName string, elem ir.Type) {
 		return "$go.box.f64", ir.TypeF64
 	}
 	return "", nil
+}
+
+// panicWrapNames builds gc-shaped args for runtime.panicWrapNil:
+// method="main.T.F", typ="*T".
+func panicWrapNames(fn *types.Func, elem types.Type) (method, typ string) {
+	typName := types.TypeString(elem, func(p *types.Package) string {
+		if p == nil {
+			return ""
+		}
+		return p.Name()
+	})
+	// Prefer short named form without package for the "*T" slot (issue19040).
+	short := typName
+	if n, ok := types.Unalias(elem).(*types.Named); ok {
+		short = n.Obj().Name()
+		pkg := "main"
+		if p := n.Obj().Pkg(); p != nil && p.Name() != "" {
+			pkg = p.Name()
+		}
+		method = pkg + "." + short + "." + fn.Name()
+		return method, "*" + short
+	}
+	pkg := "main"
+	if fn.Pkg() != nil && fn.Pkg().Name() != "" {
+		pkg = fn.Pkg().Name()
+	}
+	method = pkg + "." + short + "." + fn.Name()
+	return method, "*" + short
 }
 
 func isPointer(t types.Type) bool {

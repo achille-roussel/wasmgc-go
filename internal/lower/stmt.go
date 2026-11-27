@@ -3627,6 +3627,9 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 				// Multi-type case (case T1, T2:): bind as the switch interface.
 				caseTy = fl.typeOf(tagExpr)
 			}
+			if caseTy != nil && fl.pkg != nil && len(fl.pkg.subst) > 0 {
+				caseTy = fl.pkg.subst.Apply(caseTy)
+			}
 			if caseTy != nil && caseTy != types.Typ[types.UntypedNil] {
 				irTy, err := fl.mapType(caseTy)
 				if err != nil {
@@ -3698,6 +3701,9 @@ func (fl *funcLower) typeSwitchStmt(s *ast.TypeSwitchStmt) ([]ir.Stmt, error) {
 				cmp = &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(ifaceV)}}
 			} else {
 				ct := fl.typeOf(texpr)
+				if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+					ct = fl.pkg.subst.Apply(ct)
+				}
 				key := desc.TypeKey(ct)
 				testStr := "test"
 				if isIface(ct) {

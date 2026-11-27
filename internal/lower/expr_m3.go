@@ -305,6 +305,8 @@ func (fl *funcLower) starExpr(e *ast.StarExpr, want ir.Type) (ir.Expr, []ir.Stmt
 
 // fieldGetChain lowers a FieldVal selection, following Selection.Index() for
 // promoted embedded fields (e.g. f.zero → f.fmtFlags.zero).
+// Zero-sized fields are omitted from IR structs (structFields); synthesize a
+// zero of the field type instead of struct.get (nilptr2 m1.M, issue48253 Foo.A).
 func (fl *funcLower) fieldGetChain(base ir.Expr, baseTy types.Type, sel *types.Selection) (ir.Expr, error) {
 	idx := sel.Index()
 	if len(idx) == 0 {
@@ -325,11 +327,23 @@ func (fl *funcLower) fieldGetChain(base ir.Expr, baseTy types.Type, sel *types.S
 		if stName == "" {
 			return nil, fmt.Errorf("no IR type for %s", ty)
 		}
-		cur = &ir.Instr{
-			Op:    ir.OpStructGet,
-			Type:  &ir.Ref{Named: stName},
-			Field: fld.Name(),
-			Args:  []ir.Expr{cur},
+		fldIR, err := fl.mapType(fld.Type())
+		if err != nil {
+			return nil, err
+		}
+		if irStructHasField(fl.mod, stName, fld.Name()) {
+			cur = &ir.Instr{
+				Op:    ir.OpStructGet,
+				Type:  &ir.Ref{Named: stName},
+				Field: fld.Name(),
+				Args:  []ir.Expr{cur},
+			}
+		} else {
+			z, zerr := fl.pkg.mexprEmbedZero(fldIR)
+			if zerr != nil {
+				return nil, zerr
+			}
+			cur = z
 		}
 		if i+1 < len(idx) {
 			ty = fld.Type()
