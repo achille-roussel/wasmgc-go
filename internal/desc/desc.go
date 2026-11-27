@@ -238,7 +238,10 @@ func (g *gen) scanModule() {
 						g.noteLiveAnyConcrete(in.Global)
 					}
 				}
-				if in.Str != "" && strings.HasPrefix(in.Str, "type:") {
+				// Type keys only from Call/RefFunc-reachable bodies: Call's
+				// closed-universe asserts otherwise intern ~10 func types into
+				// ReflectTypeName even when Call is later DCE'd (fmt hello).
+				if inLive && in.Str != "" && strings.HasPrefix(in.Str, "type:") {
 					g.needTypeKey(strings.TrimPrefix(in.Str, "type:"))
 				}
 			case ir.OpGlobalGet:
@@ -249,11 +252,11 @@ func (g *gen) scanModule() {
 						g.noteLiveAnyConcrete(in.Global)
 					}
 				}
-				if strings.HasPrefix(in.Global, "$go.type.") {
+				if inLive && strings.HasPrefix(in.Global, "$go.type.") {
 					g.needTypeKey(strings.TrimPrefix(in.Global, "$go.type."))
 				}
 			case ir.OpIfaceAssert:
-				if in.Global != "" {
+				if inLive && in.Global != "" {
 					g.needTypeKey(in.Global)
 					if strings.HasPrefix(in.Str, "iface") {
 						g.asserts[in.Global] = true
@@ -261,19 +264,19 @@ func (g *gen) scanModule() {
 					}
 				}
 			case ir.OpChanRecv, ir.OpChanSend:
-				if in.Global != "" {
+				if inLive && in.Global != "" {
 					g.needTypeKey(in.Global)
 				}
 			case ir.OpConv:
 				if in.Str == "iface.eq" {
 				}
 			case ir.OpIfaceCall:
-				if in.Global != "" {
+				if inLive && in.Global != "" {
 					g.ifaces[in.Global] = true
 					g.needTypeKey(in.Global)
 				}
 			case ir.OpCall:
-				if in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
+				if inLive && in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
 					g.needTypeKey(in.Global)
 				}
 			}

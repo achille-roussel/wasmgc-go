@@ -273,6 +273,8 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	// Second scrub: DCE may have removed the only global.get of a table.
 	ir.PruneDeadInits(mod)
 	ir.PruneUnreachable(mod)
+	// Drop TypeDefs only interned by dead bodies (Call's $go.func.* sigs).
+	ir.PruneUnusedTypes(mod)
 	// Pack remaining live const struct tables (e.g. pow10Tab when floats are
 	// printed) after dead-init scrub so we do not keep side-effecting fill
 	// loops for write-only tables.

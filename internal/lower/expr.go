@@ -3409,13 +3409,7 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 		}
 		ptrT := fl.newTemp(ptrIR)
 		stmts = append(stmts, fl.assignTemp(ptrT, ex))
-		stmts = append(stmts, &ir.If{
-			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(ptrT)}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-				&ir.Unreachable{},
-			}},
-		})
+		stmts = append(stmts, fl.panicIfNilRef(fl.useTemp(ptrT)))
 		// *NamedStruct / *[N]T share the object ref with T — no OpDeref.
 		if isObjectPointer(xt) {
 			if want != nil {
@@ -3430,15 +3424,12 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 	return fl.expr(x, want)
 }
 
-// panicIfNilRef appends `if ref.is_null v { runtime.panicNil(); unreachable }`.
+// panicIfNilRef emits call $go.panicIfNull(v) — shared out-of-line helper
+// (RuntimeOps materializes the body) instead of inlining is_null+panicNil.
 func (fl *funcLower) panicIfNilRef(v ir.Expr) ir.Stmt {
-	return &ir.If{
-		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{v}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-			&ir.Unreachable{},
-		}},
-	}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	arg := ir.Expr(&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{v}})
+	return &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "$go.panicIfNull", Args: []ir.Expr{arg}}}
 }
 
 // methodRecvSel lowers the receiver for a MethodVal selection, following

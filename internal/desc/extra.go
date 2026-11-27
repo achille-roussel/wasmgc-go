@@ -397,6 +397,12 @@ func (g *gen) reachableFuncs() map[string]bool {
 				callees = append(callees, in.Func)
 			}
 			if in.Op == ir.OpRefFunc && in.Func != "" {
+				// Match DCE: itab RefFunc into Call must not mark it live, or
+				// scanModule needTypeKey's Call type-switch and keep $go.func.*
+				// signatures in ReflectTypeName / the type section for fmt.
+				if ir.IsReflectCallAPI(in.Func) {
+					return
+				}
 				callees = append(callees, in.Func)
 			}
 			for _, c := range callees {
