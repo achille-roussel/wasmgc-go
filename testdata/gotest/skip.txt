@@ -8,21 +8,16 @@
 abi/idata.go — unsupported: unsafe
 abi/part_live.go — unsupported: unsafe
 abi/part_live_2.go — unsupported: unsafe
-blank.go — wasm validate/compile error
 chan/sieve2.go — output mismatch
-cmp.go — wasm validate/compile error
 cmplxdivide.go — compile error: build: load: typecheck
 const7.go — could not import os/exec
-convT2X.go — codegen: missing struct field
 ddd.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x3d7c40be0380 stack=[0x3d…
 deferfin.go — unsupported: unsafe
 devirtualization_nil_panics.go — compile error: codegen
 finprofiled.go — output mismatch
 fixedbugs/bug021.go — wasm validate/compile error
-fixedbugs/bug114.go — compile error: build: load: typecheck
 fixedbugs/bug243.go — runtime error: goroutine/channel deadlock in Listen/Accept simulation
 fixedbugs/bug246.go — unsupported: unsafe
-fixedbugs/bug257.go — compile error: sync/atomic fat pointer to unsafe.Pointer
 fixedbugs/bug260.go — output mismatch
 fixedbugs/bug328.go — unsupported: unsafe
 fixedbugs/bug336.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0xa1947070380 stack=[0xa19…
@@ -43,14 +38,10 @@ fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack
 fixedbugs/issue22662.go — compile error: codegen
-fixedbugs/issue22881.go — failed: build: pipeline: IR verify: temp %1 used outside its defining region in main.fa1 pipeline: IR verify…
-fixedbugs/issue23017.go — compile error: lower: field index 0 out of range for gotestcase.T
-fixedbugs/issue23305.go — compile error: build: load: typecheck
 fixedbugs/issue24491a.go — unsupported: unsafe
 fixedbugs/issue24491b.go — unsupported: unsafe
 fixedbugs/issue25897a.go — compile error: build: load: typecheck
 fixedbugs/issue27201.go — compile error: codegen
-fixedbugs/issue27518a.go — compile error: codegen
 fixedbugs/issue27518b.go — compile error: codegen
 fixedbugs/issue27695b.go — compile error: build: load: typecheck
 fixedbugs/issue27695c.go — compile error: build: load: typecheck
@@ -62,13 +53,11 @@ fixedbugs/issue30041.go — compile error: build: load: typecheck
 fixedbugs/issue30977.go — compile error: codegen
 fixedbugs/issue32477.go — compile error: codegen
 fixedbugs/issue33724.go — runtime error: null deref / stub stack
-fixedbugs/issue34123.go — compile error: codegen
 fixedbugs/issue34395.go — timeout
 fixedbugs/issue35027.go — unsupported: unsafe
 fixedbugs/issue35073a.go — unsupported: unsafe
 fixedbugs/issue38093.go — compile error: build: load: typecheck
 fixedbugs/issue39541.go — compile error: build: load: typecheck
-fixedbugs/issue40629.go — runtime error: nil *[N]T element access (range/len compile OK)
 fixedbugs/issue40917.go — unsupported: unsafe
 fixedbugs/issue45045.go — unsupported: unsafe
 fixedbugs/issue4562.go — compile error: codegen
@@ -78,8 +67,6 @@ fixedbugs/issue46938.go — failed: build: pipeline: IR verify: cannot assign re
 fixedbugs/issue48536.go — unsupported: unsafe
 fixedbugs/issue52612.go — unsupported: unsafe
 fixedbugs/issue52788a.go — compile error: build: load: typecheck
-fixedbugs/issue5373.go — wasm validate/compile error
-fixedbugs/issue54220.go — unsupported: unsafe
 fixedbugs/issue54343.go — compile error: codegen
 fixedbugs/issue5493.go — unsupported: unsafe
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
@@ -87,8 +74,6 @@ fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles
 fixedbugs/issue58300.go — compile error: codegen
 fixedbugs/issue58300b.go — compile error: codegen
 fixedbugs/issue5856.go — compile error: codegen
-fixedbugs/issue59293.go — runtime error
-fixedbugs/issue59334.go — compile error: lower: not a function: unsafe.Slice obj=*types.Builtin crypto/internal/fips140/subtle: lower: not a …
 fixedbugs/issue59338.go — failed: build: unsubstituted type parameter P unsubstituted type parameter P
 fixedbugs/issue68415.go — could not import unique
 fixedbugs/issue68525.go — compile error: build: load: typecheck
@@ -103,7 +88,6 @@ fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
-fixedbugs/issue8606.go — wasm validate/compile error
 fixedbugs/issue9321.go — could not import runtime/pprof
 gcgort.go — compile error: IR verify complex64 nullability
 genmeth.go — failed: build: panic: /home/ubuntu/.local/go/src/go/types/instantiate.go:162: assertion failed  goroutine 1 …
@@ -119,7 +103,6 @@ mallocfin.go — compile error: codegen
 maymorestack.go — compile error: codegen
 nilptr.go — unsupported: unsafe
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
-printbig.go — compile error: build: load: typecheck
 sigchld.go — compile error: build: load: typecheck
 slicecap.go — compile error: codegen
 stack.go — runtime error
@@ -131,18 +114,10 @@ tinyfin.go — output mismatch
 typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …
-typeparam/issue47713.go — wasm validate/compile error: BinaryMarshaler call shape
-typeparam/issue48047.go — wasm validate/compile error
-typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer2$byte desc: no concrete type for main.fooer2$byte
 typeparam/issue48318.go — could not import encoding/xml
-typeparam/issue51522b.go — wasm validate/compile error
-typeparam/mdempsky/13.go — failed: build: mono: pending main.Abs$main.MyInt.Abs missing package/info mono: pending main.Abs$main.MyInt.…
-typeparam/mdempsky/14.go — wasm validate/compile error: struct.new anyref vs i32
 typeparam/mdempsky/17.go — compile error: lower: tuple type not a single value: (k any, v any)
 typeparam/mdempsky/20.go — compile error: codegen
 typeparam/nested.go — output mismatch
-typeparam/settable.go — failed: build: mono: pending main.Setter$main.SettableInt.Set missing package/info mono: pending main.Setter…
-typeparam/shape1.go — wasm validate/compile error: mono f$*incrementer recv width
 uintptrescapes3.go — unsupported: unsafe
 unsafe_slice_data.go — unsupported: unsafe
 unsafe_string_data.go — unsupported: unsafe
