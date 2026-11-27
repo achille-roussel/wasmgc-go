@@ -109,8 +109,158 @@ func (g *gen) ensureExtraShapes() {
 			{Name: "elem", Type: &ir.Ref{Named: "$go.type"}},
 		},
 	})
+	// $go.extra.func / $go.fn.paramType are interned only when emitFuncExtra
+	// runs (needsFuncParamAPI) so println / fmt.Println type sections stay
+	// small — same idea as skipping Call itab edges in DCE.
 	// Reflect Set* on New().Elem() scalars mutates the interface box in place.
 	g.ensureMutableBoxes()
+}
+
+func (g *gen) ensureFuncExtraShapes() {
+	g.mod.InternType(&ir.TypeDef{
+		Name:    "$go.fn.paramType",
+		Kind:    ir.TypeFunc,
+		Params:  []ir.Type{ir.TypeI32},
+		Results: []ir.Type{&ir.Ref{Null: true, Named: "$go.type"}},
+	})
+	g.mod.InternType(&ir.TypeDef{
+		Name:  "$go.extra.func",
+		Kind:  ir.TypeStruct,
+		Super: "$go.object",
+		Fields: []ir.Field{
+			{Name: "numIn", Type: ir.TypeI32},
+			{Name: "numOut", Type: ir.TypeI32},
+			{Name: "inType", Type: &ir.Ref{Named: "$go.fn.paramType"}},
+			{Name: "outType", Type: &ir.Ref{Named: "$go.fn.paramType"}},
+		},
+	})
+}
+
+// needsFuncParamAPI reports whether Type.NumIn/In/NumOut/Out (or the
+// runtime.ReflectFunc* helpers) are reached by a real call — not merely
+// listed on reflect.Type's itab (fmt.Println).
+func (g *gen) needsFuncParamAPI() bool {
+	if g.funcParamAPISet {
+		return g.funcParamAPI
+	}
+	g.funcParamAPISet = true
+	live := g.reachableFuncsRefFuncSkipFuncParamAPI()
+	for name := range live {
+		if isReflectFuncParamAPI(name) {
+			g.funcParamAPI = true
+			return true
+		}
+		f := g.mod.LookupFunc(name)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		found := false
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpIfaceCall && isReflectFuncParamSelector(in.Func) {
+				found = true
+			}
+			if in.Op == ir.OpCallRef && callRefIsReflectFuncParam(in) {
+				found = true
+			}
+			if in.Op == ir.OpCall && isReflectFuncParamAPI(in.Func) {
+				found = true
+			}
+		})
+		if found {
+			g.funcParamAPI = true
+			return true
+		}
+	}
+	return false
+}
+
+func isReflectFuncParamSelector(name string) bool {
+	switch name {
+	case "NumIn", "NumOut", "In", "Out":
+		return true
+	}
+	return false
+}
+
+func isReflectFuncParamAPI(name string) bool {
+	switch name {
+	case "reflect.(*rtype).NumIn", "reflect.(*rtype).NumOut",
+		"reflect.(*rtype).In", "reflect.(*rtype).Out",
+		"runtime.ReflectFuncNumIn", "runtime.ReflectFuncNumOut",
+		"runtime.ReflectFuncIn", "runtime.ReflectFuncOut":
+		return true
+	}
+	if strings.Contains(name, "reflect_rtype") || strings.Contains(name, "reflect.rtype") {
+		return strings.HasSuffix(name, ".NumIn") || strings.HasSuffix(name, ".NumOut") ||
+			strings.HasSuffix(name, ".In") || strings.HasSuffix(name, ".Out")
+	}
+	return false
+}
+
+func callRefIsReflectFuncParam(in *ir.Instr) bool {
+	n := ifaceFnName(in.Type)
+	if n == "" {
+		return false
+	}
+	if !strings.Contains(n, "ifacefn.reflect_Type.") {
+		return false
+	}
+	return strings.HasSuffix(n, ".NumIn") || strings.HasSuffix(n, ".NumOut") ||
+		strings.HasSuffix(n, ".In") || strings.HasSuffix(n, ".Out")
+}
+
+func (g *gen) reachableFuncsRefFuncSkipFuncParamAPI() map[string]bool {
+	live := map[string]bool{}
+	var q []string
+	mark := func(name string) {
+		if name == "" || live[name] {
+			return
+		}
+		if g.mod.LookupFunc(name) == nil {
+			return
+		}
+		live[name] = true
+		q = append(q, name)
+	}
+	for _, seed := range []string{"main.run", "main.main", "runtime.init", "main.init"} {
+		mark(seed)
+	}
+	for _, f := range g.mod.Funcs {
+		if strings.Contains(f.Name, ".init") || strings.HasSuffix(f.Name, ".init.0") {
+			mark(f.Name)
+		}
+		if f.Export != "" {
+			mark(f.Name)
+		}
+	}
+	for len(q) > 0 {
+		fn := q[0]
+		q = q[1:]
+		f := g.mod.LookupFunc(fn)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpCall && in.Func != "" {
+				mark(in.Func)
+			}
+			if in.Op == ir.OpRefFunc && in.Func != "" {
+				if isReflectFuncParamAPI(in.Func) {
+					return
+				}
+				mark(in.Func)
+			}
+		})
+	}
+	return live
 }
 
 // emitTypeExtra builds $extra for tr and returns an IR expr for the extra
@@ -130,6 +280,8 @@ func (g *gen) emitTypeExtra(tr *typeRec) ir.Expr {
 		return g.emitPtrExtra(tr)
 	case KindMap:
 		return g.emitMapExtra(tr)
+	case KindFunc:
+		return g.emitFuncExtra(tr)
 	default:
 		return nullObj
 	}
@@ -1141,6 +1293,90 @@ func (g *gen) emitMapExtra(tr *typeRec) ir.Expr {
 			&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.type." + ek},
 		},
 	}
+}
+
+func (g *gen) emitFuncExtra(tr *typeRec) ir.Expr {
+	nullObj := &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.object"}}
+	if tr.goType == nil {
+		return nullObj
+	}
+	sig, ok := tr.goType.Underlying().(*types.Signature)
+	if !ok {
+		return nullObj
+	}
+	// fmt.Println never calls NumIn/In; skip $go.extra.func so inType/outType
+	// ref.funcs and param type globals do not stay live via type inits.
+	if !g.needsFuncParamAPI() {
+		return nullObj
+	}
+	g.ensureFuncExtraShapes()
+	var inTypes, outTypes []types.Type
+	if sig.Params() != nil {
+		for i := 0; i < sig.Params().Len(); i++ {
+			pt := sig.Params().At(i).Type()
+			inTypes = append(inTypes, pt)
+			fk := TypeKey(pt)
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = pt
+			}
+		}
+	}
+	if sig.Results() != nil {
+		for i := 0; i < sig.Results().Len(); i++ {
+			rt := sig.Results().At(i).Type()
+			outTypes = append(outTypes, rt)
+			fk := TypeKey(rt)
+			g.needTypeKey(fk)
+			if t := g.types[fk]; t != nil && t.goType == nil {
+				t.goType = rt
+			}
+		}
+	}
+	inFn := g.emitParamTypeFunc(tr, "in", inTypes)
+	outFn := g.emitParamTypeFunc(tr, "out", outTypes)
+	return &ir.Instr{
+		Op:   ir.OpStructNew,
+		Type: &ir.Ref{Named: "$go.extra.func"},
+		Args: []ir.Expr{
+			&ir.Const{Op: ir.OpI32Const, I64: int64(len(inTypes))},
+			&ir.Const{Op: ir.OpI32Const, I64: int64(len(outTypes))},
+			&ir.Instr{Op: ir.OpRefFunc, Func: inFn},
+			&ir.Instr{Op: ir.OpRefFunc, Func: outFn},
+		},
+	}
+}
+
+func (g *gen) emitParamTypeFunc(tr *typeRec, which string, params []types.Type) string {
+	name := "$go.func." + which + "Type." + sanitize(tr.key)
+	if g.mod.LookupFunc(name) != nil {
+		return name
+	}
+	idx := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	nullT := &ir.Instr{Op: ir.OpRefNull, Type: typeTy}
+	var chain ir.Stmt = &ir.Return{Results: []ir.Expr{nullT}}
+	for li := len(params) - 1; li >= 0; li-- {
+		fk := TypeKey(params[li])
+		g.needTypeKey(fk)
+		chain = &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{
+				&ir.Name{Raw: "i", Var: idx},
+				&ir.Const{Op: ir.OpI32Const, I64: int64(li)},
+			}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{
+				&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.type." + fk},
+			}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{chain}},
+		}
+	}
+	g.mod.Funcs = append(g.mod.Funcs, &ir.Func{
+		Name:    name,
+		Params:  []*ir.Var{idx},
+		Results: []ir.Type{typeTy},
+		Body:    &ir.Seq{Stmts: []ir.Stmt{chain, &ir.Unreachable{}}},
+	})
+	return name
 }
 
 func (g *gen) emitFieldTypeFunc(tr *typeRec, fields []*types.Var) string {

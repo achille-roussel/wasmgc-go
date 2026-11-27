@@ -1013,30 +1013,46 @@ func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error
 	if m := concreteMethod(recvTy, fn); m != nil {
 		fn = m
 	}
+	declRecv := fn.Type().(*types.Signature).Recv().Type()
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		declRecv = fl.pkg.subst.Apply(declRecv)
+	}
 	if fl.pkg != nil && fl.pkg.mono != nil {
 		origin := fn.Origin()
 		if origin == nil {
 			origin = fn
 		}
 		if methodNeedsMono(origin) {
-			recv := fn.Type().(*types.Signature).Recv().Type()
-			if len(fl.pkg.subst) > 0 {
-				recv = fl.pkg.subst.Apply(recv)
-			}
-			if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 {
+			recv := declRecv
+			if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 && types.Identical(recvTy, declRecv) {
 				recv = recvTy
 			}
 			inst, err := fl.pkg.mono.EnsureMethod(origin, recv)
 			if err != nil {
 				return nil, nil, err
 			}
-			if inst != nil {
+			// Only use the mono func value when the MethodExpr receiver
+			// matches the declared recv. (*U).M must still adapt *U→U
+			// (typeparam/mdempsky/14).
+			if inst != nil && types.Identical(recvTy, declRecv) && len(sel.Index()) <= 1 {
 				return fl.monoInstFuncValue(inst)
+			}
+			if inst != nil && inst.Sig != nil && inst.Sig.Recv() != nil {
+				declRecv = inst.Sig.Recv().Type()
+				fn = types.NewFunc(fn.Pos(), fn.Pkg(), fn.Name(), inst.Sig)
 			}
 		}
 	}
-	declRecv := fn.Type().(*types.Signature).Recv().Type()
 	idx := sel.Index()
+	// After mono, type-param MethodExpr Index may omit embedding (T.M where T
+	// was iface-constrained / became struct{Mer} or struct{MyMer}). Rebuild
+	// from the concrete expr recv so the wrapper walks the embed path
+	// (typeparam/mdempsky/13).
+	if !isIface(recvTy) && len(idx) <= 1 {
+		if _, index, _ := types.LookupFieldOrMethod(recvTy, true, fn.Pkg(), fn.Name()); len(index) > 1 {
+			idx = index
+		}
+	}
 	// Identical recv and no embedding path → call the method directly as a
 	// func value. Promoted methods (struct{T}.m / (*Outer).M) still need a
 	// wrapper that walks Selection.Index even when types look related.
@@ -1242,7 +1258,18 @@ func (l *pkgLower) emitMethodExprAdaptedWrapper(wrapper string, fn *types.Func, 
 		}
 		results = append(results, ty)
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	var call ir.Expr
+	if isIface(declRecv) {
+		// Embedded interface method: dispatch via itab, not a missing
+		// main.Mer.M concrete function (typeparam/mdempsky/13).
+		var res ir.Type
+		if len(results) > 0 {
+			res = results[0]
+		}
+		call = makeIfaceCall(fn, declRecv, callArgs, res)
+	} else {
+		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	}
 	body := wrapperCallBody(call, results)
 	if len(adaptStmts) > 0 {
 		seq, ok := body.(*ir.Seq)
@@ -1551,10 +1578,16 @@ func (fl *funcLower) syncCellsToPlain() []ir.Stmt {
 	return out
 }
 
-// syncPlainToCells copies each plain local into its capture cell. Needed before
-// reading through cells when the plain was written without assignLocalSync
-// (e.g. i := 1 before assign-form `for i, x[i] = range` — cellInit at function
-// start captured the zero value).
+// syncPlainToCells copies dirty plain locals into their capture cells. Needed
+// before reading through cells when the plain was written without
+// assignLocalSync (e.g. i := 1 before assign-form `for i, x[i] = range` —
+// cellInit at function start captured the zero value).
+//
+// Only sync when plainDirty: unconditional plain→cell would wipe cell updates
+// from the previous range-body iteration (issue5373: `for a[f()] = range` where
+// f closes over x and the body also calls f — sync at the next key eval must
+// not restore a stale plain over the body's cell write). Same rule as
+// buildClosure's capture sync.
 func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 	if fl.cells == nil {
 		return nil
@@ -1563,6 +1596,9 @@ func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 	for obj, cv := range fl.cells {
 		v := fl.vars[obj]
 		if v == nil || v == cv {
+			continue
+		}
+		if !fl.plainDirty[obj] {
 			continue
 		}
 		cellTy, ok := cv.Typ.(*ir.Ref)
@@ -1575,6 +1611,7 @@ func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 			Field: "v",
 			Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
 		}})
+		delete(fl.plainDirty, obj)
 	}
 	return out
 }

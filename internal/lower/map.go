@@ -489,6 +489,7 @@ func (fl *funcLower) rangeMapStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, 
 			bodySeq.Stmts = append(bodySeq.Stmts, fl.assignVar(valVar, ub))
 		}
 	}
+	fl.markForBodyIterVars(s.Body)
 	inner, err := fl.stmtBlock(s.Body)
 	if err != nil {
 		return nil, err

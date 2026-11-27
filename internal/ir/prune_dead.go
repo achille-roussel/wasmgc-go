@@ -328,6 +328,10 @@ func scrubSeq(seq *Seq, read map[string]bool, keepLocalAssigns bool) *Seq {
 	// Scrub nested regions for dead global.sets only (keep local assigns).
 	for i, s := range seq.Stmts {
 		switch s := s.(type) {
+		case *Seq:
+			// RuntimeOps wraps If preambles as nested Seq stmts; scrub inside.
+			seq.Stmts[i] = scrubRegionMode(s, read, true)
+			continue
 		case *Block:
 			s.Body = scrubRegionMode(s.Body, read, true)
 		case *Loop:
@@ -494,6 +498,11 @@ func markStmtNames(s Stmt, live map[string]bool) {
 		for _, e := range s.Args {
 			markExprNames(e, live)
 		}
+	case *Seq:
+		// RuntimeOps may nest Seq as a Stmt (If cond string-lit preamble).
+		// Without this, locals used only inside that Seq look dead to init DCE
+		// (crypto/internal/fips140 init string switch → bug257 validate error).
+		markRegionNames(s, live)
 	case *Block:
 		markRegionNames(s.Body, live)
 	case *Loop:

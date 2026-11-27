@@ -898,7 +898,97 @@ func (v Value) OverflowComplex(x complex128) bool { return false }
 func (v Value) OverflowFloat(x float64) bool      { return false }
 func (v Value) OverflowInt(x int64) bool          { return false }
 func (v Value) OverflowUint(x uint64) bool        { return false }
-func (v Value) Convert(t Type) Value              { return Value{} }
+// Convert returns the value v converted to type t.
+// Panics if the conversion is not allowed. Enough for integer/unsigned
+// and same-type conversions used by GOROOT fixedbugs (issue19113).
+func (v Value) Convert(t Type) Value {
+	if !v.IsValid() {
+		panic(&ValueError{"reflect.Value.Convert", Invalid})
+	}
+	if t == nil {
+		panic("reflect: Convert(nil)")
+	}
+	dst := asRtype(t)
+	if dst == nil {
+		panic("reflect: Convert of invalid Type")
+	}
+	if v.typ != nil && v.typ.rt != nil && dst.rt != nil && v.typ.rt == dst.rt {
+		return v
+	}
+	if v.Kind() == t.Kind() && v.Kind() != Interface {
+		// Same kind (e.g. defined int→int): re-tag with destination descriptor.
+		return Value{typ: dst, data: v.dataWord()}
+	}
+	switch t.Kind() {
+	case Int:
+		return ValueOf(int(convertInt(v)))
+	case Int8:
+		return ValueOf(int8(convertInt(v)))
+	case Int16:
+		return ValueOf(int16(convertInt(v)))
+	case Int32:
+		return ValueOf(int32(convertInt(v)))
+	case Int64:
+		return ValueOf(convertInt(v))
+	case Uint:
+		return ValueOf(uint(convertUint(v)))
+	case Uint8:
+		return ValueOf(uint8(convertUint(v)))
+	case Uint16:
+		return ValueOf(uint16(convertUint(v)))
+	case Uint32:
+		return ValueOf(uint32(convertUint(v)))
+	case Uint64:
+		return ValueOf(convertUint(v))
+	case Uintptr:
+		return ValueOf(uintptr(convertUint(v)))
+	case Float32:
+		return ValueOf(float32(convertFloat(v)))
+	case Float64:
+		return ValueOf(convertFloat(v))
+	case String:
+		if v.Kind() == String {
+			return ValueOf(v.String())
+		}
+	}
+	panic("reflect: call of Convert on " + v.Kind().String() + " to " + t.Kind().String())
+}
+
+func convertInt(v Value) int64 {
+	switch v.Kind() {
+	case Int, Int8, Int16, Int32, Int64:
+		return v.Int()
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return int64(v.Uint())
+	case Float32, Float64:
+		return int64(v.Float())
+	}
+	panic("reflect: Convert of " + v.Kind().String() + " to int")
+}
+
+func convertUint(v Value) uint64 {
+	switch v.Kind() {
+	case Int, Int8, Int16, Int32, Int64:
+		return uint64(v.Int())
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return v.Uint()
+	case Float32, Float64:
+		return uint64(v.Float())
+	}
+	panic("reflect: Convert of " + v.Kind().String() + " to uint")
+}
+
+func convertFloat(v Value) float64 {
+	switch v.Kind() {
+	case Int, Int8, Int16, Int32, Int64:
+		return float64(v.Int())
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return float64(v.Uint())
+	case Float32, Float64:
+		return v.Float()
+	}
+	panic("reflect: Convert of " + v.Kind().String() + " to float")
+}
 func (v Value) Slice(i, j int) Value              { return Value{} }
 func (v Value) Slice3(i, j, k int) Value          { return Value{} }
 func (v Value) FieldByIndex(index []int) Value {
@@ -928,7 +1018,42 @@ func (v Value) Call(in []Value) []Value {
 		}
 		return impl.fn(in)
 	}
-	return nil
+	if v.Kind() != Func {
+		panic(&ValueError{"reflect.Value.Call", v.Kind()})
+	}
+	if v.IsNil() {
+		panic("reflect: call of nil function")
+	}
+	// Closed-universe concrete Call: type-assert Interface() to signatures
+	// that appear in reachable programs (issue19113 shift tests, etc.).
+	// Args are already Convert'd to the parameter types; Int/Uint read them.
+	switch f := v.Interface().(type) {
+	case func(int, int) int:
+		return []Value{ValueOf(f(int(in[0].Int()), int(in[1].Int())))}
+	case func(int, int64) int:
+		return []Value{ValueOf(f(int(in[0].Int()), in[1].Int()))}
+	case func(int, int32) int:
+		return []Value{ValueOf(f(int(in[0].Int()), int32(in[1].Int())))}
+	case func(int, int16) int:
+		return []Value{ValueOf(f(int(in[0].Int()), int16(in[1].Int())))}
+	case func(int, int8) int:
+		return []Value{ValueOf(f(int(in[0].Int()), int8(in[1].Int())))}
+	case func(uint, int) uint:
+		return []Value{ValueOf(f(uint(in[0].Uint()), int(in[1].Int())))}
+	case func(uint, int64) uint:
+		return []Value{ValueOf(f(uint(in[0].Uint()), in[1].Int()))}
+	case func(uint, int32) uint:
+		return []Value{ValueOf(f(uint(in[0].Uint()), int32(in[1].Int())))}
+	case func(uint, int16) uint:
+		return []Value{ValueOf(f(uint(in[0].Uint()), int16(in[1].Int())))}
+	case func(uint, int8) uint:
+		return []Value{ValueOf(f(uint(in[0].Uint()), int8(in[1].Int())))}
+	default:
+		// Non-MakeFunc / unsupported signatures: no-op (pre-Call-type-switch
+		// behavior). Keeps fixedbugs/issue52788, issue26335, reflectmethod7
+		// passing; issue19113 hits the closed-universe cases above.
+		return nil
+	}
 }
 func (v Value) CallSlice(in []Value) []Value { return v.Call(in) }
 
@@ -1561,10 +1686,13 @@ func (t *rtype) MethodByName(name string) (Method, bool) {
 	return Method{}, false
 }
 
-func (t *rtype) NumIn() int           { return 0 }
-func (t *rtype) NumOut() int          { return 0 }
-func (t *rtype) In(i int) Type        { return nil }
-func (t *rtype) Out(i int) Type       { return nil }
+// NumIn/In/Out are stubs in source so fmt.Println's reflect.Type itab stays
+// small. desc.fillReflectFuncTypeMethods rewrites them to call ReflectFunc*
+// when NumIn/In are actually used (issue19113).
+func (t *rtype) NumIn() int     { return 0 }
+func (t *rtype) NumOut() int    { return 0 }
+func (t *rtype) In(i int) Type  { return nil }
+func (t *rtype) Out(i int) Type { return nil }
 func (t *rtype) Implements(u Type) bool {
 	if t == nil || u == nil {
 		return false

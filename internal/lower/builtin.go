@@ -4,11 +4,17 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/types"
+	"math"
 	"strings"
 
 	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 )
+
+func isUntypedInt(t types.Type) bool {
+	b, ok := types.Unalias(t).(*types.Basic)
+	return ok && (b.Kind() == types.UntypedInt || b.Kind() == types.UntypedRune)
+}
 
 func (fl *funcLower) isBuiltinPrint(e *ast.CallExpr) bool {
 	id, ok := e.Fun.(*ast.Ident)
@@ -157,6 +163,32 @@ func (fl *funcLower) printTypedArg(arg ast.Expr, ty types.Type) ([]ir.Stmt, erro
 			return nil, err
 		}
 		return append(stmts, ps...), nil
+	}
+	// Untyped int constants that do not fit in 32-bit int (soft-accepted as
+	// println args under WordSize 4) print as int64 so 0xffffffff shows
+	// 4294967295, matching amd64 GOROOT expectations (bug114, issue23305).
+	if isUntypedInt(ty) {
+		if tv, ok := fl.info.Types[arg]; ok && tv.Value != nil {
+			if i, ok := constant.Int64Val(tv.Value); ok {
+				if i < math.MinInt32 || i > math.MaxInt32 {
+					ex, err := fl.constVal(tv.Value, ir.TypeI64)
+					if err != nil {
+						return nil, err
+					}
+					return []ir.Stmt{
+						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printint64", Args: []ir.Expr{ex}}},
+					}, nil
+				}
+			} else if u, ok := constant.Uint64Val(tv.Value); ok && u > uint64(math.MaxInt32) {
+				ex, err := fl.constVal(tv.Value, ir.TypeI64)
+				if err != nil {
+					return nil, err
+				}
+				return []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.printuint64", Args: []ir.Expr{ex}}},
+				}, nil
+			}
+		}
 	}
 	if isSlice(ty) || isPointer(ty) || isMap(ty) || isChan(ty) || isSignature(ty) ||
 		isInteger(ty) || isFloat(ty) || isComplex(ty) {

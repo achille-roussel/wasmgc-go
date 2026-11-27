@@ -1,5 +1,7 @@
 package ir
 
+import "strings"
+
 // PruneUnreachable removes functions and globals that are not reachable from
 // exports. Reachability is a fixpoint over:
 //
@@ -10,6 +12,10 @@ package ir
 // Starting from every global init (the previous approach) kept every itab's
 // method wrappers alive even when no live code loaded that itab — bloating
 // fmt.Println("hello") well past the M8 128 KiB budget.
+//
+// ref.func into reflect.Value.Call / CallSlice does not keep those methods
+// live (cmd/link-style): every reflect.Value itab lists Call, but fmt only
+// needs Interface/Kind/etc. An actual call still marks them reachable.
 func PruneUnreachable(m *Module) {
 	if m == nil || len(m.Funcs) == 0 {
 		return
@@ -197,8 +203,17 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 	switch e := e.(type) {
 	case *Instr:
 		switch e.Op {
-		case OpCall, OpRefFunc:
+		case OpCall:
 			markFn(e.Func)
+		case OpRefFunc:
+			// Itab RefFunc alone must not keep Call alive — its concrete-func
+			// type-switch pulls many signatures into fmt hello (issue19113).
+			// Unused $go.extra.func / inType helpers are omitted at emit time
+			// (needsFuncParamAPI) rather than skipped here — live type inits
+			// that do embed ref.func $go.func.inType.* must keep them.
+			if !isReflectCallAPI(e.Func) {
+				markFn(e.Func)
+			}
 		case OpGlobalGet, OpGlobalSet:
 			// ScrubDeadGlobalStores removes write-only package-init stores first;
 			// remaining sets (e.g. runtime.runqTail in sched) must keep the global.
@@ -208,6 +223,19 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 			collectRefsExpr(a, markFn, markGl)
 		}
 	}
+}
+
+// isReflectCallAPI reports reflect.Value.Call / CallSlice and itab wrappers
+// for those methods ($go.wrap.…reflect_Value….Call).
+func isReflectCallAPI(name string) bool {
+	switch name {
+	case "reflect.Value.Call", "reflect.Value.CallSlice":
+		return true
+	}
+	if !strings.Contains(name, "reflect_Value") && !strings.Contains(name, "reflect.Value") {
+		return false
+	}
+	return strings.HasSuffix(name, ".Call") || strings.HasSuffix(name, ".CallSlice")
 }
 
 // Legacy helpers kept for any external callers / tests that used the old names.

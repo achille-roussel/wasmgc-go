@@ -274,7 +274,9 @@ func compileAndRun(opts Options, c Case, src string, action Action) (stdout, std
 
 	build := exec.Command(opts.Driver, buildArgs...)
 	build.Dir = dir
-	build.Env = append(os.Environ(), "WASMGC_JS="+glue)
+	// GOSSAINTERP=1: blank.go / cmp.go skip unsafe.Pointer reinterprets that
+	// Wasm GC cannot express (same escape hatch as go/ssa/interp).
+	build.Env = append(os.Environ(), "WASMGC_JS="+glue, "GOSSAINTERP=1")
 	var buildOut bytes.Buffer
 	build.Stdout = &buildOut
 	build.Stderr = &buildOut
@@ -292,7 +294,7 @@ func compileAndRun(opts Options, c Case, src string, action Action) (stdout, std
 		runArgs = append(runArgs, action.Args...)
 	}
 	cmd := exec.Command(node, runArgs...)
-	cmd.Env = append(os.Environ(), "WASMGC_JS="+glue)
+	cmd.Env = append(os.Environ(), "WASMGC_JS="+glue, "GOSSAINTERP=1")
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf

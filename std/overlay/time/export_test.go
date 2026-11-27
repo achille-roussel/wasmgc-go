@@ -105,7 +105,8 @@ func TzsetRule(s string) (Rule, string, bool) {
 }
 
 // Zoneinfo test stubs (no real zoneinfo zip in the thin rewrite).
-func ResetZoneinfoForTesting() {}
+func ResetZoneinfoForTesting() { zoneinfo = nil }
+func ZoneinfoForTesting() *string { return zoneinfo }
 func DisablePlatformSources() (undo func()) {
 	return func() {}
 }

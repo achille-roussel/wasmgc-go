@@ -40,7 +40,15 @@ func (x *Int32) Add(delta int32) int32 { x.v += delta; return x.v }
 func (x *Int32) And(mask int32) int32  { x.v &= mask; return x.v }
 func (x *Int32) Or(mask int32) int32   { x.v |= mask; return x.v }
 
-type Int64 struct{ v int64 }
+// align64 is recognized by go/types.StdSizes.Alignof (sync/atomic special
+// case) so Int64/Uint64 report 8-byte alignment even under MaxAlign:4.
+// Empty struct; must stay named align64 in package sync/atomic.
+type align64 struct{}
+
+type Int64 struct {
+	_ align64
+	v int64
+}
 
 func (x *Int64) Load() int64     { return x.v }
 func (x *Int64) Store(val int64) { x.v = val }
@@ -80,7 +88,10 @@ func (x *Uint32) Add(delta uint32) uint32 { x.v += delta; return x.v }
 func (x *Uint32) And(mask uint32) uint32  { x.v &= mask; return x.v }
 func (x *Uint32) Or(mask uint32) uint32   { x.v |= mask; return x.v }
 
-type Uint64 struct{ v uint64 }
+type Uint64 struct {
+	_ align64
+	v uint64
+}
 
 func (x *Uint64) Load() uint64     { return x.v }
 func (x *Uint64) Store(val uint64) { x.v = val }

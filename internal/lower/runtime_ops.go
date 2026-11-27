@@ -1692,7 +1692,13 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		return nil, err
 	}
 	pre = append(pre, p...)
-	sliceName, arrName := rt.sliceTypeFrom(in.Args[0], sl, nil)
+	sliceName, arrName := "", ""
+	if in.Type != nil {
+		sliceName, arrName = sliceParts(in.Type)
+	}
+	if sliceName == "" {
+		sliceName, arrName = rt.sliceTypeFrom(in.Args[0], sl, nil)
+	}
 	if sliceName == "" {
 		sliceName, arrName = "$go.slice.i32", "$go.array.i32"
 	}
@@ -2209,6 +2215,14 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	}
 	rt.ensureFatPtr(kind)
 	pt := &ir.Ref{Named: ptrType}
+	// Recoverable nil *T store before ref.as_non_null (issue40629: *g = 0).
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
+	})
 	clT := &ir.Temp{Name: rt.fresh("cl"), Typ: &ir.Ref{Named: "$go.class." + kind}}
 	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}
 	pre = append(pre, &ir.Assign{

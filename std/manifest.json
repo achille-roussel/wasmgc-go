@@ -74,6 +74,20 @@
       ],
       "notes": "AnyOverlap shared-backing test"
     },
+    "crypto/internal/fips140/subtle": {
+      "tier": "overlay",
+      "overlays": [
+        "xor_generic.go"
+      ],
+      "notes": "wasmgc: drop uintptr alignment/word XOR path (no integer addresses)"
+    },
+    "crypto/internal/fips140/check": {
+      "tier": "overlay",
+      "overlays": [
+        "check.go"
+      ],
+      "notes": "wasmgc: no-op FIPS load-time verify (no integer code addresses)"
+    },
     "errors": {
       "tier": "overlay",
       "overlays": [

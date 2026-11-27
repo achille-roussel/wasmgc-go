@@ -499,6 +499,16 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			}
 		}
 	}
+	// Complex↔iface ==/!= must use ifaceCompare (convT2X): routing through
+	// complexBinary treats an iface operand as $go.complex* and fails validate.
+	if e.Op == token.EQL || e.Op == token.NEQ {
+		xt, yt := fl.typeOf(e.X), fl.typeOf(e.Y)
+		if isIface(xt) || isIface(yt) ||
+			(isNilIdent(e.X) && isIface(yt)) ||
+			(isNilIdent(e.Y) && isIface(xt)) {
+			return fl.ifaceCompare(e, e.Op)
+		}
+	}
 	// Complex arithmetic / compare — not shifts (untyped complex counts like
 	// 0i are integers in a shift context).
 	switch e.Op {
@@ -719,22 +729,9 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 	// Skip the check when the divisor is a non-zero constant so helpers like
 	// printuint(v/10) do not pull runtime.panicDivide into every println.
 	if (e.Op == token.QUO || e.Op == token.REM) && isInteger(xt) && !nonzeroIntConst(fl, e.Y) {
-		yVar := fl.newVar("divy", yWant)
-		stmts = append(stmts, fl.assignVar(yVar, y))
-		y = fl.useVar(yVar)
-		var isZero ir.Expr
-		if irNumWidth(yWant) == ir.I64 {
-			isZero = &ir.Instr{Op: ir.OpI64Eqz, Args: []ir.Expr{y}}
-		} else {
-			isZero = &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{y}}
-		}
-		stmts = append(stmts, &ir.If{
-			Cond: isZero,
-			Then: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicDivide"}},
-				&ir.Unreachable{},
-			}},
-		})
+		var zs []ir.Stmt
+		zs, y = fl.guardIntDivZero(y, yWant)
+		stmts = append(stmts, zs...)
 	}
 	// Signed MinInt / -1 (and %) is defined in Go as quotient=MinInt, rem=0.
 	// Wasm i32/i64.div_s traps on that case — special-case before the op.
@@ -804,6 +801,28 @@ func isArithmeticOp(op token.Token) bool {
 		return true
 	}
 	return false
+}
+
+// guardIntDivZero inserts runtime.panicDivide when y may be zero.
+// Returns updated stmts and a fresh use of y (after spilling to a temp).
+func (fl *funcLower) guardIntDivZero(y ir.Expr, yWant ir.Type) ([]ir.Stmt, ir.Expr) {
+	yVar := fl.newVar("divy", yWant)
+	stmts := []ir.Stmt{fl.assignVar(yVar, y)}
+	y = fl.useVar(yVar)
+	var isZero ir.Expr
+	if irNumWidth(yWant) == ir.I64 {
+		isZero = &ir.Instr{Op: ir.OpI64Eqz, Args: []ir.Expr{y}}
+	} else {
+		isZero = &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{y}}
+	}
+	stmts = append(stmts, &ir.If{
+		Cond: isZero,
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicDivide"}},
+			&ir.Unreachable{},
+		}},
+	})
+	return stmts, y
 }
 
 // nonzeroIntConst reports whether e is a compile-time integer ≠ 0.
@@ -1394,6 +1413,8 @@ func alignInt64(o, a int64) int64 {
 }
 
 // unsafeSliceData lowers unsafe.SliceData(s) to a fat pointer at s's off.
+// Nil slices return nil (docs/design/05; fixedbugs/issue59293) — must not
+// StructGet through a null header (Wasm null trap).
 func (fl *funcLower) unsafeSliceData(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
 	if len(e.Args) != 1 {
 		return nil, nil, true, fl.errorf(e, "unsafe.SliceData wants 1 arg")
@@ -1416,21 +1437,36 @@ func (fl *funcLower) unsafeSliceData(e *ast.CallExpr, want ir.Type) (ir.Expr, []
 	if ptrTy == nil {
 		ptrTy = &ir.Ref{Null: true, Named: "$go.ptr." + kind}
 	}
-	x, stmts, err := fl.expr(arg, nil)
+	sliceIR, err := fl.mapType(src)
+	if err != nil {
+		return nil, nil, true, fl.errorf(arg, "unsafe.SliceData: %v", err)
+	}
+	x, stmts, err := fl.expr(arg, sliceIR)
 	if err != nil {
 		return nil, nil, true, err
 	}
-	// OpAddr on the slice; expandAddr unwraps data/off into the fat pointer.
-	return &ir.Instr{
+	slV := fl.newVar("sld", sliceIR)
+	res := fl.newVar("sldr", ptrTy)
+	stmts = append(stmts, fl.assignVar(slV, x))
+	nilPtr := &ir.Instr{Op: ir.OpRefNull, Type: ptrTy}
+	addr := &ir.Instr{
 		Op:    ir.OpAddr,
-		Args:  []ir.Expr{x, fl.i32const(0)},
+		Args:  []ir.Expr{fl.useVar(slV), fl.i32const(0)},
 		Field: "elem",
 		Str:   "elem",
 		Type:  ptrTy,
-	}, stmts, true, nil
+	}
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useVar(slV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, nilPtr)}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, addr)}},
+	})
+	return fl.useVar(res), stmts, true, nil
 }
 
 // unsafeStringData lowers unsafe.StringData(s) to a *byte fat pointer at s's off.
+// Empty strings return nil (matches gc; fixedbugs/issue59293). strings.TestClone
+// accepts nil==nil for the empty case.
 func (fl *funcLower) unsafeStringData(e *ast.CallExpr, want ir.Type) (ir.Expr, []ir.Stmt, bool, error) {
 	if len(e.Args) != 1 {
 		return nil, nil, true, fl.errorf(e, "unsafe.StringData wants 1 arg")
@@ -1444,18 +1480,30 @@ func (fl *funcLower) unsafeStringData(e *ast.CallExpr, want ir.Type) (ir.Expr, [
 	if ptrTy == nil {
 		ptrTy = &ir.Ref{Null: true, Named: "$go.ptr.i32"}
 	}
-	x, stmts, err := fl.expr(arg, nil)
+	x, stmts, err := fl.expr(arg, typeString)
 	if err != nil {
 		return nil, nil, true, err
 	}
-	// expandAddr unwraps $go.string to data/off.
-	return &ir.Instr{
+	strV := fl.newVar("sdd", typeString)
+	res := fl.newVar("sddr", ptrTy)
+	stmts = append(stmts, fl.assignVar(strV, x))
+	lenEx := &ir.Instr{Op: ir.OpStructGet, Type: typeString, Field: "len", Args: []ir.Expr{fl.useVar(strV)}}
+	lenV := fl.newVar("sdl", ir.TypeI32)
+	stmts = append(stmts, fl.assignVar(lenV, lenEx))
+	nilPtr := &ir.Instr{Op: ir.OpRefNull, Type: ptrTy}
+	addr := &ir.Instr{
 		Op:    ir.OpAddr,
-		Args:  []ir.Expr{x, fl.i32const(0)},
+		Args:  []ir.Expr{fl.useVar(strV), fl.i32const(0)},
 		Field: "elem",
 		Str:   "elem",
 		Type:  ptrTy,
-	}, stmts, true, nil
+	}
+	stmts = append(stmts, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(lenV)}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, nilPtr)}},
+		Else: &ir.Seq{Stmts: []ir.Stmt{fl.assignVar(res, addr)}},
+	})
+	return fl.useVar(res), stmts, true, nil
 }
 
 // unsafeString lowers unsafe.String(p *byte, n) to a $go.string header.
@@ -3089,6 +3137,16 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		if s := fl.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
 			fn := s.Obj().(*types.Func)
 			sig = fn.Type().(*types.Signature)
+			// After mono, type-param selections still name the constraint
+			// method (recv = iface I). Prefer the concrete implementation's
+			// receiver so pointer methods on *T keep the fat ptr instead of
+			// auto-deref'ing to the element (typeparam/shape1).
+			if exprTy := fl.typeOf(sel.X); exprTy != nil {
+				if m := concreteMethod(exprTy, fn); m != nil {
+					fn = m
+					sig = fn.Type().(*types.Signature)
+				}
+			}
 			recvWant, err := fl.mapType(sig.Recv().Type())
 			if err != nil {
 				return nil, nil, fl.errorf(sel.X, "%v", err)
@@ -3388,6 +3446,17 @@ func (fl *funcLower) panicIfNilRef(v ir.Expr) ir.Stmt {
 // index) so promoted methods receive the embedded field, not the outer value.
 func (fl *funcLower) methodRecvSel(x ast.Expr, sel *types.Selection, recvType types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	idx := sel.Index()
+	// After mono, type-param selections may omit embedding indices (T.M where
+	// T became struct{MyMer}). Rebuild from the concrete expression type.
+	if len(idx) <= 1 {
+		if xt := fl.typeOf(x); xt != nil {
+			if fn, ok := sel.Obj().(*types.Func); ok && fn != nil {
+				if _, index, _ := types.LookupFieldOrMethod(xt, true, fn.Pkg(), fn.Name()); len(index) > 1 {
+					idx = index
+				}
+			}
+		}
+	}
 	if len(idx) <= 1 {
 		// Method of X itself (no embedding path).
 		return fl.methodRecv(x, recvType, want)

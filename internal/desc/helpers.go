@@ -155,6 +155,11 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectStructFieldType()
 	g.fillReflectStructFieldName()
 	g.fillReflectStructFieldTag()
+	g.fillReflectFuncNumIn()
+	g.fillReflectFuncNumOut()
+	g.fillReflectFuncIn()
+	g.fillReflectFuncOut()
+	g.fillReflectFuncTypeMethods()
 	g.fillReflectSliceElem()
 	g.fillReflectPtrElem()
 	g.fillReflectMapKey()
@@ -204,6 +209,17 @@ func (g *gen) replaceBody(name string, params []*ir.Var, results []ir.Type, body
 	}
 	f.Params = params
 	f.Results = results
+	f.Body = body
+}
+
+func (g *gen) forceReplaceBody(name string, params []*ir.Var, results []ir.Type, body ir.Region) {
+	f := g.mod.LookupFunc(name)
+	if f == nil {
+		return
+	}
+	f.Params = params
+	f.Results = results
+	f.Locals = nil
 	f.Body = body
 }
 
@@ -842,6 +858,195 @@ func (g *gen) fillReflectStructNumField() {
 		&ir.Unreachable{},
 	}}
 	g.replaceBody(name, []*ir.Var{extra}, []ir.Type{ir.TypeI32}, body)
+}
+
+// fillReflectFuncTypeMethods rewrites reflect.(*rtype).NumIn/In/NumOut/Out
+// when those APIs are actually called. Source stubs return 0/nil so fmt's
+// Type itab stays small; issue19113 needs the ReflectFunc* path.
+func (g *gen) fillReflectFuncTypeMethods() {
+	if !g.needsFuncParamAPI() {
+		return
+	}
+	rtypeTy := &ir.Ref{Null: true, Named: "$go.struct.reflect.rtype"}
+	typeTy := &ir.Ref{Null: true, Named: "$go.type"}
+	ifaceTy := &ir.Ref{Null: true, Named: "$go.iface"}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	itabTy := &ir.Ref{Named: "$go.itab"}
+
+	fillNum := func(method, helper string) {
+		t := &ir.Var{Name: "t", Typ: rtypeTy}
+		rt := &ir.Var{Name: "rt", Typ: typeTy}
+		extra := &ir.Var{Name: "extra", Typ: anyT}
+		body := &ir.Seq{Stmts: []ir.Stmt{
+			&ir.VarDef{Var: rt}, &ir.VarDef{Var: extra},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}}},
+			},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "rt", Var: rt}}, Rhs: &ir.Instr{
+				Op: ir.OpStructGet, Type: rtypeTy, Field: "rt",
+				Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
+			}},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "rt", Var: rt}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}}},
+			},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "extra", Var: extra}}, Rhs: &ir.Instr{
+				Op: ir.OpCall, Func: "runtime.ReflectExtra",
+				Args: []ir.Expr{&ir.Name{Raw: "rt", Var: rt}},
+			}},
+			&ir.Return{Results: []ir.Expr{&ir.Instr{
+				Op: ir.OpCall, Func: helper,
+				Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}},
+			}}},
+		}}
+		g.forceReplaceBody(method, []*ir.Var{t}, []ir.Type{ir.TypeI32}, body)
+	}
+	fillNum("reflect.(*rtype).NumIn", "runtime.ReflectFuncNumIn")
+	fillNum("reflect.(*rtype).NumOut", "runtime.ReflectFuncNumOut")
+
+	fillParam := func(method, helper string) {
+		t := &ir.Var{Name: "t", Typ: rtypeTy}
+		i := &ir.Var{Name: "i", Typ: ir.TypeI32}
+		rt := &ir.Var{Name: "rt", Typ: typeTy}
+		extra := &ir.Var{Name: "extra", Typ: anyT}
+		ft := &ir.Var{Name: "ft", Typ: typeTy}
+		wrapped := &ir.Var{Name: "w", Typ: rtypeTy}
+		itab := &ir.Var{Name: "itab", Typ: itabTy}
+		nullIface := &ir.Instr{Op: ir.OpRefNull, Type: ifaceTy}
+		body := &ir.Seq{Stmts: []ir.Stmt{
+			&ir.VarDef{Var: rt}, &ir.VarDef{Var: extra}, &ir.VarDef{Var: ft},
+			&ir.VarDef{Var: wrapped}, &ir.VarDef{Var: itab},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+			},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "rt", Var: rt}}, Rhs: &ir.Instr{
+				Op: ir.OpStructGet, Type: rtypeTy, Field: "rt",
+				Args: []ir.Expr{&ir.Name{Raw: "t", Var: t}},
+			}},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "rt", Var: rt}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+			},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "extra", Var: extra}}, Rhs: &ir.Instr{
+				Op: ir.OpCall, Func: "runtime.ReflectExtra",
+				Args: []ir.Expr{&ir.Name{Raw: "rt", Var: rt}},
+			}},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "ft", Var: ft}}, Rhs: &ir.Instr{
+				Op: ir.OpCall, Func: helper,
+				Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}, &ir.Name{Raw: "i", Var: i}},
+			}},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "w", Var: wrapped}}, Rhs: &ir.Instr{
+				Op: ir.OpCall, Func: "reflect.wrap",
+				Args: []ir.Expr{&ir.Name{Raw: "ft", Var: ft}},
+			}},
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "w", Var: wrapped}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullIface}}}},
+			},
+			&ir.Assign{Lhs: []ir.Dest{{Name: "itab", Var: itab}}, Rhs: &ir.Instr{
+				Op: ir.OpRefCast, Type: itabTy,
+				Args: []ir.Expr{&ir.Instr{Op: ir.OpGlobalGet, Global: "$go.itab.reflect.Type.@.*reflect.rtype"}},
+			}},
+			&ir.Return{Results: []ir.Expr{&ir.Instr{
+				Op: ir.OpStructNew, Type: ifaceTy,
+				Args: []ir.Expr{
+					&ir.Name{Raw: "itab", Var: itab},
+					&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{&ir.Name{Raw: "w", Var: wrapped}}},
+				},
+			}}},
+		}}
+		g.forceReplaceBody(method, []*ir.Var{t, i}, []ir.Type{ifaceTy}, body)
+	}
+	fillParam("reflect.(*rtype).In", "runtime.ReflectFuncIn")
+	fillParam("reflect.(*rtype).Out", "runtime.ReflectFuncOut")
+}
+
+func (g *gen) fillReflectFuncNumIn() {
+	g.fillReflectFuncNumField("runtime.ReflectFuncNumIn", "numIn")
+}
+
+func (g *gen) fillReflectFuncNumOut() {
+	g.fillReflectFuncNumField("runtime.ReflectFuncNumOut", "numOut")
+}
+
+func (g *gen) fillReflectFuncNumField(name, field string) {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	extra := &ir.Var{Name: "extra", Typ: anyT}
+	if g.mod.LookupType("$go.extra.func") == nil {
+		g.replaceBody(name, []*ir.Var{extra}, []ir.Type{ir.TypeI32}, &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+		}})
+		return
+	}
+	exTy := &ir.Ref{Named: "$go.extra.func"}
+	ex := &ir.Var{Name: "ex", Typ: exTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: ex},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "ex", Var: ex}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: exTy, Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpStructGet, Type: exTy, Field: field,
+					Args: []ir.Expr{&ir.Name{Raw: "ex", Var: ex}},
+				}}},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{extra}, []ir.Type{ir.TypeI32}, body)
+}
+
+func (g *gen) fillReflectFuncIn() {
+	g.fillReflectFuncParam("runtime.ReflectFuncIn", "inType")
+}
+
+func (g *gen) fillReflectFuncOut() {
+	g.fillReflectFuncParam("runtime.ReflectFuncOut", "outType")
+}
+
+func (g *gen) fillReflectFuncParam(name, field string) {
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	extra := &ir.Var{Name: "extra", Typ: anyT}
+	i := &ir.Var{Name: "i", Typ: ir.TypeI32}
+	nullT := &ir.Instr{Op: ir.OpRefNull, Type: &ir.Ref{Null: true, Named: "$go.type"}}
+	if g.mod.LookupType("$go.extra.func") == nil || g.mod.LookupType("$go.fn.paramType") == nil {
+		g.replaceBody(name, []*ir.Var{extra, i}, []ir.Type{&ir.Ref{Null: true, Named: "$go.type"}}, &ir.Seq{Stmts: []ir.Stmt{
+			&ir.Return{Results: []ir.Expr{nullT}},
+		}})
+		return
+	}
+	exTy := &ir.Ref{Named: "$go.extra.func"}
+	fnTy := &ir.Ref{Named: "$go.fn.paramType"}
+	ex := &ir.Var{Name: "ex", Typ: exTy}
+	fn := &ir.Var{Name: "fn", Typ: fnTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.VarDef{Var: ex}, &ir.VarDef{Var: fn},
+		&ir.If{
+			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{&ir.Return{Results: []ir.Expr{nullT}}}},
+			Else: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Assign{Lhs: []ir.Dest{{Name: "ex", Var: ex}}, Rhs: &ir.Instr{
+					Op: ir.OpRefCast, Type: exTy, Args: []ir.Expr{&ir.Name{Raw: "extra", Var: extra}},
+				}},
+				&ir.Assign{Lhs: []ir.Dest{{Name: "fn", Var: fn}}, Rhs: &ir.Instr{
+					Op: ir.OpStructGet, Type: exTy, Field: field,
+					Args: []ir.Expr{&ir.Name{Raw: "ex", Var: ex}},
+				}},
+				&ir.Return{Results: []ir.Expr{&ir.Instr{
+					Op: ir.OpCallRef, Type: fnTy,
+					Args: []ir.Expr{&ir.Name{Raw: "i", Var: i}, &ir.Name{Raw: "fn", Var: fn}},
+				}}},
+			}},
+		},
+		&ir.Unreachable{},
+	}}
+	g.replaceBody(name, []*ir.Var{extra, i}, []ir.Type{&ir.Ref{Null: true, Named: "$go.type"}}, body)
 }
 
 func (g *gen) fillReflectStructFieldType() {
