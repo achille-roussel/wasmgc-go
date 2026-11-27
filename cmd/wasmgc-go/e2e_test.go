@@ -737,10 +737,10 @@ func TestM8FmtHelloE2E(t *testing.T) {
 	if !pipeline.Default.Real() {
 		t.Fatal("expected real lowerer")
 	}
-	// ~248 KiB after AssertItabs filter + no bulk TypeName registration
+	// ~230 KiB after unitLookup (no time.unitMap) + AssertItabs filter
 	// (cuts dead time.Ticker / Stringer leaks from #66–#71). Same-env #65 is
 	// ~175 KiB; remaining gap is fmt/reflect/map/panic-assert.
-	runM8(t, "m8_fmt_hello", "hello\n", 270*1024)
+	runM8(t, "m8_fmt_hello", "hello\n", 250*1024)
 }
 
 func TestM8FmtIntE2E(t *testing.T) {

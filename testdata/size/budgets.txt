@@ -2,11 +2,12 @@
 # After #72 REFLECTMETHOD prune, #66–#71 still leaked ~45 KiB into fmt hello:
 # dead-body itabs (time.NewTicker → time.Time) were global.get by live
 # iface→iface asserts. Module.AssertItabs + no bulk TypeName registration
-# cut hello ~294 KiB → ~248 KiB. Remaining gap vs same-env #65 (~175 KiB):
-# fmt/reflect/map/panic-assert growth — see PR attribution.
+# cut hello ~294 KiB → ~248 KiB (#73). unitLookup (no package-level unitMap)
+# drops map runtime from os→io/fs→time init: hello ~248 KiB → ~230 KiB.
+# Remaining gap vs same-env #65 (~175 KiB): fmt/reflect/panic-assert growth.
 empty_main	512
 println	2048
-m8_fmt_hello	270000
+m8_fmt_hello	250000
 m8_fmt_map	300000
-m8_fmt_float	315000
-m8_fmt_quote	290000
+m8_fmt_float	300000
+m8_fmt_quote	270000
