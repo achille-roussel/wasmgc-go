@@ -3137,6 +3137,16 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 		if s := fl.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
 			fn := s.Obj().(*types.Func)
 			sig = fn.Type().(*types.Signature)
+			// After mono, type-param selections still name the constraint
+			// method (recv = iface I). Prefer the concrete implementation's
+			// receiver so pointer methods on *T keep the fat ptr instead of
+			// auto-deref'ing to the element (typeparam/shape1).
+			if exprTy := fl.typeOf(sel.X); exprTy != nil {
+				if m := concreteMethod(exprTy, fn); m != nil {
+					fn = m
+					sig = fn.Type().(*types.Signature)
+				}
+			}
 			recvWant, err := fl.mapType(sig.Recv().Type())
 			if err != nil {
 				return nil, nil, fl.errorf(sel.X, "%v", err)
