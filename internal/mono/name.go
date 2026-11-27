@@ -11,6 +11,14 @@ func TypeArgKey(t types.Type) string {
 	t = types.Unalias(t)
 	switch t := t.(type) {
 	case *types.Basic:
+		// Match desc.TypeKey so itab wrappers and mono method names agree
+		// for byte/rune aliases (typeparam/issue48049: fooer2$uint8.Foo).
+		switch t.Kind() {
+		case types.Byte:
+			return "uint8"
+		case types.Rune:
+			return "int32"
+		}
 		return t.Name()
 	case *types.TypeParam:
 		return t.Obj().Name()
