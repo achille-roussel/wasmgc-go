@@ -1692,7 +1692,13 @@ func (rt *runtimeLower) expandSliceSet(in *ir.Instr, n *int) ([]ir.Stmt, error) 
 		return nil, err
 	}
 	pre = append(pre, p...)
-	sliceName, arrName := rt.sliceTypeFrom(in.Args[0], sl, nil)
+	sliceName, arrName := "", ""
+	if in.Type != nil {
+		sliceName, arrName = sliceParts(in.Type)
+	}
+	if sliceName == "" {
+		sliceName, arrName = rt.sliceTypeFrom(in.Args[0], sl, nil)
+	}
 	if sliceName == "" {
 		sliceName, arrName = "$go.slice.i32", "$go.array.i32"
 	}

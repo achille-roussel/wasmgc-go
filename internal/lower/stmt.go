@@ -688,6 +688,11 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 							rhs = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}
 						}
 					} else {
+						if (s.Tok == token.QUO_ASSIGN || s.Tok == token.REM_ASSIGN) && isInteger(lhsGo) {
+							var zs []ir.Stmt
+							zs, rhsEx = fl.guardIntDivZero(rhsEx, want)
+							out = append(out, zs...)
+						}
 						op, err := fl.binaryOpFromAssign(s.Tok, lhsGo)
 						if err != nil {
 							return nil, fl.errorf(s, "%v", err)
@@ -991,7 +996,11 @@ func (fl *funcLower) commitParallelDest(p parallelDest, rhs ir.Expr) ([]ir.Stmt,
 	case 1:
 		xt := fl.typeOf(p.lhs.(*ast.IndexExpr).X)
 		if isSlice(xt) {
-			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
+			st, err := fl.mapType(xt)
+			if err != nil {
+				return nil, err
+			}
+			return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Type: st, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
 		}
 		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: p.arr, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
 	case 2:
@@ -1210,24 +1219,29 @@ func (fl *funcLower) opAssignAddrOnceIR(lhs ast.Expr, tok token.Token, rhsEx ir.
 }
 
 func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.Type, getRhs func() (ir.Expr, []ir.Stmt, error)) ([]ir.Stmt, bool, error) {
-	combine := func(lhsEx, rhsEx ir.Expr, lhsGo types.Type) (ir.Expr, error) {
+	// combine returns the new value plus any prelude (div-by-zero guards).
+	combine := func(lhsEx, rhsEx ir.Expr, lhsGo types.Type) (ir.Expr, []ir.Stmt, error) {
 		if tok == token.ADD_ASSIGN && lhsGo != nil && isString(lhsGo) {
-			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}, nil
+			return &ir.Instr{Op: ir.OpCall, Func: "runtime.concatstrings", Type: typeString, Args: []ir.Expr{lhsEx, rhsEx}}, nil, nil
 		}
 		if tok == token.AND_NOT_ASSIGN {
 			if irNumWidth(want) == ir.I64 {
 				ynot := &ir.Instr{Op: ir.OpI64Xor, Args: []ir.Expr{rhsEx, fl.i64const(-1)}}
-				return &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}, nil
+				return &ir.Instr{Op: ir.OpI64And, Args: []ir.Expr{lhsEx, ynot}}, nil, nil
 			}
 			ynot := &ir.Instr{Op: ir.OpI32Xor, Args: []ir.Expr{rhsEx, fl.i32const(-1)}}
-			return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}, nil
+			return &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{lhsEx, ynot}}, nil, nil
 		}
 		if tok == token.SHL_ASSIGN || tok == token.SHR_ASSIGN {
-			return nil, errShiftOpAssignOnce
+			return nil, nil, errShiftOpAssignOnce
+		}
+		var prelude []ir.Stmt
+		if (tok == token.QUO_ASSIGN || tok == token.REM_ASSIGN) && lhsGo != nil && isInteger(lhsGo) {
+			prelude, rhsEx = fl.guardIntDivZero(rhsEx, want)
 		}
 		op, err := fl.binaryOpFromAssign(tok, lhsGo)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out := ir.Expr(&ir.Instr{Op: op, Args: []ir.Expr{lhsEx, rhsEx}})
 		switch tok {
@@ -1235,7 +1249,7 @@ func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.
 			token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN:
 			out = fl.truncateInt(out, lhsGo)
 		}
-		return out, nil
+		return out, prelude, nil
 	}
 
 	switch lhs := lhs.(type) {
@@ -1263,10 +1277,11 @@ func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.
 			return nil, true, err
 		}
 		out = append(out, rs...)
-		combined, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
+		combined, cpre, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
 		if err != nil {
 			return nil, true, err
 		}
+		out = append(out, cpre...)
 		out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpStore, Args: []ir.Expr{fl.useTemp(ptrT), combined}}})
 		return out, true, nil
 
@@ -1309,10 +1324,11 @@ func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.
 				return nil, true, err
 			}
 			out = append(out, rs...)
-			combined, err := combine(fl.useTemp(oldT), rhsEx, fl.typeOf(lhs))
+			combined, cpre, err := combine(fl.useTemp(oldT), rhsEx, fl.typeOf(lhs))
 			if err != nil {
 				return nil, true, err
 			}
+			out = append(out, cpre...)
 			// Store using saved map+key (not re-evaluating lhs.X).
 			var val ir.Expr = combined
 			if elemT != nil && !isIface(elemT) {
@@ -1394,12 +1410,17 @@ func (fl *funcLower) opAssignAddrOnceGet(lhs ast.Expr, tok token.Token, want ir.
 				return nil, true, err
 			}
 			out = append(out, rs...)
-			combined, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
+			combined, cpre, err := combine(fl.useTemp(loadT), rhsEx, fl.typeOf(lhs))
 			if err != nil {
 				return nil, true, err
 			}
+			out = append(out, cpre...)
 			if isSlice(xt) {
-				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT), combined}}})
+				st, err := fl.mapType(xt)
+				if err != nil {
+					return nil, true, err
+				}
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Type: st, Args: []ir.Expr{fl.useTemp(baseT), fl.useTemp(idxT), combined}}})
 			} else {
 				arrT := xt
 				if isPtrToArray(xt) {
@@ -1739,7 +1760,11 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 			}
 		}
 		if isSlice(xt) {
-			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{base, idx, rhs}}})
+			st, err := fl.mapType(xt)
+			if err != nil {
+				return nil, err
+			}
+			stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Type: st, Args: []ir.Expr{base, idx, rhs}}})
 			return stmts, nil
 		}
 		if isArray(xt) || isPtrToArray(xt) {
@@ -2303,8 +2328,13 @@ func (fl *funcLower) emitRangeAssignForm(
 	pi := 0
 	commit := func(p prepared, rhs ir.Expr, obj types.Object, v *ir.Var) error {
 		if p.kind == 1 {
-			if isSlice(fl.typeOf(p.lhs.(*ast.IndexExpr).X)) {
-				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Args: []ir.Expr{p.base, p.idx, rhs}}})
+			xt := fl.typeOf(p.lhs.(*ast.IndexExpr).X)
+			if isSlice(xt) {
+				st, err := fl.mapType(xt)
+				if err != nil {
+					return err
+				}
+				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpSliceSet, Type: st, Args: []ir.Expr{p.base, p.idx, rhs}}})
 			} else {
 				out = append(out, &ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: p.arr, Args: []ir.Expr{p.base, p.idx, rhs}}})
 			}
@@ -2475,6 +2505,12 @@ func (fl *funcLower) rangeStmt(s *ast.RangeStmt, goLabel string) ([]ir.Stmt, err
 			out = append(out, defs...)
 			valVar = v
 		}
+	}
+	// Assign-form keys/values get capture cells whose prologue init saw the
+	// zero value. Sync plains → cells before the loop so an empty range leaves
+	// the pre-loop value visible to later reads (issue5373: i stays -1).
+	if s.Tok != token.DEFINE {
+		out = append(out, fl.syncPlainToCells()...)
 	}
 
 	var breakL, contL, loopL string
