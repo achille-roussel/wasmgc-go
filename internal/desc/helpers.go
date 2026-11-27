@@ -281,7 +281,9 @@ func (g *gen) fillReflectTypeName() {
 		if n == "" {
 			continue
 		}
-		if !namedDisplay(n) && !strings.HasPrefix(n, "func(") && n != "func()" {
+		// Include named types, funcs, and chans (fmt %#v "(chan int)(0x…)").
+		if !namedDisplay(n) && !strings.HasPrefix(n, "func(") && n != "func()" &&
+			!strings.HasPrefix(n, "chan ") && n != "chan" && !strings.HasPrefix(n, "<-chan ") && !strings.HasPrefix(n, "chan<- ") {
 			continue
 		}
 		entries = append(entries, idName{id: tr.id, name: n})
@@ -1152,21 +1154,58 @@ func (g *gen) fillReflectImplements() {
 	type pair struct{ tid, uid int32 }
 	seen := map[pair]bool{}
 	var pairs []pair
+	add := func(concKey, ifaceKey string) {
+		ct := g.types[concKey]
+		itIface := g.types[ifaceKey]
+		if ct == nil || itIface == nil || ct.id < 0 || itIface.id < 0 {
+			return
+		}
+		p := pair{tid: ct.id, uid: itIface.id}
+		if seen[p] {
+			return
+		}
+		seen[p] = true
+		pairs = append(pairs, p)
+	}
 	for _, it := range g.itabs {
 		if it == nil {
 			continue
 		}
-		ct := g.types[it.concKey]
-		itIface := g.types[it.ifaceKey]
-		if ct == nil || itIface == nil || ct.id < 0 || itIface.id < 0 {
+		add(it.concKey, it.ifaceKey)
+	}
+	// Also go/types Implements for live concretes × assert targets, including
+	// *T — json discovers Marshaler via t.Implements / PointerTo(t).Implements
+	// without a prior static iface.make of the test concrete.
+	for ifaceKey := range g.asserts {
+		if ifaceKey == "any" || ifaceKey == "interface{}" {
 			continue
 		}
-		p := pair{tid: ct.id, uid: itIface.id}
-		if seen[p] {
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil || iface.Empty() {
 			continue
 		}
-		seen[p] = true
-		pairs = append(pairs, p)
+		for concKey := range g.liveAnyConcretes {
+			tr := g.types[concKey]
+			if tr == nil || tr.goType == nil {
+				continue
+			}
+			if g.implementsForItab(tr.goType, iface) {
+				add(concKey, ifaceKey)
+			}
+			if _, isPtr := types.Unalias(tr.goType).(*types.Pointer); !isPtr {
+				pt := types.NewPointer(tr.goType)
+				pk := TypeKey(pt)
+				g.needTypeKey(pk)
+				if ptr := g.types[pk]; ptr != nil {
+					if ptr.goType == nil {
+						ptr.goType = pt
+					}
+					if g.implementsForItab(pt, iface) {
+						add(pk, ifaceKey)
+					}
+				}
+			}
+		}
 	}
 	// Stable order for deterministic IR.
 	for i := 0; i < len(pairs); i++ {

@@ -327,7 +327,8 @@ func (rt *runtimeLower) expandIfaceToIfaceAssert(s *ir.Assign, pre []ir.Stmt, if
 	key := strings.TrimPrefix(typeKey, "$go.type.")
 	// x.(any): every dynamic value implements the empty interface. Pass
 	// through — do not cascade over every $go.itab.any.@.* (that kept all
-	// any-itabs live and blew the fmt hello size budget).
+	// any-itabs live and blew the fmt hello size budget). Named empty ifaces
+	// are handled earlier in convertToIface / typeAssert (pass-through).
 	if key == "any" || key == "interface{}" {
 		if commaOK && len(s.Lhs) == 2 {
 			pre = append(pre,

@@ -7,6 +7,8 @@
 # Remaining gap vs same-env #65 (~175 KiB): fmt/reflect/panic-assert growth.
 empty_main	512
 println	2048
+# #75 time Format/Parse port: export aliases stay in overlay export_test
+# so hello stays ~234 KiB (under 250 KiB ceiling).
 m8_fmt_hello	250000
 m8_fmt_map	300000
 m8_fmt_float	300000

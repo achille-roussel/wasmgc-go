@@ -73,6 +73,7 @@ func Populate(mod *ir.Module, prog *load.Program) error {
 	if prog != nil {
 		g.collectFromProgram()
 		g.collectNointerface()
+		g.closeLiveConcreteFields()
 		g.synthesizeAssertItabs()
 	}
 	if err := g.emitAll(); err != nil {
@@ -292,6 +293,86 @@ func (g *gen) noteLiveAnyConcrete(itabGlobal string) {
 	}
 }
 
+// closeLiveConcreteFields adds field types of live boxed structs into
+// liveAnyConcretes so Field().Interface().(J) asserts get itabs for the
+// field's dynamic type (fixedbugs/issue77779 ZeroSize embed via reflect).
+func (g *gen) closeLiveConcreteFields() {
+	if len(g.liveAnyConcretes) == 0 {
+		return
+	}
+	type pair struct {
+		key string
+		typ types.Type
+	}
+	var queue []pair
+	seen := map[string]bool{}
+	for key := range g.liveAnyConcretes {
+		var typ types.Type
+		if tr := g.types[key]; tr != nil {
+			typ = tr.goType
+		}
+		if typ == nil {
+			for _, it := range g.itabs {
+				if it.concKey == key && it.concrete != nil {
+					typ = it.concrete
+					break
+				}
+			}
+		}
+		if typ == nil {
+			continue
+		}
+		queue = append(queue, pair{key: key, typ: typ})
+		seen[key] = true
+	}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		t := types.Unalias(p.typ)
+		if ptr, ok := t.(*types.Pointer); ok {
+			t = types.Unalias(ptr.Elem())
+		}
+		var st *types.Struct
+		switch u := t.(type) {
+		case *types.Struct:
+			st = u
+		case *types.Named:
+			st, _ = u.Underlying().(*types.Struct)
+		}
+		if st == nil {
+			continue
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			ft := st.Field(i).Type()
+			fk := TypeKey(ft)
+			if fk == "" || seen[fk] {
+				continue
+			}
+			seen[fk] = true
+			g.liveAnyConcretes[fk] = true
+			g.needTypeKey(fk)
+			if tr := g.types[fk]; tr != nil && tr.goType == nil {
+				tr.goType = ft
+			}
+			queue = append(queue, pair{key: fk, typ: ft})
+			// Also the pointer form when the field is not already a pointer,
+			// matching how reflect may surface addressable struct fields.
+			if _, isPtr := types.Unalias(ft).(*types.Pointer); !isPtr {
+				pt := types.NewPointer(ft)
+				pk := TypeKey(pt)
+				if pk != "" && !seen[pk] {
+					seen[pk] = true
+					g.liveAnyConcretes[pk] = true
+					g.needTypeKey(pk)
+					if tr := g.types[pk]; tr != nil && tr.goType == nil {
+						tr.goType = pt
+					}
+				}
+			}
+		}
+	}
+}
+
 // OpIfaceEq may not exist yet — we use a high-level convention via Str on comparisons.
 // Register need helpers.
 
@@ -450,6 +531,27 @@ func (g *gen) synthesizeAssertItabs() {
 		seen[it.concKey] = true
 		concretes = append(concretes, conc{key: it.concKey, typ: it.concrete})
 	}
+	// Field-closure / reflect concretes may be live without a prior itab
+	// (ReflectIface builds a type-only itab at runtime). Still synthesize
+	// assert itabs from their go/types (issue77779 ZeroSize).
+	if restrict {
+		keys := make([]string, 0, len(g.liveAnyConcretes))
+		for k := range g.liveAnyConcretes {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		for _, k := range keys {
+			if seen[k] {
+				continue
+			}
+			tr := g.types[k]
+			if tr == nil || tr.goType == nil {
+				continue
+			}
+			seen[k] = true
+			concretes = append(concretes, conc{key: k, typ: tr.goType})
+		}
+	}
 	assertKeys := make([]string, 0, len(g.asserts))
 	for k := range g.asserts {
 		assertKeys = append(assertKeys, k)
@@ -471,23 +573,44 @@ func (g *gen) synthesizeAssertItabs() {
 			ifaceTy = tr.goType
 		}
 		for _, c := range concretes {
-			if !g.implementsForItab(c.typ, iface) {
-				continue
-			}
-			name := ItabGlobal(ifaceTy, c.typ)
-			// ItabGlobal uses TypeKey(ifaceTy); for anonymous interfaces that
-			// matches ifaceKey. If a Named wrapper diverges, force the assert key.
-			if TypeKey(ifaceTy) != ifaceKey {
-				name = "$go.itab." + ifaceKey + ".@." + c.key
-			}
-			g.needItabFromName(name)
-			g.assertItabs[name] = true
-			if it := g.itabs[name]; it != nil {
-				if it.concrete == nil {
-					it.concrete = c.typ
+			cands := []conc{c}
+			// json TypeAssert on va.Addr() → *T. Emit *T assert itabs for
+			// object pointers (*Struct / *[N]T). *scalar needs fat-ptr packing
+			// from Addr(New().Elem()) before wrappers can deref safely.
+			if _, isPtr := types.Unalias(c.typ).(*types.Pointer); !isPtr {
+				elem := types.Unalias(c.typ)
+				if n, ok := elem.(*types.Named); ok {
+					elem = n.Underlying()
 				}
-				if it.iface == nil {
-					it.iface = iface
+				switch elem.(type) {
+				case *types.Struct, *types.Array:
+					pt := types.NewPointer(c.typ)
+					cands = append(cands, conc{key: TypeKey(pt), typ: pt})
+				}
+			}
+			for _, c := range cands {
+				if !g.implementsForItab(c.typ, iface) {
+					continue
+				}
+				g.needTypeKey(c.key)
+				if tr := g.types[c.key]; tr != nil && tr.goType == nil {
+					tr.goType = c.typ
+				}
+				name := ItabGlobal(ifaceTy, c.typ)
+				// ItabGlobal uses TypeKey(ifaceTy); for anonymous interfaces that
+				// matches ifaceKey. If a Named wrapper diverges, force the assert key.
+				if TypeKey(ifaceTy) != ifaceKey {
+					name = "$go.itab." + ifaceKey + ".@." + c.key
+				}
+				g.needItabFromName(name)
+				g.assertItabs[name] = true
+				if it := g.itabs[name]; it != nil {
+					if it.concrete == nil {
+						it.concrete = c.typ
+					}
+					if it.iface == nil {
+						it.iface = iface
+					}
 				}
 			}
 		}

@@ -561,6 +561,22 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 			Args: []ir.Expr{child.useVar(ci.orig)},
 		}))
 	}
+	// By-value captures that later grew a cell (nested defer / addr-of):
+	// applyDeferPass hoists $go.cell.* struct.new out of try, before the
+	// capture load. Sync plain→cell after the load so tt.fn() does not
+	// read a null cell (nilptr2 recover wrapper).
+	var captureCellSyncs []ir.Stmt
+	for _, ci := range child.cellInits {
+		if !captureBound[ci.orig] {
+			continue
+		}
+		captureCellSyncs = append(captureCellSyncs, &ir.ExprStmt{X: &ir.Instr{
+			Op:    ir.OpStructSet,
+			Type:  &ir.Ref{Named: ci.cellTy},
+			Field: "v",
+			Args:  []ir.Expr{child.useVar(ci.cell), child.useVar(ci.orig)},
+		}})
+	}
 	// Match pkg.go / mono.go: when hasDefer, applyDeferPass installs the
 	// recover prologue. Doing it here as well would capture allow, clear
 	// recoverOk, then capture again as 0 (recover1 test2+).
@@ -570,6 +586,10 @@ func (fl *funcLower) emitClosBody(name string, lit *ast.FuncLit, sig *types.Sign
 		preamble = append(preamble, child.clearRecoverOk()...)
 	}
 	seq.Stmts = append(preamble, seq.Stmts...)
+	if len(captureCellSyncs) > 0 {
+		n := len(preamble)
+		seq.Stmts = append(seq.Stmts[:n:n], append(captureCellSyncs, seq.Stmts[n:]...)...)
+	}
 	if child.hasDefer {
 		seq, err = child.applyDeferPass(seq)
 		if err != nil {

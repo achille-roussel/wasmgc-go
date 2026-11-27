@@ -550,6 +550,9 @@ func (p *pp) fmtPointer(arg any, value reflect.Value, verb rune) {
 		return
 	}
 	nilPtr := value.IsNil()
+	// Use scrubbable hex (0x1), not "0x?": fmt_test replaces hex runs with
+	// "PTR", and a literal '?' becomes "0xPTR?" (TestSprintf).
+	const ptrPlaceholder = "0x1"
 	switch verb {
 	case 'v':
 		if p.fmt.sharpV {
@@ -559,21 +562,21 @@ func (p *pp) fmtPointer(arg any, value reflect.Value, verb rune) {
 			if nilPtr {
 				p.buf.writeString(nilString)
 			} else {
-				p.buf.writeString("0x?")
+				p.buf.writeString(ptrPlaceholder)
 			}
 			p.buf.writeByte(')')
 		} else {
 			if nilPtr {
 				p.fmt.padString(nilAngleString)
 			} else {
-				p.fmt.padString("0x?")
+				p.fmt.padString(ptrPlaceholder)
 			}
 		}
 	case 'p':
 		if nilPtr {
 			p.fmt.padString("0x0")
 		} else {
-			p.fmt.padString("0x?")
+			p.fmt.padString(ptrPlaceholder)
 		}
 	case 'b', 'o', 'd', 'x', 'X':
 		if nilPtr {

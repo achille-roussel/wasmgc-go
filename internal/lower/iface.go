@@ -165,6 +165,12 @@ func (fl *funcLower) convertToIface(e ast.Expr, src types.Type, dst types.Type, 
 		if types.Identical(src.Underlying(), dst.Underlying()) {
 			return x, stmts, nil
 		}
+		// Named empty iface (e.g. type E[T any] interface{}): same as any —
+		// keep the dynamic type/itab so a later concrete assert works
+		// (typeparam/issue47925b). Do not cascade over empty itabs.
+		if dstIface, ok := types.Unalias(dst).Underlying().(*types.Interface); ok && dstIface.Empty() {
+			return x, stmts, nil
+		}
 		// iface→iface conversion (assignment), not a type assertion: a nil
 		// source becomes a nil destination without panicking (convert1/2).
 		return &ir.Instr{
@@ -386,6 +392,14 @@ func (fl *funcLower) typeAssert(e *ast.TypeAssertExpr, want ir.Type, commaOk boo
 	assertTo := fl.typeOf(e.Type)
 	if assertTo == nil {
 		return nil, nil, fl.errorf(e.Type, "no type for assertion")
+	}
+	// Named empty iface (type E[T] interface{}): keep dynamic type like any.
+	if dstIface, ok := types.Unalias(assertTo).Underlying().(*types.Interface); ok && dstIface.Empty() {
+		if !commaOk {
+			return x, stmts, nil
+		}
+		// comma-ok: reuse iface assert path with any key so expand short-circuits.
+		assertTo = types.Universe.Lookup("any").Type()
 	}
 	dstIR, err := fl.mapType(assertTo)
 	if err != nil {
