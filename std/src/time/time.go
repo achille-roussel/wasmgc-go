@@ -87,12 +87,12 @@ const maxUnixNanoSec int64 = 9223372036
 // Now returns the current local time from the host wall clock.
 func Now() Time {
 	sec, nsec := runtime.Walltime()
-	return Time{wall: hasExt, ext: sec*1e9 + int64(nsec)}
+	return Time{wall: hasExt, ext: sec*1e9 + int64(nsec), loc: Local}
 }
 
 // Unix returns the local Time corresponding to the given Unix time.
 func Unix(sec int64, nsec int64) Time {
-	return Time{wall: hasExt, ext: sec*1e9 + nsec}
+	return Time{wall: hasExt, ext: sec*1e9 + nsec, loc: Local}
 }
 
 // UnixMilli returns the local Time corresponding to the given Unix time
@@ -168,110 +168,35 @@ func (t Time) Nanosecond() int {
 	return int(t.ext % 1e9)
 }
 
-// UTC returns t with location UTC (no-op location in v1 rewrite).
-func (t Time) UTC() Time { return t }
+// UTC returns t with Location UTC (nil loc, matching upstream == Time{}).
+func (t Time) UTC() Time {
+	t.setLoc(UTC)
+	return t
+}
+
+func (t *Time) setLoc(loc *Location) {
+	if loc == &utcLoc {
+		loc = nil
+	}
+	t.loc = loc
+}
+
+func (t *Time) addSec(d int64) {
+	if t.wall&hasCivil != 0 {
+		t.ext += d
+		return
+	}
+	t.ext += d * 1e9
+}
 
 // Format returns a textual representation of t.
 func (t Time) Format(layout string) string {
 	return string(t.AppendFormat(nil, layout))
 }
 
-// AppendFormat appends a textual representation of t to b.
-// Thin subset: Kitchen, DateOnly, TimeOnly, RFC3339/RFC3339Nano (always Z).
-// Other layouts fall back to UnixNano decimal (keeps joint time binary small).
-func (t Time) AppendFormat(b []byte, layout string) []byte {
-	switch layout {
-	case Kitchen, "03:04PM": // Kitchen == "3:04PM"
-		h, m, _ := t.Clock()
-		ap := "AM"
-		h12 := h % 12
-		if h12 == 0 {
-			h12 = 12
-		}
-		if h >= 12 {
-			ap = "PM"
-		}
-		if layout == "03:04PM" && h12 < 10 {
-			b = append(b, '0')
-		}
-		b = strconv.AppendInt(b, int64(h12), 10)
-		b = append(b, ':')
-		if m < 10 {
-			b = append(b, '0')
-		}
-		b = strconv.AppendInt(b, int64(m), 10)
-		return append(b, ap...)
-	case TimeOnly:
-		h, m, s := t.Clock()
-		b = append2(b, h)
-		b = append(b, ':')
-		b = append2(b, m)
-		b = append(b, ':')
-		return append2(b, s)
-	case DateOnly:
-		y, mo, d := t.Date()
-		b = append4(b, y)
-		b = append(b, '-')
-		b = append2(b, int(mo))
-		b = append(b, '-')
-		return append2(b, d)
-	case RFC3339, RFC3339Nano:
-		y, mo, d := t.Date()
-		h, mi, s := t.Clock()
-		b = append4(b, y)
-		b = append(b, '-')
-		b = append2(b, int(mo))
-		b = append(b, '-')
-		b = append2(b, d)
-		b = append(b, 'T')
-		b = append2(b, h)
-		b = append(b, ':')
-		b = append2(b, mi)
-		b = append(b, ':')
-		b = append2(b, s)
-		if layout == RFC3339Nano {
-			b = append(b, '.')
-			ns := t.Nanosecond()
-			for div := 100000000; div >= 1; div /= 10 {
-				b = append(b, byte('0'+ns/div%10))
-			}
-		}
-		return append(b, 'Z')
-	default:
-		return strconv.AppendInt(b, t.ext, 10)
-	}
-}
-
-func append2(b []byte, n int) []byte {
-	if n < 0 {
-		n = 0
-	}
-	if n < 10 {
-		b = append(b, '0')
-	}
-	return strconv.AppendInt(b, int64(n), 10)
-}
-
-func append4(b []byte, n int) []byte {
-	if n < 0 {
-		b = append(b, '-')
-		n = -n
-	}
-	if n < 1000 {
-		b = append(b, '0')
-	}
-	if n < 100 {
-		b = append(b, '0')
-	}
-	if n < 10 {
-		b = append(b, '0')
-	}
-	return strconv.AppendInt(b, int64(n), 10)
-}
-
-// AppendText appends RFC3339 text of t to b (stub via AppendFormat).
+// AppendText appends RFC3339 text of t to b (with fractional seconds).
 func (t Time) AppendText(b []byte) ([]byte, error) {
-	return t.AppendFormat(b, RFC3339), nil
+	return t.appendStrictRFC3339(b)
 }
 
 // MarshalText implements encoding.TextMarshaler.
@@ -279,9 +204,9 @@ func (t Time) MarshalText() ([]byte, error) {
 	return t.AppendText(nil)
 }
 
-// UnmarshalText implements encoding.TextUnmarshaler via Parse stub.
+// UnmarshalText implements encoding.TextUnmarshaler via RFC3339 parse.
 func (t *Time) UnmarshalText(data []byte) error {
-	tt, err := Parse(RFC3339, string(data))
+	tt, err := parseStrictRFC3339(data)
 	if err != nil {
 		return err
 	}
@@ -289,12 +214,16 @@ func (t *Time) UnmarshalText(data []byte) error {
 	return nil
 }
 
-// MarshalJSON implements json.Marshaler (quoted AppendFormat).
+// MarshalJSON implements json.Marshaler (quoted strict RFC3339).
 func (t Time) MarshalJSON() ([]byte, error) {
-	b := make([]byte, 0, 24)
+	b := make([]byte, 0, len(RFC3339Nano)+2)
 	b = append(b, '"')
-	b = t.AppendFormat(b, RFC3339)
+	var err error
+	b, err = t.appendStrictRFC3339(b)
 	b = append(b, '"')
+	if err != nil {
+		return nil, errors.New("Time.MarshalJSON: " + err.Error())
+	}
 	return b, nil
 }
 
@@ -304,69 +233,110 @@ func (t *Time) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
-		return &ParseError{Layout: RFC3339, Value: string(data), Message: "input is not a JSON string"}
+		return errors.New("Time.UnmarshalJSON: input is not a JSON string")
 	}
 	return t.UnmarshalText(data[1 : len(data)-1])
 }
 
-// AppendBinary appends the binary encoding of t to b.
+const (
+	timeBinaryVersionV1 byte = iota + 1
+	timeBinaryVersionV2
+)
+
+// binarySec returns seconds since year 1 (upstream wire format).
+func (t Time) binarySec() int64 {
+	if t.IsZero() {
+		return 0
+	}
+	if t.wall&hasCivil != 0 {
+		return t.ext
+	}
+	return t.unixSec() + absoluteToInternal
+}
+
+// AppendBinary appends the binary encoding of t to b (upstream wire format).
 func (t Time) AppendBinary(b []byte) ([]byte, error) {
-	enc, err := t.marshalBinaryBuf()
-	if err != nil {
-		return b, err
+	var offsetMin int16 // minutes east of UTC; -1 means UTC
+	var offsetSec int8
+	version := timeBinaryVersionV1
+
+	if t.Location() == UTC {
+		offsetMin = -1
+	} else {
+		_, offset := t.Zone()
+		if offset%60 != 0 {
+			version = timeBinaryVersionV2
+			offsetSec = int8(offset % 60)
+		}
+		offset /= 60
+		if offset < -32768 || offset == -1 || offset > 32767 {
+			return b, errors.New("Time.MarshalBinary: unexpected zone offset")
+		}
+		offsetMin = int16(offset)
 	}
-	return append(b, enc...), nil
+
+	sec := t.binarySec()
+	nsec := int32(t.Nanosecond())
+	b = append(b,
+		version,
+		byte(sec>>56), byte(sec>>48), byte(sec>>40), byte(sec>>32),
+		byte(sec>>24), byte(sec>>16), byte(sec>>8), byte(sec),
+		byte(nsec>>24), byte(nsec>>16), byte(nsec>>8), byte(nsec),
+		byte(offsetMin>>8), byte(offsetMin),
+	)
+	if version == timeBinaryVersionV2 {
+		b = append(b, byte(offsetSec))
+	}
+	return b, nil
 }
 
-func (t Time) marshalBinaryBuf() ([]byte, error) {
-	ext := t.ext
-	_, offset := t.Zone()
-	buf := make([]byte, 14)
-	buf[0] = 1 // version
-	buf[1] = byte(t.wall & 0xff)
-	for i := 0; i < 8; i++ {
-		buf[2+i] = byte(ext >> (56 - 8*i))
-	}
-	uoff := uint32(offset)
-	buf[10] = byte(uoff >> 24)
-	buf[11] = byte(uoff >> 16)
-	buf[12] = byte(uoff >> 8)
-	buf[13] = byte(uoff)
-	return buf, nil
-}
-
-// MarshalBinary implements encoding.BinaryMarshaler (stub: wall+ext+offset).
+// MarshalBinary implements encoding.BinaryMarshaler.
 func (t Time) MarshalBinary() ([]byte, error) {
-	return t.marshalBinaryBuf()
+	return t.AppendBinary(make([]byte, 0, 16))
 }
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler.
 func (t *Time) UnmarshalBinary(data []byte) error {
-	if len(data) < 9 {
-		return errors.New("Time.UnmarshalBinary: too short")
+	buf := data
+	if len(buf) == 0 {
+		return errors.New("Time.UnmarshalBinary: no data")
 	}
-	var ext int64
-	wall := uint64(0)
-	off := 1
-	if len(data) >= 10 {
-		wall = uint64(data[1])
-		off = 2
+	version := buf[0]
+	if version != timeBinaryVersionV1 && version != timeBinaryVersionV2 {
+		return errors.New("Time.UnmarshalBinary: unsupported version")
 	}
-	for i := 0; i < 8; i++ {
-		if off+i >= len(data) {
-			break
-		}
-		ext = (ext << 8) | int64(data[off+i])
+	wantLen := 1 + 8 + 4 + 2
+	if version == timeBinaryVersionV2 {
+		wantLen++
 	}
-	t.wall = wall
-	t.ext = ext
-	t.loc = nil
-	if len(data) >= 14 {
-		uoff := uint32(data[10])<<24 | uint32(data[11])<<16 | uint32(data[12])<<8 | uint32(data[13])
-		offset := int(int32(uoff))
-		if offset != 0 {
-			t.loc = FixedZone("", offset)
-		}
+	if len(buf) != wantLen {
+		return errors.New("Time.UnmarshalBinary: invalid length")
+	}
+
+	buf = buf[1:]
+	sec := int64(buf[7]) | int64(buf[6])<<8 | int64(buf[5])<<16 | int64(buf[4])<<24 |
+		int64(buf[3])<<32 | int64(buf[2])<<40 | int64(buf[1])<<48 | int64(buf[0])<<56
+	buf = buf[8:]
+	nsec := int32(buf[3]) | int32(buf[2])<<8 | int32(buf[1])<<16 | int32(buf[0])<<24
+	buf = buf[4:]
+	offset := int(int16(buf[1])|int16(buf[0])<<8) * 60
+	if version == timeBinaryVersionV2 {
+		offset += int(int8(buf[2]))
+	}
+
+	*t = Time{}
+	if sec != 0 || nsec != 0 {
+		unixSec := sec - absoluteToInternal
+		t.wall = hasExt
+		t.ext = unixSec*1e9 + int64(nsec)
+	}
+
+	if offset == -1*60 {
+		t.setLoc(&utcLoc)
+	} else if _, localoff, _, _, _ := Local.lookup(t.unixSec()); offset == localoff {
+		t.setLoc(Local)
+	} else {
+		t.setLoc(FixedZone("", offset))
 	}
 	return nil
 }
@@ -378,18 +348,38 @@ func (t Time) GobEncode() ([]byte, error) { return t.MarshalBinary() }
 func (t *Time) GobDecode(data []byte) error { return t.UnmarshalBinary(data) }
 
 // Parse parses a formatted string and returns the time value it represents.
-// Thin: Kitchen / "3:04PM" / "03:04PM" only; other layouts fall back to
-// decimal Unix nanoseconds (AppendFormat default output).
 func Parse(layout, value string) (Time, error) {
-	switch layout {
-	case Kitchen, "03:04PM":
-		return parseKitchen(layout, value)
-	default:
-		n, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return Time{}, &ParseError{Layout: layout, Value: value, Message: err.Error()}
+	if layout == RFC3339 || layout == RFC3339Nano {
+		if t, ok := parseRFC3339String(value); ok {
+			return t, nil
 		}
-		return Time{wall: hasExt, ext: n}, nil
+	}
+	return parse(layout, value, UTC, Local)
+}
+
+// ParseInLocation is like Parse but interprets the time in loc.
+func ParseInLocation(layout, value string, loc *Location) (Time, error) {
+	if loc == nil {
+		loc = UTC
+	}
+	return parse(layout, value, loc, loc)
+}
+
+// LoadLocation returns a Location with the given name (thin FixedZone stub).
+func LoadLocation(name string) (*Location, error) {
+	switch name {
+	case "", "UTC":
+		return UTC, nil
+	case "Local":
+		return Local, nil
+	case "America/Los_Angeles":
+		return FixedZone("PST", -8*60*60), nil
+	case "Asia/Baghdad":
+		return FixedZone("AST", 3*60*60), nil
+	case "America/Blanc-Sablon":
+		return FixedZone("AST", -4*60*60), nil
+	default:
+		return nil, errors.New("time: unknown location " + name)
 	}
 }
 
@@ -664,7 +654,9 @@ type parseDurationError struct {
 }
 
 func (e *parseDurationError) Error() string {
-	return "time: " + e.message + " " + strconv.Quote(e.value)
+	// quoteGoString matches upstream time.quote: invalid UTF-8 as \xHH
+	// (TestParseDurationErrors), not strconv.Quote's U+FFFD glyph.
+	return "time: " + e.message + " " + quoteGoString(e.value)
 }
 
 // unitLookup avoids a package-level map so programs that import time
@@ -983,7 +975,7 @@ func (t Time) Weekday() Weekday {
 	if t.IsZero() {
 		return Monday
 	}
-	sec := t.unixSec()
+	sec := t.wallUnixSec()
 	// 1970-01-01 was Thursday.
 	const epochWeekday = Thursday
 	days := sec / 86400
@@ -1008,7 +1000,7 @@ func (t Time) Hour() int {
 	if t.IsZero() {
 		return 0
 	}
-	s := t.unixSec() % 86400
+	s := t.wallUnixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
@@ -1018,7 +1010,7 @@ func (t Time) Minute() int {
 	if t.IsZero() {
 		return 0
 	}
-	s := t.unixSec() % 86400
+	s := t.wallUnixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
@@ -1028,7 +1020,7 @@ func (t Time) Second() int {
 	if t.IsZero() {
 		return 0
 	}
-	s := t.unixSec() % 86400
+	s := t.wallUnixSec() % 86400
 	if s < 0 {
 		s += 86400
 	}
@@ -1048,8 +1040,10 @@ type Location struct {
 }
 
 var (
-	utcLoc   = Location{name: "UTC"}
-	localLoc = Location{name: "Local"}
+	utcLoc = Location{name: "UTC"}
+	// localLoc is fixed US Pacific (UTC-8). Name stays "Local" (TestLocationNames);
+	// Zone()/lookup report "PST" so Format/Parse match ForceUSPacificForTesting.
+	localLoc = Location{name: "Local", offset: -8 * 60 * 60}
 	UTC      = &utcLoc
 	Local    = &localLoc
 )
@@ -1060,8 +1054,14 @@ func (t Time) Location() *Location {
 	}
 	return t.loc
 }
-func (t Time) Local() Time { return t }
+func (t Time) Local() Time {
+	t.loc = Local
+	return t
+}
 func (t Time) In(loc *Location) Time {
+	if loc == nil {
+		loc = UTC
+	}
 	t.loc = loc
 	return t
 }
@@ -1072,16 +1072,51 @@ func (l *Location) String() string {
 	return l.name
 }
 func (t Time) Zone() (name string, offset int) {
-	if t.loc != nil {
-		return t.loc.name, t.loc.offset
+	loc := t.Location()
+	if loc == Local || loc == &localLoc {
+		return "PST", loc.offset
 	}
-	return "UTC", 0
+	return loc.name, loc.offset
+}
+
+// wallUnixSec returns Unix seconds adjusted by the location offset so
+// civil date/clock methods observe wall time in t's Location.
+func (t Time) wallUnixSec() int64 {
+	return t.unixSec() + int64(t.Location().offset)
 }
 
 // FixedZone returns a Location that always uses the given zone name and
 // offset (seconds east of UTC).
 func FixedZone(name string, offset int) *Location {
 	return &Location{name: name, offset: offset}
+}
+
+// lookup returns the zone name and offset for the given Unix second (thin FixedZone).
+func (l *Location) lookup(sec int64) (name string, offset int, start, end int64, isDST bool) {
+	if l == nil {
+		return "UTC", 0, -1 << 63, 1<<63 - 1, false
+	}
+	if l == Local || l == &localLoc {
+		return "PST", l.offset, -1 << 63, 1<<63 - 1, false
+	}
+	return l.name, l.offset, -1 << 63, 1<<63 - 1, false
+}
+
+// lookupName reports whether name is a zone abbreviation for this location at sec.
+func (l *Location) lookupName(name string, sec int64) (offset int, ok bool) {
+	if l == nil {
+		return 0, name == "UTC"
+	}
+	if l == Local || l == &localLoc {
+		if name == "PST" || name == "Local" {
+			return l.offset, true
+		}
+		return 0, false
+	}
+	if name == l.name || (name == "UTC" && l.offset == 0) {
+		return l.offset, true
+	}
+	return 0, false
 }
 
 // Compare compares t with u. Returns -1, 0, or +1.
@@ -1211,8 +1246,12 @@ func (t Time) ISOWeek() (year, week int) {
 // Stub: ignores loc timezone rules; uses Unix nanos when they fit in int64,
 // otherwise hasCivil absolute seconds (year 0 / far dates for Format tests).
 func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) Time {
+	if loc == nil {
+		loc = UTC
+	}
 	days := daysFromCivil(year, int(month), day) - daysFromCivil(1970, 1, 1)
-	unixSec := days*86400 + int64(hour)*3600 + int64(min)*60 + int64(sec)
+	// hour/min/sec are wall time in loc; convert to UTC Unix seconds.
+	unixSec := days*86400 + int64(hour)*3600 + int64(min)*60 + int64(sec) - int64(loc.offset)
 	if unixSec >= -maxUnixNanoSec && unixSec <= maxUnixNanoSec {
 		return Time{wall: hasExt, ext: unixSec*1e9 + int64(nsec), loc: loc}
 	}
@@ -1224,7 +1263,7 @@ func (t Time) date() (year int, month Month, day int) {
 	if t.IsZero() {
 		return 1, January, 1
 	}
-	sec := t.unixSec()
+	sec := t.wallUnixSec()
 	days := sec / 86400
 	if sec%86400 < 0 {
 		days--

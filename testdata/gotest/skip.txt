@@ -82,7 +82,6 @@ fixedbugs/issue52788a.go — compile error: build: load: typecheck
 fixedbugs/issue5373.go — wasm validate/compile error
 fixedbugs/issue54220.go — unsupported: unsafe
 fixedbugs/issue54343.go — compile error: codegen
-fixedbugs/issue54467.go — runtime error
 fixedbugs/issue5493.go — unsupported: unsafe
 fixedbugs/issue57184.go — compile error: undefined reflect.MakeFunc
 fixedbugs/issue57823.go — runtime error: panic: never GC'd (SliceData compiles; needs GC)
@@ -100,11 +99,9 @@ fixedbugs/issue75365.go — output mismatch
 fixedbugs/issue75569.go — failed: build: pipeline: IR verify: br target $goto.outer not in scope pipeline: IR verify: br target $goto.…
 fixedbugs/issue75764.go — runtime error: stack overflow in Duration.Seconds ratio loop
 fixedbugs/issue7690.go — compile error: lower: unsupported binary op &^ for width i32 regexp/syntax: lower: unsupported binary op &^ for wid…
-fixedbugs/issue77779.go — runtime error
 fixedbugs/issue79762.go — runtime error: null deref / stub Stack
 fixedbugs/issue80004.go — unsupported: unsafe
 fixedbugs/issue8004.go — runtime error
-fixedbugs/issue80127.go — runtime error
 fixedbugs/issue8048.go — compile error: codegen
 fixedbugs/issue80976.go — compile error: lower: unsubstituted type parameter T
 fixedbugs/issue8606.go — wasm validate/compile error
@@ -122,7 +119,6 @@ ken/chan1.go — output mismatch
 mallocfin.go — compile error: codegen
 maymorestack.go — compile error: codegen
 nilptr.go — unsupported: unsafe
-nilptr2.go — codegen: missing struct field in closure
 peano.go — failed: build: runtime: goroutine stack exceeds 1000000000-byte limit runtime: sp=0x14dd4e200340 stack=[0x14…
 printbig.go — compile error: build: load: typecheck
 sigchld.go — compile error: build: load: typecheck
@@ -137,7 +133,6 @@ typeparam/chans.go — compile error: codegen finalize method value
 typeparam/cons.go — failed: build: desc: no concrete type for main.mapCons$int$bool desc: no concrete type for main.mapCons$int$…
 typeparam/issue44688.go — failed: build: mono: pending main.A2$string.m2 missing package/info mono: pending main.A2$string.m2 missing …
 typeparam/issue47713.go — wasm validate/compile error: BinaryMarshaler call shape
-typeparam/issue47925b.go — failed: panic: interface conversion: type assertion failed
 typeparam/issue48047.go — wasm validate/compile error
 typeparam/issue48049.go — failed: build: desc: no concrete type for main.fooer2$byte desc: no concrete type for main.fooer2$byte
 typeparam/issue48318.go — could not import encoding/xml

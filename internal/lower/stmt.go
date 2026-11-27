@@ -1061,6 +1061,88 @@ func (fl *funcLower) assignToSavedStar(lhs *ast.StarExpr, ptr, rhs ir.Expr) ([]i
 	return stmts, nil
 }
 
+// assignThroughSliceArrayPtr lowers *(*[N]T)(s) = x when s is a slice, writing
+// into s's backing array at s.off (issue54467). ok=false → fall through.
+func (fl *funcLower) assignThroughSliceArrayPtr(lhs *ast.StarExpr, rhs ir.Expr) ([]ir.Stmt, bool, error) {
+	conv := lhs.X
+	for {
+		if p, ok := conv.(*ast.ParenExpr); ok {
+			conv = p.X
+			continue
+		}
+		break
+	}
+	call, ok := conv.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return nil, false, nil
+	}
+	dst := fl.typeOf(call)
+	if dst == nil || !isPtrToArray(dst) {
+		return nil, false, nil
+	}
+	argT := fl.typeOf(call.Args[0])
+	if argT == nil || !isSlice(argT) {
+		return nil, false, nil
+	}
+	arrPtr := types.Unalias(dst).Underlying().(*types.Pointer)
+	arr := types.Unalias(arrPtr.Elem()).Underlying().(*types.Array)
+	n := arr.Len()
+	arrIR, err := fl.mapType(arrPtr.Elem())
+	if err != nil {
+		return nil, true, err
+	}
+	r, ok := arrIR.(*ir.Ref)
+	if !ok || r.Named == "" {
+		return nil, true, fl.errorf(lhs, "slice array-ptr assign: bad array type")
+	}
+	if _, _, err := fl.pkg.ensureArrayType(arr.Elem()); err != nil {
+		return nil, true, err
+	}
+	sliceIR, err := fl.mapType(argT)
+	if err != nil {
+		return nil, true, err
+	}
+	sv, sstmts, err := fl.expr(call.Args[0], sliceIR)
+	if err != nil {
+		return nil, true, err
+	}
+	var stmts []ir.Stmt
+	stmts = append(stmts, sstmts...)
+	srcV := fl.newVar("sapSrc", sliceIR)
+	stmts = append(stmts, fl.assignVar(srcV, sv))
+	dataV := fl.newVar("sapData", &ir.Ref{Null: true, Named: r.Named})
+	offV := fl.newVar("sapOff", ir.TypeI32)
+	lenV := fl.newVar("sapLen", ir.TypeI32)
+	stmts = append(stmts,
+		fl.assignVar(dataV, &ir.Instr{Op: ir.OpStructGet, Type: sliceIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}}),
+		fl.assignVar(offV, &ir.Instr{Op: ir.OpStructGet, Type: sliceIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}}),
+		fl.assignVar(lenV, &ir.Instr{Op: ir.OpStructGet, Type: sliceIR, Field: "len", Args: []ir.Expr{fl.useVar(srcV)}}),
+	)
+	if n > 0 {
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32LtU, Args: []ir.Expr{fl.useVar(lenV), fl.i32const(n)}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.ExprStmt{X: &ir.Instr{
+					Op: ir.OpCall, Func: "runtime.panicSliceToArray",
+					Args: []ir.Expr{fl.useVar(lenV), fl.i32const(n)},
+				}},
+				&ir.Unreachable{},
+			}},
+		})
+	}
+	rhsT := fl.newTemp(arrIR)
+	stmts = append(stmts, fl.assignTemp(rhsT, rhs))
+	stmts = append(stmts, &ir.ExprStmt{X: &ir.Instr{
+		Op: ir.OpArrayCopy, Type: arrIR, Type2: arrIR,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{fl.useVar(dataV)}},
+			fl.useVar(offV),
+			fl.useTemp(rhsT), fl.i32const(0),
+			fl.i32const(n),
+		},
+	}})
+	return stmts, true, nil
+}
 
 // opAssignAddrOnce lowers *p/x[i]/m[k] op= y with the destination evaluated
 // before y. Returns ok=false to fall back to the generic op-assign path.
@@ -1438,6 +1520,12 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 		fl.markPlainDirty(obj)
 		return []ir.Stmt{fl.assignVar(v, rhs)}, nil
 	case *ast.StarExpr:
+		// *(*[N]T)(slice) = x — slice→*[N]T with off≠0 copies into a fresh
+		// array (no interior pointers), so stores must write back into the
+		// slice's backing at off (fixedbugs/issue54467).
+		if stmts, ok, err := fl.assignThroughSliceArrayPtr(lhs, rhs); ok || err != nil {
+			return stmts, err
+		}
 		ptr, stmts, err := fl.expr(lhs.X, nil)
 		if err != nil {
 			return nil, err

@@ -3,6 +3,7 @@ package load
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"os"
@@ -103,9 +104,16 @@ func LoadTest(cfg TestConfig) (*TestProgram, error) {
 	// upstream. Their export_test.go references unexported symbols we do not
 	// provide; keeping it blocks every external test. Drop it so public-API
 	// tests can compile; tests that need export helpers fail typecheck and stay
-	// skipped.
+	// skipped — unless std/overlay/<pkg>/export_test.go supplies a compatible
+	// subset (kept out of production so fmt hello does not retain StdChunkNames).
 	if thinRewritePackage(prodDir, upDir, filter) {
 		scan.Internal = dropExportTestFiles(scan.Internal)
+		if cfg.ModuleRoot != "" {
+			ovlExport := filepath.Join(cfg.ModuleRoot, "std", "overlay", filepath.FromSlash(cfg.ImportPath), "export_test.go")
+			if fi, err := parseOverlayExportTest(ovlExport); err == nil {
+				scan.Internal = append(scan.Internal, fi)
+			}
+		}
 	}
 
 	// Materialize stripped test sources into work dir.
@@ -216,8 +224,10 @@ func thinRewritePackage(prodDir, upDir string, filter FilterConfig) bool {
 	if err1 != nil || err2 != nil || len(up) == 0 {
 		return false
 	}
-	// Rewrite packages typically keep a handful of files; upstream time has ~20+.
-	return len(prod)*2 < len(up)
+	// Rewrite packages typically keep a handful of files; upstream time has
+	// ~8 wasmgc-filtered sources vs a thin rewrite of 4 (format+parse port).
+	// Use <= so a half-size rewrite still drops incompatible export_test.go.
+	return len(prod)*2 <= len(up)
 }
 
 func dropExportTestFiles(files []testmain.FileInfo) []testmain.FileInfo {
@@ -230,6 +240,23 @@ func dropExportTestFiles(files []testmain.FileInfo) []testmain.FileInfo {
 		kept = append(kept, fi)
 	}
 	return kept
+}
+
+// parseOverlayExportTest loads std/overlay/<pkg>/export_test.go as an internal
+// test helper file (no Test* stripping needed — aliases only).
+func parseOverlayExportTest(path string) (testmain.FileInfo, error) {
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return testmain.FileInfo{}, err
+	}
+	return testmain.FileInfo{
+		Path:     path,
+		PkgName:  af.Name.Name,
+		External: false,
+		Syntax:   af,
+		Fset:     fset,
+	}, nil
 }
 
 // ListTestGoFiles returns *_test.go files in dir that pass the wasmgc filter.

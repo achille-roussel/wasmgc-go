@@ -52,7 +52,6 @@ TestStringOption — lower/runtime/reflect gaps in encoding/json tests
 TestStructTagObjectKey — lower/runtime/reflect gaps in encoding/json tests
 TestSynctestMarshal — lower/runtime/reflect gaps in encoding/json tests
 TestTaggedFieldDominates — lower/runtime/reflect gaps in encoding/json tests
-TestTextMarshalerMapKeysAreSorted — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalEmbeddedUnexported — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalJSONLiteralError — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalMapWithTextUnmarshalerStringKey — lower/runtime/reflect gaps in encoding/json tests

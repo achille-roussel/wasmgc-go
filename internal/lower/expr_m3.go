@@ -197,6 +197,17 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 		if err != nil {
 			return nil, nil, err
 		}
+		// &a[i] through nil *[N]T must panic (nilptr2), not mint a fat ptr.
+		if xt := fl.typeOf(x.X); xt != nil && isPointer(xt) && isObjectPointer(xt) {
+			xPtrTy, err := fl.mapType(xt)
+			if err != nil {
+				return nil, nil, err
+			}
+			pv := fl.newVar("iaddr", xPtrTy)
+			stmts = append(stmts, fl.assignVar(pv, base))
+			stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+			base = fl.useVar(pv)
+		}
 		idx, istmts, err := fl.expr(x.Index, ir.TypeI32)
 		if err != nil {
 			return nil, nil, err
@@ -212,8 +223,23 @@ func (fl *funcLower) addrOf(x ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error
 	case *ast.ParenExpr:
 		return fl.addrOf(x.X, want)
 	case *ast.StarExpr:
-		// &*p → p
-		return fl.expr(x.X, want)
+		// &*p → p, but still panic on nil p (nilptr2 / Go spec).
+		ptrTyX := want
+		if ptrTyX == nil {
+			var mapErr error
+			ptrTyX, mapErr = fl.mapType(fl.typeOf(x.X))
+			if mapErr != nil {
+				return nil, nil, mapErr
+			}
+		}
+		ptr, stmts, err := fl.expr(x.X, ptrTyX)
+		if err != nil {
+			return nil, nil, err
+		}
+		pv := fl.newVar("andstar", ptrTyX)
+		stmts = append(stmts, fl.assignVar(pv, ptr))
+		stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+		return fl.useVar(pv), stmts, nil
 	case *ast.CompositeLit:
 		xt := fl.typeOf(x)
 		// &Struct{...} / &[N]T{...}: composite object ref is the pointer.
@@ -1410,10 +1436,11 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 		if !elemZeroIsNull(u.Elem()) {
 			elemIR, err := fl.mapType(u.Elem())
 			if err == nil {
-				// Non-empty structs need per-slot zeros; zero-sized / strings
-				// may share one object (bug352 &a[i]==&a[j]).
-				if isStruct(u.Elem()) && !isZeroSize(u.Elem()) {
-					fn := fl.ensureZeroArrayFunc(r.Named, elemIR)
+				// Non-empty structs and nested arrays need a fresh zero per
+				// slot — array.new(z, n) would alias one mutable object.
+				// Zero-sized structs / strings may share (bug352 &a[i]==&a[j]).
+				if (isStruct(u.Elem()) && !isZeroSize(u.Elem())) || isArray(u.Elem()) {
+					fn := fl.ensureZeroArrayFunc(r.Named, u.Elem(), elemIR)
 					return &ir.Instr{
 						Op:   ir.OpCall,
 						Func: fn,
@@ -1421,8 +1448,12 @@ func (fl *funcLower) goZeroValue(goTy types.Type, irTy ir.Type) (ir.Expr, bool) 
 						Type: &ir.Ref{Named: r.Named},
 					}, true
 				}
-				z, zerr := fl.zeroValue(elemIR)
-				if zerr == nil {
+				z, ok := fl.goZeroValue(u.Elem(), elemIR)
+				if !ok {
+					z, err = fl.zeroValue(elemIR)
+					ok = err == nil
+				}
+				if ok {
 					return &ir.Instr{
 						Op:   ir.OpArrayNew,
 						Type: &ir.Ref{Named: r.Named},
@@ -1534,9 +1565,9 @@ func (fl *funcLower) structZero(td *ir.TypeDef, t ir.Type, seen map[string]bool)
 }
 
 // ensureZeroArrayFunc returns a helper that builds [n]T with a fresh Go-zero
-// element in every slot. array.new(z, n) would alias one struct across all
-// indices; field stores would then clobber every element.
-func (fl *funcLower) ensureZeroArrayFunc(arrName string, elemIR ir.Type) string {
+// element in every slot. array.new(z, n) would alias one struct/array across
+// all indices; element stores would then clobber every slot.
+func (fl *funcLower) ensureZeroArrayFunc(arrName string, elemGo types.Type, elemIR ir.Type) string {
 	name := "$go.zeroArray." + strings.TrimPrefix(arrName, "$")
 	if fl.mod.LookupFunc(name) != nil {
 		return name
@@ -1546,6 +1577,9 @@ func (fl *funcLower) ensureZeroArrayFunc(arrName string, elemIR ir.Type) string 
 	aVar := &ir.Var{Name: "a", Typ: aty}
 	iVar := &ir.Var{Name: "i", Typ: ir.TypeI32}
 	mkZero := func() ir.Expr {
+		if ez, ok := fl.goZeroValue(elemGo, elemIR); ok {
+			return ez
+		}
 		ez, eerr := fl.zeroValue(elemIR)
 		if eerr != nil {
 			return &ir.Instr{Op: ir.OpRefNull, Type: elemIR}

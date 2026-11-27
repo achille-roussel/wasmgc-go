@@ -573,7 +573,20 @@ func (v Value) Addr() Value {
 		panic("reflect: call of Addr on unaddressable Value")
 	}
 	pt := PointerTo(v.Type())
-	return Value{typ: asRtype(pt), data: v.dataWord()}
+	// Keep the storage pointer, not the loaded value. dataWord() deref's
+	// fat pointers / unboxes boxes — that made Interface() on Addr() pass a
+	// scalar box as *T data and broke TypeAssert[Marshaler](va.Addr())
+	// (json EncodeBytekind). Field/index slots still re-fetch via dataWord.
+	data := v.data
+	switch {
+	case v.flag&flagFatPtr != 0:
+		data = v.data
+	case v.flag&flagRefBox != 0:
+		data = v.data
+	case v.flag&(flagField|flagIndex) != 0:
+		data = v.dataWord()
+	}
+	return Value{typ: asRtype(pt), data: data}
 }
 
 func (v Value) UnsafePointer() unsafe.Pointer {
