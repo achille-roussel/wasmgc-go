@@ -547,12 +547,19 @@ func (g *gen) synthesizeAssertItabs() {
 	seen := map[string]bool{}
 	var concretes []conc
 	restrict := len(g.liveAnyConcretes) > 0
+	liveOrigins := g.liveMonoOrigins()
 	for _, it := range g.itabs {
 		if it.concKey == "" || it.concrete == nil || seen[it.concKey] {
 			continue
 		}
 		if restrict && !g.liveAnyConcretes[it.concKey] {
-			continue
+			// OpIfaceCall method bodies are not Call-reachable, so any-boxes
+			// inside them (typeparam/cons Map → Nil[bool] as any) miss
+			// liveAnyConcretes. Admit empty-iface itab concretes that share a
+			// mono origin with an already-live concrete (Nil[int]→Nil[bool]).
+			if !g.isEmptyIfaceKey(it.ifaceKey) || !liveOrigins[monoOriginKey(it.concKey)] {
+				continue
+			}
 		}
 		seen[it.concKey] = true
 		concretes = append(concretes, conc{key: it.concKey, typ: it.concrete})
@@ -598,6 +605,10 @@ func (g *gen) synthesizeAssertItabs() {
 		if tr := g.types[ifaceKey]; tr != nil && tr.goType != nil {
 			ifaceTy = tr.goType
 		}
+		// Assert itabs pull concrete methods that OpIfaceCall param ifaces
+		// (Function[Cons[bool],any] in List.Match). Those methods may not be
+		// Call-reachable, so scanModule never registered the itabtypes.
+		g.needIfaceSigTypes(iface)
 		for _, c := range concretes {
 			cands := []conc{c}
 			// json TypeAssert on va.Addr() → *T. Emit *T assert itabs for
@@ -646,6 +657,106 @@ func (g *gen) synthesizeAssertItabs() {
 	// IR exists and any-itab was emitted, force error/@ itab; emitItab uses
 	// ensureWrapperFromIR when concrete is nil.
 	g.synthesizeAppendFilesErrorItabs()
+}
+
+// liveMonoOrigins returns TypeKey origins (strip $args) for live concretes.
+func (g *gen) liveMonoOrigins() map[string]bool {
+	out := map[string]bool{}
+	for k := range g.liveAnyConcretes {
+		out[monoOriginKey(k)] = true
+	}
+	for name, it := range g.itabs {
+		if it.concKey == "" {
+			continue
+		}
+		if g.assertItabs[name] || g.liveAnyConcretes[it.concKey] {
+			out[monoOriginKey(it.concKey)] = true
+		}
+	}
+	return out
+}
+
+func monoOriginKey(typeKey string) string {
+	if i := strings.Index(typeKey, "$"); i > 0 {
+		// Keep pointer / slice prefixes: *main.Nil$bool → *main.Nil
+		return typeKey[:i]
+	}
+	return typeKey
+}
+
+func (g *gen) isEmptyIfaceKey(ifaceKey string) bool {
+	if ifaceKey == "any" || ifaceKey == "interface{}" {
+		return true
+	}
+	iface := g.lookupIface(ifaceKey)
+	return iface != nil && iface.Empty()
+}
+
+// needIfaceSigTypes registers interface types appearing in iface method
+// signatures so emitItabType runs for them (itabmethod bodies cast to those
+// itabtypes even when no concrete itab for the param iface was made).
+func (g *gen) needIfaceSigTypes(iface *types.Interface) {
+	if iface == nil {
+		return
+	}
+	var walk func(t types.Type)
+	walk = func(t types.Type) {
+		if t == nil {
+			return
+		}
+		t = types.Unalias(t)
+		if isIfaceType(t) {
+			k := TypeKey(t)
+			if k == "" || k == "any" || k == "interface{}" {
+				return
+			}
+			if !g.ifaces[k] {
+				g.ifaces[k] = true
+				g.needTypeKey(k)
+				if tr := g.types[k]; tr != nil && tr.goType == nil {
+					tr.goType = t
+				}
+				if u, ok := t.Underlying().(*types.Interface); ok {
+					g.needIfaceSigTypes(u)
+				}
+			}
+			return
+		}
+		switch t := t.(type) {
+		case *types.Pointer:
+			walk(t.Elem())
+		case *types.Slice:
+			walk(t.Elem())
+		case *types.Array:
+			walk(t.Elem())
+		case *types.Map:
+			walk(t.Key())
+			walk(t.Elem())
+		case *types.Chan:
+			walk(t.Elem())
+		case *types.Signature:
+			if t.Params() != nil {
+				for i := 0; i < t.Params().Len(); i++ {
+					walk(t.Params().At(i).Type())
+				}
+			}
+			if t.Results() != nil {
+				for i := 0; i < t.Results().Len(); i++ {
+					walk(t.Results().At(i).Type())
+				}
+			}
+		case *types.Named:
+			walk(t.Underlying())
+		}
+	}
+	for i := 0; i < iface.NumMethods(); i++ {
+		walk(iface.Method(i).Type())
+	}
+}
+
+func isIfaceType(t types.Type) bool {
+	_, ok := types.Unalias(t).Underlying().(*types.Interface)
+	return ok
 }
 
 // synthesizeAppendFilesErrorItabs registers $go.itab.error.@.<C> for

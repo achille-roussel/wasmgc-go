@@ -275,6 +275,19 @@ func (g *gen) markEHFills() {
 	}
 }
 
+// markConcatStringsFill ensures body-less runtime.concatstrings gets a Wasm
+// body even when the module needs no exception handling (string += alone).
+func (g *gen) markConcatStringsFill() {
+	f := g.m.LookupFunc("runtime.concatstrings")
+	if f == nil {
+		return
+	}
+	if emptyPrintBody(f) {
+		g.ehFill["runtime.concatstrings"] = true
+		g.hasEHStubs = true
+	}
+}
+
 func (g *gen) synthEHFunc(name string) {
 	iface := typeIfaceRef()
 	panicRef := &ir.Ref{Named: "$go.panicObj"}

@@ -172,6 +172,10 @@ func (g *gen) build() error {
 	if err := g.ensureEH(); err != nil {
 		return err
 	}
+	// concatstrings is body-less IR filled by codegen; it must not depend on
+	// exception handling (bug021: s += t with no panic/defer left it as
+	// unreachable). Mark the fill even when scanEHNeeds is false.
+	g.markConcatStringsFill()
 	// Always consider print intrinsics: rtlink body-less decls, or synth when missing.
 	if err := g.ensurePrintStubs(); err != nil {
 		return err

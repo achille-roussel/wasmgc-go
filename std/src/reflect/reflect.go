@@ -1499,7 +1499,17 @@ func (t *rtype) Name() string {
 		if i := lastDot(n); i >= 0 {
 			return n[i+1:]
 		}
-		return n
+		if n != "" {
+			return n
+		}
+	}
+	// ReflectTypeName omits predeclared basics (size: no "pkg." display).
+	// gc still reports Name()=="int" for those; match via Kind.
+	switch t.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64,
+		Uint, Uint8, Uint16, Uint32, Uint64, Uintptr,
+		Float32, Float64, Complex64, Complex128, String, UnsafePointer:
+		return t.Kind().String()
 	}
 	return ""
 }
