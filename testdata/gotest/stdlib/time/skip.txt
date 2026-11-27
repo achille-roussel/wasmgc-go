@@ -3,11 +3,9 @@ TestAdjustTimers — lower/runtime gaps in time tests
 TestAfterFuncStarvation — lower/runtime gaps in time tests
 TestAndroidTzdata — lower/runtime gaps in time tests
 TestAusZoneAbbr — lower/runtime gaps in time tests
-TestBadLocationErrMsg — lower/runtime gaps in time tests
 TestChan — lower/runtime gaps in time tests
 TestCountMallocs — lower/runtime gaps in time tests
 TestDate — lower/runtime gaps in time tests
-TestEarlyLocation — lower/runtime gaps in time tests
 TestEmbeddedTZData — lower/runtime gaps in time tests
 TestEnvTZUsage — lower/runtime gaps in time tests
 TestEnvVarUsage — lower/runtime gaps in time tests
@@ -16,25 +14,17 @@ TestFormatAndParse — lower/runtime gaps in time tests
 TestHasMonotonicClock — lower/runtime gaps in time tests
 TestInternal — lower/runtime gaps in time tests
 TestLinkname — lower/runtime gaps in time tests
-TestLoadFixed — lower/runtime gaps in time tests
 TestLoadLocationFromTZData — lower/runtime gaps in time tests
 TestLoadLocationFromTZDataSlim — lower/runtime gaps in time tests
-TestLoadLocationValidatesNames — lower/runtime gaps in time tests
-TestLoadLocationZipFile — lower/runtime gaps in time tests
 TestLocationRace — lower/runtime gaps in time tests
 TestMalformedTZData — lower/runtime gaps in time tests
-TestMarshalBinaryVersion2 — lower/runtime gaps in time tests
-TestMarshalInvalidTimes — lower/runtime gaps in time tests
-TestMissingZone — lower/runtime gaps in time tests
 TestMonotonicAdd — lower/runtime gaps in time tests
-TestMonotonicOverflow — lower/runtime gaps in time tests
 TestMonotonicString — lower/runtime gaps in time tests
 TestMonotonicSub — lower/runtime gaps in time tests
 TestOverflowPeriodRuntimeTimer — lower/runtime gaps in time tests
 TestOverflowSleep — lower/runtime gaps in time tests
 TestParse — lower/runtime gaps in time tests
 TestParseErrors — lower/runtime gaps in time tests
-TestParseTimeZone — lower/runtime gaps in time tests
 TestReadFileLimit — lower/runtime gaps in time tests
 TestReset — lower/runtime gaps in time tests
 TestResetResult — lower/runtime gaps in time tests
@@ -42,16 +32,10 @@ TestStd0xParseError — lower/runtime gaps in time tests
 TestSub — lower/runtime gaps in time tests
 TestTimeAddSecOverflow — lower/runtime gaps in time tests
 TestTimeGob — lower/runtime gaps in time tests
-TestTimeIsDST — lower/runtime gaps in time tests
-TestTimeJSON — lower/runtime gaps in time tests
 TestTimerModifiedEarlier — lower/runtime gaps in time tests
 TestTimeWithZoneTransition — lower/runtime gaps in time tests
 TestToEnglishName — lower/runtime gaps in time tests
 TestTruncateRound — lower/runtime gaps in time tests
-TestTzset — lower/runtime gaps in time tests
-TestTzsetName — lower/runtime gaps in time tests
-TestTzsetOffset — lower/runtime gaps in time tests
-TestTzsetRule — lower/runtime gaps in time tests
 TestUnix — lower/runtime gaps in time tests
 TestUnixMicro — lower/runtime gaps in time tests
 TestUnixMilli — lower/runtime gaps in time tests
@@ -61,7 +45,6 @@ TestUnixUTC — lower/runtime gaps in time tests
 TestUnixUTCAndBack — lower/runtime gaps in time tests
 TestUnmarshalInvalidTimes — lower/runtime gaps in time tests
 TestUSPacificZoneAbbr — lower/runtime gaps in time tests
-TestVersion3 — lower/runtime gaps in time tests
 TestZeroTimer — hangs under joint time package after other timer tests
 TestZoneBounds — lower/runtime gaps in time tests
 TestTimerGC — TimerGC/Tick via Tick() leaks ticker; joint OOM before ConcurrentTimerReset

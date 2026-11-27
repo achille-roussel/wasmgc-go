@@ -87,11 +87,15 @@ func signatureDisplay(sig *types.Signature) string {
 				}
 			} else {
 				pt := sig.Params().At(i).Type()
-				if psig, ok := pt.Underlying().(*types.Signature); ok {
-					b.WriteString(signatureDisplay(psig))
-				} else {
-					b.WriteString(types.TypeString(pt, q))
+				// Named func types (fmt_test.Fn) must keep their name, not expand
+				// to the underlying signature (TestSprintf %#v method expr).
+				if _, named := types.Unalias(pt).(*types.Named); !named {
+					if psig, ok := pt.Underlying().(*types.Signature); ok {
+						b.WriteString(signatureDisplay(psig))
+						continue
+					}
 				}
+				b.WriteString(types.TypeString(pt, q))
 			}
 		}
 	}
@@ -100,8 +104,12 @@ func signatureDisplay(sig *types.Signature) string {
 		if sig.Results().Len() == 1 {
 			rt := sig.Results().At(0).Type()
 			b.WriteByte(' ')
-			if rsig, ok := rt.Underlying().(*types.Signature); ok {
-				b.WriteString(signatureDisplay(rsig))
+			if _, named := types.Unalias(rt).(*types.Named); !named {
+				if rsig, ok := rt.Underlying().(*types.Signature); ok {
+					b.WriteString(signatureDisplay(rsig))
+				} else {
+					b.WriteString(types.TypeString(rt, q))
+				}
 			} else {
 				b.WriteString(types.TypeString(rt, q))
 			}
@@ -112,8 +120,12 @@ func signatureDisplay(sig *types.Signature) string {
 					b.WriteString(", ")
 				}
 				rt := sig.Results().At(i).Type()
-				if rsig, ok := rt.Underlying().(*types.Signature); ok {
-					b.WriteString(signatureDisplay(rsig))
+				if _, named := types.Unalias(rt).(*types.Named); !named {
+					if rsig, ok := rt.Underlying().(*types.Signature); ok {
+						b.WriteString(signatureDisplay(rsig))
+					} else {
+						b.WriteString(types.TypeString(rt, q))
+					}
 				} else {
 					b.WriteString(types.TypeString(rt, q))
 				}
@@ -1136,7 +1148,11 @@ func (g *gen) fillReflectPointerTo() {
 	})
 }
 
-// fillReflectImplements returns true when an itab was emitted for (concrete, iface).
+// fillReflectImplements returns true when t implements interface u.
+// Pairs come from emitted itabs plus go/types.Implements over the closed
+// universe (iface→iface and concretes with no itab yet). Needed for
+// encoding/json omitzero: TypeFor[isZeroer]() vs field-typed isZeroer, and
+// NonZeroStruct.IsZero without a prior OpIfaceMake.
 func (g *gen) fillReflectImplements() {
 	name := "runtime.ReflectImplements"
 	f := g.mod.LookupFunc(name)
@@ -1161,6 +1177,17 @@ func (g *gen) fillReflectImplements() {
 			return
 		}
 		p := pair{tid: ct.id, uid: itIface.id}
+		if seen[p] {
+			return
+		}
+		seen[p] = true
+		pairs = append(pairs, p)
+	}
+	addIDs := func(tid, uid int32) {
+		if tid < 0 || uid < 0 {
+			return
+		}
+		p := pair{tid: tid, uid: uid}
 		if seen[p] {
 			return
 		}
@@ -1205,6 +1232,30 @@ func (g *gen) fillReflectImplements() {
 					}
 				}
 			}
+		}
+	}
+	// Universe method-set pairs (including iface→iface with equal methods).
+	var ifaces []*typeRec
+	var all []*typeRec
+	for _, tr := range g.types {
+		if tr == nil || tr.goType == nil || tr.id < 0 {
+			continue
+		}
+		all = append(all, tr)
+		if _, ok := types.Unalias(tr.goType).Underlying().(*types.Interface); ok {
+			ifaces = append(ifaces, tr)
+		}
+	}
+	for _, ifaceRec := range ifaces {
+		iface, _ := types.Unalias(ifaceRec.goType).Underlying().(*types.Interface)
+		if iface == nil {
+			continue
+		}
+		for _, tr := range all {
+			if !g.implementsForItab(tr.goType, iface) {
+				continue
+			}
+			addIDs(tr.id, ifaceRec.id)
 		}
 	}
 	// Stable order for deterministic IR.

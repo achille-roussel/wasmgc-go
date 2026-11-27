@@ -610,8 +610,10 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 	// passing make; GOROOT makeslice tests use MaxInt32 / ^uint32(0).
 	// Zero-sized elems (e.g. struct{}) may be MaxInt — host Go allocates no
 	// backing store. Allow oversized len/cap and use a shared empty array only
-	// when cap exceeds maxMakeElems (small caps still allocate so &s[i] works).
+	// when cap exceeds the engine's array.new limit (V8 rejects around 2^27;
+	// keep maxZeroAllocElems at 2^26). Modest caps still allocate so &s[i] works.
 	const maxMakeElems = 1 << 28
+	const maxZeroAllocElems = 1 << 26
 	zeroSize := rt.isZeroSizeArrayElem(arrName)
 	lenV := rt.newVar("mlen", ir.TypeI32)
 	capV := rt.newVar("mcap", ir.TypeI32)
@@ -654,7 +656,7 @@ func (rt *runtimeLower) expandMakeSlice(s *ir.Assign, in *ir.Instr, n *int) ([]i
 		// Huge zero-size slices: header carries len/cap; backing is shared empty
 		// (zerobase). Modest caps allocate so indexing / &elem stays in-bounds.
 		// Init dataV before the branch — (ref array) locals are non-defaultable.
-		maxC := &ir.Const{Op: ir.OpI32Const, I64: maxMakeElems}
+		maxC := &ir.Const{Op: ir.OpI32Const, I64: maxZeroAllocElems}
 		modest := &ir.Instr{Op: ir.OpI32LeU, Args: []ir.Expr{useV(capV), maxC}}
 		allocOk, allocOkPre := rt.allocArray(arrName, useV(capV))
 		zerobase := ensureZeroLenArrayGlobal(rt.mod, arrName)

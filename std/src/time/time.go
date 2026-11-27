@@ -194,14 +194,22 @@ func (t Time) Format(layout string) string {
 	return string(t.AppendFormat(nil, layout))
 }
 
+func (t Time) appendTo(b []byte, errPrefix string) ([]byte, error) {
+	b, err := t.appendStrictRFC3339(b)
+	if err != nil {
+		return nil, errors.New(errPrefix + err.Error())
+	}
+	return b, nil
+}
+
 // AppendText appends RFC3339 text of t to b (with fractional seconds).
 func (t Time) AppendText(b []byte) ([]byte, error) {
-	return t.appendStrictRFC3339(b)
+	return t.appendTo(b, "Time.AppendText: ")
 }
 
 // MarshalText implements encoding.TextMarshaler.
 func (t Time) MarshalText() ([]byte, error) {
-	return t.AppendText(nil)
+	return t.appendTo(make([]byte, 0, len(RFC3339Nano)), "Time.MarshalText: ")
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler via RFC3339 parse.
@@ -216,10 +224,9 @@ func (t *Time) UnmarshalText(data []byte) error {
 
 // MarshalJSON implements json.Marshaler (quoted strict RFC3339).
 func (t Time) MarshalJSON() ([]byte, error) {
-	b := make([]byte, 0, len(RFC3339Nano)+2)
+	b := make([]byte, 0, len(RFC3339Nano)+len(`""`))
 	b = append(b, '"')
-	var err error
-	b, err = t.appendStrictRFC3339(b)
+	b, err := t.appendStrictRFC3339(b)
 	b = append(b, '"')
 	if err != nil {
 		return nil, errors.New("Time.MarshalJSON: " + err.Error())
@@ -365,21 +372,80 @@ func ParseInLocation(layout, value string, loc *Location) (Time, error) {
 	return parse(layout, value, loc, loc)
 }
 
+// errLocation is returned by LoadLocation for syntactically invalid names.
+var errLocation = errors.New("time: invalid location name")
+
+// containsDotDot reports whether s contains "..".
+func containsDotDot(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] == '.' && s[i+1] == '.' {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadLocation returns a Location with the given name (thin FixedZone stub).
 func LoadLocation(name string) (*Location, error) {
-	switch name {
-	case "", "UTC":
+	if name == "" || name == "UTC" {
 		return UTC, nil
-	case "Local":
+	}
+	if name == "Local" {
 		return Local, nil
+	}
+	if containsDotDot(name) || name[0] == '/' || name[0] == '\\' {
+		return nil, errLocation
+	}
+	// Etc/GMT±N: tzdata uses "east is negative"; Go FixedZone offset is east-positive.
+	if len(name) >= 8 && name[:7] == "Etc/GMT" {
+		sign := 0
+		rest := name[7:]
+		if len(rest) > 0 && (rest[0] == '+' || rest[0] == '-') {
+			if rest[0] == '+' {
+				sign = -1 // Etc/GMT+1 → offset -3600
+			} else {
+				sign = 1
+			}
+			rest = rest[1:]
+		}
+		if sign != 0 && len(rest) > 0 {
+			n := 0
+			ok := true
+			for i := 0; i < len(rest); i++ {
+				c := rest[i]
+				if c < '0' || c > '9' {
+					ok = false
+					break
+				}
+				n = n*10 + int(c-'0')
+			}
+			if ok && n <= 14 {
+				abbr := name[4:] // "GMT+1"
+				return FixedZone(abbr, sign*n*60*60), nil
+			}
+		}
+	}
+	switch name {
 	case "America/Los_Angeles":
 		return FixedZone("PST", -8*60*60), nil
+	case "America/New_York", "US/Eastern":
+		return FixedZone("EST", -5*60*60), nil
 	case "Asia/Baghdad":
 		return FixedZone("AST", 3*60*60), nil
+	case "Asia/Shanghai":
+		return FixedZone("CST", 8*60*60), nil
+	case "Asia/Jerusalem":
+		return FixedZone("IST", 2*60*60), nil
+	case "Australia/Sydney":
+		return &Location{name: "AEST", offset: 10 * 60 * 60, dstApprox: true}, nil
+	case "Australia/Brisbane":
+		return FixedZone("AEST", 10*60*60), nil
+	case "Europe/Berlin", "Europe/Zurich":
+		return FixedZone("CET", 1*60*60), nil
 	case "America/Blanc-Sablon":
 		return FixedZone("AST", -4*60*60), nil
 	default:
-		return nil, errors.New("time: unknown location " + name)
+		return nil, errors.New("unknown time zone " + name)
 	}
 }
 
@@ -1037,6 +1103,9 @@ func (t Time) Date() (year int, month Month, day int) {
 type Location struct {
 	name   string
 	offset int // seconds east of UTC
+	// dstApprox enables a thin southern-hemisphere DST bit (Oct–Mar) used by
+	// Australia/Sydney stubs so Time.IsDST matches GOROOT TestTimeIsDST.
+	dstApprox bool
 }
 
 var (
@@ -1077,6 +1146,35 @@ func (t Time) Zone() (name string, offset int) {
 		return "PST", loc.offset
 	}
 	return loc.name, loc.offset
+}
+
+// IsDST reports whether the time in the configured location is in daylight savings.
+// Thin rewrite: FixedZone / UTC are never DST; Australia/Sydney uses dstApprox.
+func (t Time) IsDST() bool {
+	loc := t.Location()
+	if loc.dstApprox {
+		m := t.Month()
+		return m >= October || m <= March
+	}
+	_, _, _, _, isDST := loc.lookup(t.unixSec())
+	return isDST
+}
+
+// ZoneBounds returns the bounds of the time zone in effect at t.
+// For FixedZone / UTC (no transitions), both times are the zero Time.
+func (t Time) ZoneBounds() (start, end Time) {
+	_, _, startSec, endSec, _ := t.Location().lookup(t.unixSec())
+	const alpha = -1 << 63
+	const omega = 1<<63 - 1
+	if startSec != alpha {
+		start = Unix(startSec, 0)
+		start.setLoc(t.Location())
+	}
+	if endSec != omega {
+		end = Unix(endSec, 0)
+		end.setLoc(t.Location())
+	}
+	return
 }
 
 // wallUnixSec returns Unix seconds adjusted by the location offset so

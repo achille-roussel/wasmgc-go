@@ -128,8 +128,17 @@ func parseRFC3339String(s string) (Time, bool) {
 		zoneOffset *= -1
 	}
 	// Instant is wall-clock in the offset zone; Date(..., UTC) treated wall as UTC.
-	// Adjust absolute time so wall in zoneOffset matches parsed fields.
-	t = Date(year, Month(month), day, hour, min, sec, nsec, FixedZone("", zoneOffset))
+	// Prefer Local when the offset matches (TestTimeJSON round-trip).
+	t = Date(year, Month(month), day, hour, min, sec, nsec, UTC)
+	if zoneOffset == 0 {
+		return t, true
+	}
+	t.addSec(-int64(zoneOffset))
+	if _, localoff, _, _, _ := Local.lookup(t.unixSec()); zoneOffset == localoff {
+		t.setLoc(Local)
+	} else {
+		t.setLoc(FixedZone("", zoneOffset))
+	}
 	return t, true
 }
 

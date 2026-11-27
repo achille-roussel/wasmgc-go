@@ -459,23 +459,36 @@ func (fl *funcLower) builtinCopyIR(e *ast.CallExpr, dst, src ir.Expr, dstIR, src
 		Else: &ir.Seq{},
 	})
 
-	copyBody := &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
-		Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
-		// slice/string .data is already (ref $go.bytes); ref.as_non_null
-		// requires (ref null T) and is invalid on a non-null field get.
-		Args: []ir.Expr{
-			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}},
-			&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}},
-			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
-			&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
-			fl.useVar(nV),
-		},
-	}}}}
-	stmts = append(stmts, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(nV)}},
-		Then: &ir.Seq{},
-		Else: copyBody,
-	})
+	// Zero-sized elems (struct{}) use a shared empty/zerobase backing for huge
+	// makes; array.copy would OOB. Length math above is enough (slices.Repeat /
+	// Grow of []struct{}).
+	zeroSize := false
+	if td := fl.mod.LookupType(dstArr); td != nil && td.Kind == ir.TypeArray {
+		if r, ok := td.Elem.(*ir.Ref); ok && strings.HasPrefix(r.Named, "$go.struct.") {
+			if ntd := fl.mod.LookupType(r.Named); ntd != nil && ntd.Kind == ir.TypeStruct && len(ntd.Fields) == 0 {
+				zeroSize = true
+			}
+		}
+	}
+	if !zeroSize {
+		copyBody := &ir.Seq{Stmts: []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{
+			Op: ir.OpArrayCopy, Type: &ir.Ref{Named: dstArr}, Type2: &ir.Ref{Named: srcArr},
+			// slice/string .data is already (ref $go.bytes); ref.as_non_null
+			// requires (ref null T) and is invalid on a non-null field get.
+			Args: []ir.Expr{
+				&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "data", Args: []ir.Expr{fl.useVar(dstV)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: dstIR, Field: "off", Args: []ir.Expr{fl.useVar(dstV)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "data", Args: []ir.Expr{fl.useVar(srcV)}},
+				&ir.Instr{Op: ir.OpStructGet, Type: srcIR, Field: "off", Args: []ir.Expr{fl.useVar(srcV)}},
+				fl.useVar(nV),
+			},
+		}}}}
+		stmts = append(stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fl.useVar(nV)}},
+			Then: &ir.Seq{},
+			Else: copyBody,
+		})
+	}
 	_ = want
 	_ = dstName
 	_ = srcName
