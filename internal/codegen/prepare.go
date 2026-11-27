@@ -189,20 +189,20 @@ func expandStringAssign(m *ir.Module, s *ir.Assign, str string, n *int) ([]ir.St
 
 // EnsureRunExport adds `func export "run" main.run() { call main.main(); return }`
 // when the module has main.main but no run export. Used by execution tests.
+// If the program defines func run (IR main.run), the wrapper is $go.run.
 func EnsureRunExport(m *ir.Module) {
-	for _, f := range m.Funcs {
-		if f.Export == "run" {
-			return
-		}
+	if m.LookupExport("run") != nil {
+		return
 	}
 	if m.LookupFunc("main.main") == nil {
 		return
 	}
-	if m.LookupFunc("main.run") != nil {
-		return
+	entry := ir.RunEntryName
+	if m.LookupFunc(entry) != nil {
+		entry = ir.AltRunEntryName
 	}
 	m.Funcs = append([]*ir.Func{{
-		Name:   "main.run",
+		Name:   entry,
 		Export: "run",
 		Body: &ir.Seq{Stmts: []ir.Stmt{
 			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "main.main"}},

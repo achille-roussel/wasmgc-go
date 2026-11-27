@@ -68,6 +68,27 @@ func (m *Module) LookupFunc(name string) *Func {
 	return nil
 }
 
+// LookupExport returns the first Func with the given Wasm export name, or nil.
+func (m *Module) LookupExport(export string) *Func {
+	if m == nil || export == "" {
+		return nil
+	}
+	for _, f := range m.Funcs {
+		if f.Export == export {
+			return f
+		}
+	}
+	return nil
+}
+
+// RunEntryName is the preferred IR name for the Wasm export "run" wrapper.
+// When the program defines func run (also IR-named main.run), Finish uses
+// AltRunEntryName instead so the user function is not mistaken for the entry.
+const (
+	RunEntryName    = "main.run"
+	AltRunEntryName = "$go.run"
+)
+
 // LookupGlobal returns the Global with the given name, or nil.
 func (m *Module) LookupGlobal(name string) *Global {
 	for _, g := range m.Globals {

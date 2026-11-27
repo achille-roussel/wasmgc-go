@@ -344,6 +344,16 @@ func (fl *funcLower) deferClosure(call *ast.CallExpr) (ir.Expr, []ir.Stmt, error
 				return nil, nil, err
 			}
 			stmts = append(stmts, astmts...)
+			// go/defer x.M with a value receiver must capture a copy so later
+			// mutations of x are invisible to the thunk (bug512).
+			if !ifaceRecv && needsValueClone(recvGo) && !isFreshValueAlloc(rex) {
+				cloned, cstmts, cerr := fl.cloneValue(rex, recvGo)
+				if cerr != nil {
+					return nil, nil, cerr
+				}
+				stmts = append(stmts, cstmts...)
+				rex = cloned
+			}
 			rt := fl.newTemp(recvWant)
 			stmts = append(stmts, fl.assignTemp(rt, rex))
 			// defer x.M() evaluates the method value at the defer site; a nil

@@ -20,6 +20,9 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.BasicLit:
 		return fl.basicLit(e, want)
 	case *ast.Ident:
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
 		return fl.ident(e, want)
 	case *ast.ParenExpr:
 		return fl.expr(e.X, want)
@@ -1668,7 +1671,13 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		if _, ok := obj.(*types.Func); ok {
 			return nil // direct call
 		}
-		if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
+		// Param/var of type Endo (type param ~func(...)): subst before
+		// Underlying so mono instances see a Signature (issue72063).
+		t := obj.Type()
+		if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			t = fl.pkg.subst.Apply(t)
+		}
+		if sig, ok := types.Unalias(t).Underlying().(*types.Signature); ok {
 			return apply(sig)
 		}
 	case *ast.SelectorExpr:
@@ -1725,28 +1734,49 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		}
 	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr, *ast.TypeAssertExpr:
 		// Includes f.(func(T))(x) — Interface().(func(...))(...) and similar.
+		// Also f(h(h))(t) where Fun is a CallExpr of type RecFct (issue72063):
+		// apply mono subst before Underlying so TypeParam ~func(...) becomes Signature.
 		tv := fl.info.Types[fun]
 		if tv.Type == nil {
 			return nil
 		}
-		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+		t := tv.Type
+		if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			t = fl.pkg.subst.Apply(t)
+		}
+		if sig, ok := types.Unalias(t).Underlying().(*types.Signature); ok {
 			return apply(sig)
 		}
 	}
 	return nil
 }
 
-// genericInstFuncValue lowers F[T] / F[T,U] used as a function value
-// (e.g. EqualFunc(m, m, equal[int])), not as a call.
+// genericInstFuncValue lowers a specialized generic function used as a value:
+// F[T] / F[T,U] (EqualFunc(m, m, equal[int])), or a bare name with reverse
+// type inference (f1 = g1 where g1 is generic — issue59338).
 func (fl *funcLower) genericInstFuncValue(e ast.Expr) (ir.Expr, []ir.Stmt, bool, error) {
 	origin := fl.indexExprGenericFunc(e)
+	id := identOf(e)
+	if origin == nil && id != nil {
+		// Bare generic func with Instances from reverse type inference.
+		if obj, ok := fl.info.Uses[id].(*types.Func); ok {
+			o := obj.Origin()
+			if o == nil {
+				o = obj
+			}
+			if sig, _ := o.Type().(*types.Signature); sig != nil && sig.TypeParams() != nil && sig.TypeParams().Len() > 0 {
+				if _, has := fl.info.Instances[id]; has {
+					origin = o
+				}
+			}
+		}
+	}
 	if origin == nil {
 		return nil, nil, false, nil
 	}
 	if fl.pkg.mono == nil {
 		return nil, nil, true, fl.errorf(e, "generic func value without mono table")
 	}
-	id := identOf(e)
 	if id == nil {
 		return nil, nil, true, fl.errorf(e, "generic func value: no function ident")
 	}
@@ -3145,6 +3175,19 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 				if m := concreteMethod(exprTy, fn); m != nil {
 					fn = m
 					sig = fn.Type().(*types.Signature)
+				}
+			}
+			// Generic method with its own type params: Selection.Obj is the
+			// origin (sig still has T). Prefer Instances / mono subst so
+			// args map to concrete types (issue80976).
+			if inst, ok := fl.info.Instances[sel.Sel]; ok {
+				if s, ok := inst.Type.(*types.Signature); ok {
+					sig = s
+				}
+			}
+			if sig != nil && len(fl.pkg.subst) > 0 {
+				if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+					sig = s
 				}
 			}
 			recvWant, err := fl.mapType(sig.Recv().Type())

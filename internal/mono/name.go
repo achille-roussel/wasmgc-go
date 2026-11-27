@@ -70,6 +70,12 @@ func typeArgsKey(args []types.Type) string {
 }
 
 // FuncIRName returns the IR name for a specialized function or method.
+//
+// Type-arg suffixes attach to the generic named receiver (List$int.Len) when
+// the receiver type is generic. For methods that themselves have type
+// parameters on a non-generic receiver ((*TypeMap).Set[T]), the suffix
+// attaches to the method name (main.(*TypeMap).Set$main.res) so a type whose
+// name ends with the method name (HashSet) cannot be misparsed (issue80976).
 func FuncIRName(origin *types.Func, args []types.Type) string {
 	sig := origin.Type().(*types.Signature)
 	pkg := "main"
@@ -88,16 +94,25 @@ func FuncIRName(origin *types.Func, args []types.Type) string {
 			rt = p.Elem()
 		}
 		named, _ := types.Unalias(rt).(*types.Named)
+		recvGeneric := named != nil && named.Origin().TypeParams().Len() > 0
 		tname := "T"
 		if named != nil {
-			tname = named.Obj().Name() + suffix + LocalTypeSuffix(named.Obj())
-		} else {
-			tname = tname + suffix
+			tname = named.Obj().Name()
+			if recvGeneric {
+				tname += suffix
+			}
+			tname += LocalTypeSuffix(named.Obj())
+		} else if recvGeneric {
+			tname += suffix
+		}
+		methodSuffix := ""
+		if !recvGeneric {
+			methodSuffix = suffix
 		}
 		if ptr {
-			return pkg + ".(*" + tname + ")." + origin.Name()
+			return pkg + ".(*" + tname + ")." + origin.Name() + methodSuffix
 		}
-		return pkg + "." + tname + "." + origin.Name()
+		return pkg + "." + tname + "." + origin.Name() + methodSuffix
 	}
 	return pkg + "." + origin.Name() + suffix
 }

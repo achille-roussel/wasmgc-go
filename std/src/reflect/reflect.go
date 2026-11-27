@@ -1461,11 +1461,23 @@ type rtype struct {
 	str  string
 }
 
+// wrapCache interns *rtype by underlying *runtime.Rtype so Type values
+// compare equal with == (nested.go, TypeOf identity). Slice not map: hello
+// must not pull hmap via reflect.
+var wrapCache []*rtype
+
 func wrap(t *runtime.Rtype) *rtype {
 	if t == nil {
 		return nil
 	}
-	return &rtype{rt: t}
+	for _, r := range wrapCache {
+		if r != nil && r.rt == t {
+			return r
+		}
+	}
+	r := &rtype{rt: t}
+	wrapCache = append(wrapCache, r)
+	return r
 }
 
 func asRtype(t Type) *rtype {

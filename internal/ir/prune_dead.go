@@ -694,7 +694,7 @@ func PruneEmptyInits(m *Module) {
 	if len(empty) == 0 {
 		return
 	}
-	run := m.LookupFunc("main.run")
+	run := m.LookupExport("run")
 	if run == nil || run.Body == nil {
 		return
 	}

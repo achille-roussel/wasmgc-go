@@ -329,9 +329,11 @@ func typeIfaceRef() ir.Type {
 }
 
 func (g *gen) wrapRunForUnrecovered() {
-	// Goroutine entries that can throw $go.panic: main.run and _sched.
+	// Goroutine entries that can throw $go.panic: export "run" and _sched.
 	// An unrecovered panic in either exits 2 with "panic: ..." (04).
-	g.wrapEntryForUnrecovered("main.run")
+	if run := g.m.LookupExport("run"); run != nil {
+		g.wrapEntryForUnrecovered(run.Name)
+	}
 	g.wrapEntryForUnrecovered("runtime.sched")
 }
 
