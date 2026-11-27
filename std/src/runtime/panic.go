@@ -38,6 +38,13 @@ func panicNil() {
 	throwPanic(panicErr("runtime error: invalid memory address or nil pointer dereference"))
 }
 
+// panicWrapNil reports a value-method call through a nil *T interface
+// concrete (fixedbugs/issue19040). Matches gc runtime.panicwrap text:
+// "value method pkg.T.F called using nil *T pointer".
+func panicWrapNil(method, typ string) {
+	throwPanic(panicErr("value method " + method + " called using nil " + typ + " pointer"))
+}
+
 func panicDivide() {
 	throwPanic(panicErr("runtime error: integer divide by zero"))
 }
@@ -52,6 +59,19 @@ func panicUncomparable() {
 
 func panicTypeAssert() {
 	throwPanic(panicErr("interface conversion: type assertion failed"))
+}
+
+// panicTypeAssertNil reports x.(T) when x is a nil interface.
+// Matches gc: "interface conversion: SRC is nil, not WANT"
+// (typeparam/mdempsky/16 wants SRC like "interface { T() main.T }").
+func panicTypeAssertNil(src, want string) {
+	if src == "" {
+		src = "interface"
+	}
+	if want == "" {
+		want = "?"
+	}
+	throwPanic(panicErr("interface conversion: " + src + " is nil, not " + want))
 }
 
 // panicTypeAssertTypes reports a failed concrete type assertion.
@@ -140,8 +160,18 @@ func panicTypeAssertTypes(kind int32, want string) {
 		}
 	}
 	msg := "interface conversion: " + got + ", not " + wantDisp
-	// issue26094: same name from different scopes.
-	if len(wantDisp) > 0 && wantDisp[0] >= 'A' && wantDisp[0] <= 'Z' {
+	// issue26094: same name from different scopes. Check the type name
+	// (last segment), not the package prefix — wantDisp may be "main.T".
+	name := wantDisp
+	if i := len(name) - 1; i >= 0 {
+		for j := i; j >= 0; j-- {
+			if name[j] == '.' {
+				name = name[j+1:]
+				break
+			}
+		}
+	}
+	if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
 		if got == "struct" || got == "ptr" {
 			msg += ": types from different scopes"
 		}

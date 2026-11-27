@@ -84,9 +84,9 @@ func (g *gen) scanEHNeeds() bool {
 			case "runtime.throwPanic", "runtime.deferRun", "runtime.gorecover",
 				"runtime.unrecoveredPanic", "runtime.panicIndex", "runtime.panicIndexU",
 				"runtime.panicBounds", "runtime.panicSliceB",
-				"runtime.panicNil", "runtime.panicDivide", "runtime.panicNegativeShift",
+				"runtime.panicNil", "runtime.panicWrapNil", "runtime.panicDivide", "runtime.panicNegativeShift",
 				"runtime.panicUncomparable", "runtime.panicTypeAssert", "runtime.panicTypeAssertTypes",
-				"runtime.panicTypeAssertMissing", "runtime.panicrangestate":
+				"runtime.panicTypeAssertNil", "runtime.panicTypeAssertMissing", "runtime.panicrangestate":
 				need = true
 			}
 		})
