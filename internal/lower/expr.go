@@ -3446,6 +3446,17 @@ func (fl *funcLower) panicIfNilRef(v ir.Expr) ir.Stmt {
 // index) so promoted methods receive the embedded field, not the outer value.
 func (fl *funcLower) methodRecvSel(x ast.Expr, sel *types.Selection, recvType types.Type, want ir.Type) (ir.Expr, []ir.Stmt, error) {
 	idx := sel.Index()
+	// After mono, type-param selections may omit embedding indices (T.M where
+	// T became struct{MyMer}). Rebuild from the concrete expression type.
+	if len(idx) <= 1 {
+		if xt := fl.typeOf(x); xt != nil {
+			if fn, ok := sel.Obj().(*types.Func); ok && fn != nil {
+				if _, index, _ := types.LookupFieldOrMethod(xt, true, fn.Pkg(), fn.Name()); len(index) > 1 {
+					idx = index
+				}
+			}
+		}
+	}
 	if len(idx) <= 1 {
 		// Method of X itself (no embedding path).
 		return fl.methodRecv(x, recvType, want)

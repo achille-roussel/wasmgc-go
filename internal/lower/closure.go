@@ -1036,7 +1036,19 @@ func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error
 		}
 	}
 	declRecv := fn.Type().(*types.Signature).Recv().Type()
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		declRecv = fl.pkg.subst.Apply(declRecv)
+	}
 	idx := sel.Index()
+	// After mono, type-param MethodExpr Index may omit embedding (T.M where T
+	// was iface-constrained / became struct{Mer} or struct{MyMer}). Rebuild
+	// from the concrete expr recv so the wrapper walks the embed path
+	// (typeparam/mdempsky/13).
+	if !isIface(recvTy) && len(idx) <= 1 {
+		if _, index, _ := types.LookupFieldOrMethod(recvTy, true, fn.Pkg(), fn.Name()); len(index) > 1 {
+			idx = index
+		}
+	}
 	// Identical recv and no embedding path → call the method directly as a
 	// func value. Promoted methods (struct{T}.m / (*Outer).M) still need a
 	// wrapper that walks Selection.Index even when types look related.
@@ -1242,7 +1254,18 @@ func (l *pkgLower) emitMethodExprAdaptedWrapper(wrapper string, fn *types.Func, 
 		}
 		results = append(results, ty)
 	}
-	call := &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	var call ir.Expr
+	if isIface(declRecv) {
+		// Embedded interface method: dispatch via itab, not a missing
+		// main.Mer.M concrete function (typeparam/mdempsky/13).
+		var res ir.Type
+		if len(results) > 0 {
+			res = results[0]
+		}
+		call = makeIfaceCall(fn, declRecv, callArgs, res)
+	} else {
+		call = &ir.Instr{Op: ir.OpCall, Func: methodIRName(fn), Args: callArgs}
+	}
 	body := wrapperCallBody(call, results)
 	if len(adaptStmts) > 0 {
 		seq, ok := body.(*ir.Seq)
