@@ -1,1 +1,1 @@
-winbatch needs host FS; issue19113 needs reflect.Call for concrete funcs — exposed once Exit/shift panics work; compensated by issue76008 plus stdlib time/fmt/json unskips.
+issue11256 Goexit/Sleep timing deadlock without stack barriers; exposed when time.unitMap→unitLookup DCE shrinks the binary (Wasm GC has no stack barriers).
