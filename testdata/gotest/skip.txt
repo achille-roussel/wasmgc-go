@@ -39,7 +39,6 @@ fixedbugs/issue17381.go — unsupported: unsafe
 fixedbugs/issue18149.go — compile error: codegen
 fixedbugs/issue18636.go — wasm module missing export run (large stack array)
 fixedbugs/issue19078.go — unsupported: unsafe
-fixedbugs/issue19113.go — reflect.Value.Call/Convert stubs: concrete funcs no-op (MakeFunc only); negative-shift Call never panics
 fixedbugs/issue21221.go — unsupported: unsafe
 fixedbugs/issue21879.go — output mismatch: empty runtime.Caller/FuncForPC output
 fixedbugs/issue22083.go — output mismatch: stub runtime/debug.Stack

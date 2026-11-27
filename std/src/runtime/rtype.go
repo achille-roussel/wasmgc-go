@@ -299,3 +299,15 @@ func ReflectMethodValue(t *Rtype, i int, recv unsafe.Pointer) unsafe.Pointer
 // Value.Interface().(func…) type-asserts. Body-less: desc fills for func()
 // and func(func()) shapes used by GOROOT recover.go.
 func ReflectMakeFuncClos(t *Rtype, impl unsafe.Pointer) unsafe.Pointer
+
+// ReflectFuncNumIn reads $go.extra.func.numIn.
+func ReflectFuncNumIn(extra unsafe.Pointer) int
+
+// ReflectFuncNumOut reads $go.extra.func.numOut.
+func ReflectFuncNumOut(extra unsafe.Pointer) int
+
+// ReflectFuncIn calls extra.inType(i).
+func ReflectFuncIn(extra unsafe.Pointer, i int) *Rtype
+
+// ReflectFuncOut calls extra.outType(i).
+func ReflectFuncOut(extra unsafe.Pointer, i int) *Rtype
