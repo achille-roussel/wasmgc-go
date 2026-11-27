@@ -1551,10 +1551,16 @@ func (fl *funcLower) syncCellsToPlain() []ir.Stmt {
 	return out
 }
 
-// syncPlainToCells copies each plain local into its capture cell. Needed before
-// reading through cells when the plain was written without assignLocalSync
-// (e.g. i := 1 before assign-form `for i, x[i] = range` — cellInit at function
-// start captured the zero value).
+// syncPlainToCells copies dirty plain locals into their capture cells. Needed
+// before reading through cells when the plain was written without
+// assignLocalSync (e.g. i := 1 before assign-form `for i, x[i] = range` —
+// cellInit at function start captured the zero value).
+//
+// Only sync when plainDirty: unconditional plain→cell would wipe cell updates
+// from the previous range-body iteration (issue5373: `for a[f()] = range` where
+// f closes over x and the body also calls f — sync at the next key eval must
+// not restore a stale plain over the body's cell write). Same rule as
+// buildClosure's capture sync.
 func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 	if fl.cells == nil {
 		return nil
@@ -1563,6 +1569,9 @@ func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 	for obj, cv := range fl.cells {
 		v := fl.vars[obj]
 		if v == nil || v == cv {
+			continue
+		}
+		if !fl.plainDirty[obj] {
 			continue
 		}
 		cellTy, ok := cv.Typ.(*ir.Ref)
@@ -1575,6 +1584,7 @@ func (fl *funcLower) syncPlainToCells() []ir.Stmt {
 			Field: "v",
 			Args:  []ir.Expr{fl.useVar(cv), fl.useVar(v)},
 		}})
+		delete(fl.plainDirty, obj)
 	}
 	return out
 }
