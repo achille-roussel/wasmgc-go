@@ -260,11 +260,21 @@ func (g *gen) scanModule() {
 					g.needTypeKey(strings.TrimPrefix(in.Global, "$go.type."))
 				}
 			case ir.OpIfaceAssert:
-				if inLive && in.Global != "" {
-					g.needTypeKey(in.Global)
+				// Register iface→iface assert targets from every body, not only
+				// Call-reachable ones. Formatter.Format is reached via itab
+				// RefFunc (DCE keeps it); reachableFuncs does not follow itab
+				// global inits, so Format looks "dead" here. Gating asserts on
+				// inLive dropped io.Writer and skipped Writer/@.*fmt.pp
+				// synthesis — State→Writer in Format then panicked
+				// "missing method Writer". needTypeKey stays live-only so
+				// ReflectTypeName stays lean (fmt hello size).
+				if in.Global != "" {
 					if strings.HasPrefix(in.Str, "iface") {
 						g.asserts[in.Global] = true
 						g.ifaces[in.Global] = true
+					}
+					if inLive {
+						g.needTypeKey(in.Global)
 					}
 				}
 			case ir.OpChanRecv, ir.OpChanSend:
