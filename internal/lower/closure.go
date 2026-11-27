@@ -1013,31 +1013,35 @@ func (fl *funcLower) methodExpr(sel *types.Selection) (ir.Expr, []ir.Stmt, error
 	if m := concreteMethod(recvTy, fn); m != nil {
 		fn = m
 	}
+	declRecv := fn.Type().(*types.Signature).Recv().Type()
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		declRecv = fl.pkg.subst.Apply(declRecv)
+	}
 	if fl.pkg != nil && fl.pkg.mono != nil {
 		origin := fn.Origin()
 		if origin == nil {
 			origin = fn
 		}
 		if methodNeedsMono(origin) {
-			recv := fn.Type().(*types.Signature).Recv().Type()
-			if len(fl.pkg.subst) > 0 {
-				recv = fl.pkg.subst.Apply(recv)
-			}
-			if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 {
+			recv := declRecv
+			if n := namedTypeOf(recvTy); n != nil && n.TypeArgs().Len() > 0 && types.Identical(recvTy, declRecv) {
 				recv = recvTy
 			}
 			inst, err := fl.pkg.mono.EnsureMethod(origin, recv)
 			if err != nil {
 				return nil, nil, err
 			}
-			if inst != nil {
+			// Only use the mono func value when the MethodExpr receiver
+			// matches the declared recv. (*U).M must still adapt *U→U
+			// (typeparam/mdempsky/14).
+			if inst != nil && types.Identical(recvTy, declRecv) && len(sel.Index()) <= 1 {
 				return fl.monoInstFuncValue(inst)
 			}
+			if inst != nil && inst.Sig != nil && inst.Sig.Recv() != nil {
+				declRecv = inst.Sig.Recv().Type()
+				fn = types.NewFunc(fn.Pos(), fn.Pkg(), fn.Name(), inst.Sig)
+			}
 		}
-	}
-	declRecv := fn.Type().(*types.Signature).Recv().Type()
-	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
-		declRecv = fl.pkg.subst.Apply(declRecv)
 	}
 	idx := sel.Index()
 	// After mono, type-param MethodExpr Index may omit embedding (T.M where T
