@@ -264,6 +264,19 @@ func (v Value) Type() Type {
 
 func (v Value) IsValid() bool { return v.typ != nil }
 
+// ValueError is the error returned by methods on an invalid Value.
+type ValueError struct {
+	Method string
+	Kind   Kind
+}
+
+func (e *ValueError) Error() string {
+	if e.Kind == Invalid {
+		return "reflect: call of " + e.Method + " on zero Value"
+	}
+	return "reflect: call of " + e.Method + " on " + e.Kind.String() + " Value"
+}
+
 func (v Value) IsNil() bool {
 	if v.typ == nil {
 		return false
@@ -744,11 +757,14 @@ func (v Value) setSlot(boxed unsafe.Pointer) {
 	case Struct:
 		// Whole addressable struct from New().Elem(): shallow-copy fields
 		// into the existing object (encoding/json Marshal needs this).
+		// Same-type assign must copy unexported fields too (time.Time
+		// wall/ext/loc); skip the CanSet/flagRO gate used for Field().Set.
 		src := Value{typ: v.typ, data: boxed}
 		n := v.NumField()
 		for i := 0; i < n; i++ {
 			df := v.Field(i)
-			if !df.CanSet() {
+			df.flag &^= flagRO
+			if df.flag&flagAddr == 0 {
 				continue
 			}
 			df.Set(src.Field(i))
@@ -954,7 +970,50 @@ func (v Value) Clear() {
 		runtime.ReflectMapClear(v.dataWord())
 	}
 }
-func (v Value) IsZero() bool { return !v.IsValid() }
+// IsZero reports whether v is the zero value for its type.
+// Panics if v is the zero Value (IsValid is false), matching upstream.
+func (v Value) IsZero() bool {
+	if !v.IsValid() {
+		panic(&ValueError{"reflect.Value.IsZero", Invalid})
+	}
+	switch v.Kind() {
+	case Bool:
+		return !v.Bool()
+	case Int, Int8, Int16, Int32, Int64:
+		return v.Int() == 0
+	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
+		return v.Uint() == 0
+	case Float32, Float64:
+		return v.Float() == 0
+	case Complex64, Complex128:
+		return v.Complex() == 0
+	case Array:
+		n := v.Len()
+		for i := 0; i < n; i++ {
+			if !v.Index(i).IsZero() {
+				return false
+			}
+		}
+		return true
+	case Chan, Func, Interface, Map, Pointer, Slice, UnsafePointer:
+		return v.IsNil()
+	case String:
+		return v.Len() == 0
+	case Struct:
+		n := v.NumField()
+		for i := 0; i < n; i++ {
+			if v.Type().Field(i).Name == "_" {
+				continue
+			}
+			if !v.Field(i).IsZero() {
+				return false
+			}
+		}
+		return true
+	default:
+		panic(&ValueError{"reflect.Value.IsZero", v.Kind()})
+	}
+}
 func (v Value) SetZero() {
 	if !v.CanSet() {
 		return
@@ -1517,11 +1576,13 @@ func (t *rtype) Implements(u Type) bool {
 	if t.rt == nil {
 		return false
 	}
-	// Interface → interface: identity for now (method-set subset not wired).
-	// Needed so json.Marshaler.Implements(Marshaler) is true and v2's
-	// makeInterfaceArshaler sets whichMarshaler for typed-nil MarshalJSON.
+	// Interface → interface: same descriptor, or method-set via ReflectImplements
+	// (json omitzero: test isZeroer vs encoding/json/v2.isZeroer).
 	if t.Kind() == Interface {
-		return t.rt == ur.rt
+		if t.rt == ur.rt {
+			return true
+		}
+		return runtime.ReflectImplements(t.rt, ur.rt)
 	}
 	return runtime.ReflectImplements(t.rt, ur.rt)
 }

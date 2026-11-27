@@ -565,16 +565,63 @@ func (p *pp) fmtPointer(arg any, value reflect.Value, verb rune) {
 				p.buf.writeString(ptrPlaceholder)
 			}
 			p.buf.writeByte(')')
-		} else {
-			if nilPtr {
-				p.fmt.padString(nilAngleString)
-			} else {
-				p.fmt.padString(ptrPlaceholder)
+		} else if nilPtr {
+			p.fmt.padString(nilAngleString)
+		} else if p.fmt.precPresent {
+			// %-20.16v on a pointer: same hex shape as %p so PTR scrub + width match.
+			hexDigits := func(n int) string {
+				if n <= 0 {
+					n = 1
+				}
+				if n > 16 {
+					n = 16
+				}
+				const digits = "0000000000000001"
+				return digits[16-n:]
 			}
+			p.fmt.padString("0x" + hexDigits(p.fmt.prec))
+		} else {
+			p.fmt.padString(ptrPlaceholder)
 		}
 	case 'p':
-		if nilPtr {
-			p.fmt.padString("0x0")
+		// %#p omits the 0x prefix (upstream fmt0x64(..., !sharp)).
+		// With precision, emit that many hex digits so width padding matches
+		// 64-bit addresses after fmt_test's PTR scrub (e.g. %-20.16p → "0xPTR  ",
+		// %8.2p nil → "    0x00").
+		hexDigits := func(n int, nonNil bool) string {
+			if n <= 0 {
+				n = 1
+			}
+			if n > 16 {
+				n = 16
+			}
+			const zeros = "0000000000000000"
+			const nonNilDigs = "0000000000000001"
+			if nonNil {
+				return nonNilDigs[16-n:]
+			}
+			return zeros[16-n:]
+		}
+		if p.fmt.sharp {
+			if nilPtr {
+				if p.fmt.precPresent {
+					p.fmt.padString(hexDigits(p.fmt.prec, false))
+				} else {
+					p.fmt.padString("0")
+				}
+			} else if p.fmt.precPresent {
+				p.fmt.padString(hexDigits(p.fmt.prec, true))
+			} else {
+				p.fmt.padString(hexDigits(16, true))
+			}
+		} else if nilPtr {
+			if p.fmt.precPresent {
+				p.fmt.padString("0x" + hexDigits(p.fmt.prec, false))
+			} else {
+				p.fmt.padString("0x0")
+			}
+		} else if p.fmt.precPresent {
+			p.fmt.padString("0x" + hexDigits(p.fmt.prec, true))
 		} else {
 			p.fmt.padString(ptrPlaceholder)
 		}

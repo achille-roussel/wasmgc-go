@@ -325,12 +325,57 @@ func (g *gen) closeLiveConcreteFields() {
 		queue = append(queue, pair{key: key, typ: typ})
 		seen[key] = true
 	}
+	add := func(ft types.Type) {
+		fk := TypeKey(ft)
+		if fk == "" || seen[fk] {
+			return
+		}
+		seen[fk] = true
+		g.liveAnyConcretes[fk] = true
+		g.needTypeKey(fk)
+		if tr := g.types[fk]; tr != nil && tr.goType == nil {
+			tr.goType = ft
+		}
+		queue = append(queue, pair{key: fk, typ: ft})
+		// Also the pointer form when the field is not already a pointer,
+		// matching how reflect may surface addressable struct fields.
+		if _, isPtr := types.Unalias(ft).(*types.Pointer); !isPtr {
+			pt := types.NewPointer(ft)
+			pk := TypeKey(pt)
+			if pk != "" && !seen[pk] {
+				seen[pk] = true
+				g.liveAnyConcretes[pk] = true
+				g.needTypeKey(pk)
+				if tr := g.types[pk]; tr != nil && tr.goType == nil {
+					tr.goType = pt
+				}
+			}
+		}
+	}
 	for len(queue) > 0 {
 		p := queue[0]
 		queue = queue[1:]
 		t := types.Unalias(p.typ)
 		if ptr, ok := t.(*types.Pointer); ok {
 			t = types.Unalias(ptr.Elem())
+		}
+		// Slice/array elems: Index().Interface().(J) (fmt []byteFormatter).
+		switch u := t.(type) {
+		case *types.Slice:
+			add(u.Elem())
+			continue
+		case *types.Array:
+			add(u.Elem())
+			continue
+		case *types.Named:
+			switch uu := u.Underlying().(type) {
+			case *types.Slice:
+				add(uu.Elem())
+				continue
+			case *types.Array:
+				add(uu.Elem())
+				continue
+			}
 		}
 		var st *types.Struct
 		switch u := t.(type) {
@@ -343,32 +388,7 @@ func (g *gen) closeLiveConcreteFields() {
 			continue
 		}
 		for i := 0; i < st.NumFields(); i++ {
-			ft := st.Field(i).Type()
-			fk := TypeKey(ft)
-			if fk == "" || seen[fk] {
-				continue
-			}
-			seen[fk] = true
-			g.liveAnyConcretes[fk] = true
-			g.needTypeKey(fk)
-			if tr := g.types[fk]; tr != nil && tr.goType == nil {
-				tr.goType = ft
-			}
-			queue = append(queue, pair{key: fk, typ: ft})
-			// Also the pointer form when the field is not already a pointer,
-			// matching how reflect may surface addressable struct fields.
-			if _, isPtr := types.Unalias(ft).(*types.Pointer); !isPtr {
-				pt := types.NewPointer(ft)
-				pk := TypeKey(pt)
-				if pk != "" && !seen[pk] {
-					seen[pk] = true
-					g.liveAnyConcretes[pk] = true
-					g.needTypeKey(pk)
-					if tr := g.types[pk]; tr != nil && tr.goType == nil {
-						tr.goType = pt
-					}
-				}
-			}
+			add(st.Field(i).Type())
 		}
 	}
 }

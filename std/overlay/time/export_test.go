@@ -68,3 +68,62 @@ var StdChunkNames = map[int]string{
 	stdFracSecond9 | 8<<stdArgShift: ".99999999",
 	stdFracSecond9 | 9<<stdArgShift: ".999999999",
 }
+
+var (
+	ParseTimeZone = parseTimeZone
+	ErrLocation   = errLocation
+	Tzset         = tzset
+	TzsetName     = tzsetName
+	TzsetOffset   = tzsetOffset
+)
+
+type RuleKind int
+
+const (
+	RuleJulian       = RuleKind(ruleJulian)
+	RuleDOY          = RuleKind(ruleDOY)
+	RuleMonthWeekDay = RuleKind(ruleMonthWeekDay)
+)
+
+type Rule struct {
+	Kind RuleKind
+	Day  int
+	Week int
+	Mon  int
+	Time int
+}
+
+func TzsetRule(s string) (Rule, string, bool) {
+	r, rs, ok := tzsetRule(s)
+	return Rule{
+		Kind: RuleKind(r.kind),
+		Day:  r.day,
+		Week: r.week,
+		Mon:  r.mon,
+		Time: r.time,
+	}, rs, ok
+}
+
+// Zoneinfo test stubs (no real zoneinfo zip in the thin rewrite).
+func ResetZoneinfoForTesting() {}
+func DisablePlatformSources() (undo func()) {
+	return func() {}
+}
+
+// Mono stubs: wall high bit unused in thin rewrite; expose so mono_test /
+// TestSub link. setMono/mono are no-ops until monotonic clock lands.
+func (t *Time) setMono(m int64) {}
+func (t Time) mono() int64      { return 0 }
+
+var (
+	SetMono = (*Time).setMono
+	GetMono = (*Time).mono
+)
+
+const UnixToInternal = absoluteToInternal
+
+var (
+	MinMonoTime           = Time{wall: hasExt, ext: -1 << 63, loc: UTC}
+	MaxMonoTime           = Time{wall: hasExt, ext: 1<<63 - 1, loc: UTC}
+	NotMonoNegativeTime   = Time{wall: 0, ext: -1<<63 + 50}
+)

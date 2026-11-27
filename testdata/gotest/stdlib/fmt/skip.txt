@@ -1,4 +1,3 @@
 # fmt — wasmgc-go test skips
 TestCountMallocs — alloc-counting: testing.AllocsPerRun always 0 under host GC
 TestScanInts — scan/regexp, tables, or reflect gaps
-TestSprintf — scan/regexp, tables, or reflect gaps
