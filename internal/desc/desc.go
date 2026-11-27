@@ -129,6 +129,9 @@ type gen struct {
 	// emitting tracks type globals currently being built so recursive /
 	// cyclic types (type T []T) do not re-enter emitTypeGlobal forever.
 	emitting map[string]bool
+	// cached needsFuncParamAPI (NumIn/In reachable via real call).
+	funcParamAPI    bool
+	funcParamAPISet bool
 }
 
 func (g *gen) ensurePreludeShapes() {
@@ -1003,6 +1006,31 @@ func (g *gen) emitTypeGlobal(tr *typeRec) error {
 				}
 			}
 		}
+	case KindFunc:
+		// Param/result descriptors must exist before emitParamTypeFunc's
+		// global.get (typeparam/issue48645b: func(int) bool → $go.type.int).
+		if tr.goType != nil {
+			if sig, ok := tr.goType.Underlying().(*types.Signature); ok {
+				var deps []types.Type
+				if sig.Params() != nil {
+					for i := 0; i < sig.Params().Len(); i++ {
+						deps = append(deps, sig.Params().At(i).Type())
+					}
+				}
+				if sig.Results() != nil {
+					for i := 0; i < sig.Results().Len(); i++ {
+						deps = append(deps, sig.Results().At(i).Type())
+					}
+				}
+				for _, t := range deps {
+					if dep := g.types[TypeKey(t)]; dep != nil {
+						if err := g.emitTypeGlobal(dep); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 	}
 	// Keep $go.type at 4 fields (empty_main size budget). Heavy metadata in $extra.
 	// Extra structs subtype $go.object — pass them directly (no ref.cast: Wasm
@@ -1088,6 +1116,34 @@ func (g *gen) discoverExtraDeps(tr *typeRec) {
 			}
 			if t := g.types[ek]; t != nil && t.goType == nil {
 				t.goType = m.Elem()
+			}
+		}
+	case KindFunc:
+		// Only pull param/result descriptors into the universe when NumIn/In
+		// are actually used; otherwise fmt hello grows for unused func types.
+		if !g.needsFuncParamAPI() {
+			return
+		}
+		if sig, ok := tr.goType.Underlying().(*types.Signature); ok {
+			if sig.Params() != nil {
+				for i := 0; i < sig.Params().Len(); i++ {
+					pt := sig.Params().At(i).Type()
+					fk := TypeKey(pt)
+					g.needTypeKey(fk)
+					if t := g.types[fk]; t != nil && t.goType == nil {
+						t.goType = pt
+					}
+				}
+			}
+			if sig.Results() != nil {
+				for i := 0; i < sig.Results().Len(); i++ {
+					rt := sig.Results().At(i).Type()
+					fk := TypeKey(rt)
+					g.needTypeKey(fk)
+					if t := g.types[fk]; t != nil && t.goType == nil {
+						t.goType = rt
+					}
+				}
 			}
 		}
 	}

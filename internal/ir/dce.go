@@ -208,6 +208,9 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 		case OpRefFunc:
 			// Itab RefFunc alone must not keep Call alive — its concrete-func
 			// type-switch pulls many signatures into fmt hello (issue19113).
+			// Unused $go.extra.func / inType helpers are omitted at emit time
+			// (needsFuncParamAPI) rather than skipped here — live type inits
+			// that do embed ref.func $go.func.inType.* must keep them.
 			if !isReflectCallAPI(e.Func) {
 				markFn(e.Func)
 			}

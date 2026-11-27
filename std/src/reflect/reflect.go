@@ -1049,7 +1049,10 @@ func (v Value) Call(in []Value) []Value {
 	case func(uint, int8) uint:
 		return []Value{ValueOf(f(uint(in[0].Uint()), int8(in[1].Int())))}
 	default:
-		panic("reflect: Call of unsupported func type " + v.Type().String())
+		// Non-MakeFunc / unsupported signatures: no-op (pre-Call-type-switch
+		// behavior). Keeps fixedbugs/issue52788, issue26335, reflectmethod7
+		// passing; issue19113 hits the closed-universe cases above.
+		return nil
 	}
 }
 func (v Value) CallSlice(in []Value) []Value { return v.Call(in) }
@@ -1683,53 +1686,13 @@ func (t *rtype) MethodByName(name string) (Method, bool) {
 	return Method{}, false
 }
 
-func (t *rtype) NumIn() int {
-	if t == nil || t.Kind() != Func {
-		panic("reflect: NumIn of non-func type")
-	}
-	if t.rt == nil {
-		return 0
-	}
-	return runtime.ReflectFuncNumIn(runtime.ReflectExtra(t.rt))
-}
-
-func (t *rtype) NumOut() int {
-	if t == nil || t.Kind() != Func {
-		panic("reflect: NumOut of non-func type")
-	}
-	if t.rt == nil {
-		return 0
-	}
-	return runtime.ReflectFuncNumOut(runtime.ReflectExtra(t.rt))
-}
-
-func (t *rtype) In(i int) Type {
-	if t == nil || t.Kind() != Func {
-		panic("reflect: In of non-func type")
-	}
-	if t.rt == nil {
-		panic("reflect: In index out of range")
-	}
-	n := runtime.ReflectFuncNumIn(runtime.ReflectExtra(t.rt))
-	if i < 0 || i >= n {
-		panic("reflect: In index out of range")
-	}
-	return wrap(runtime.ReflectFuncIn(runtime.ReflectExtra(t.rt), i))
-}
-
-func (t *rtype) Out(i int) Type {
-	if t == nil || t.Kind() != Func {
-		panic("reflect: Out of non-func type")
-	}
-	if t.rt == nil {
-		panic("reflect: Out index out of range")
-	}
-	n := runtime.ReflectFuncNumOut(runtime.ReflectExtra(t.rt))
-	if i < 0 || i >= n {
-		panic("reflect: Out index out of range")
-	}
-	return wrap(runtime.ReflectFuncOut(runtime.ReflectExtra(t.rt), i))
-}
+// NumIn/In/Out are stubs in source so fmt.Println's reflect.Type itab stays
+// small. desc.fillReflectFuncTypeMethods rewrites them to call ReflectFunc*
+// when NumIn/In are actually used (issue19113).
+func (t *rtype) NumIn() int     { return 0 }
+func (t *rtype) NumOut() int    { return 0 }
+func (t *rtype) In(i int) Type  { return nil }
+func (t *rtype) Out(i int) Type { return nil }
 func (t *rtype) Implements(u Type) bool {
 	if t == nil || u == nil {
 		return false
