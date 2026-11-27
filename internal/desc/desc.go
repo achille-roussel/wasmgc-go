@@ -94,6 +94,10 @@ type typeRec struct {
 	name       string
 	comparable bool
 	ptrElem    string // type key of element for pointers
+	// descOK: emit $go.type.* + ReflectTypeName/Implements. Cleared for keys
+	// registered only from dead OpIfaceCall (lookupIface / itabtype still
+	// need the entry; PruneUnusedTypes drops the itabtype after DCE).
+	descOK bool
 }
 
 type itabRec struct {
@@ -271,16 +275,17 @@ func (g *gen) scanModule() {
 				if in.Str == "iface.eq" {
 				}
 			case ir.OpIfaceCall:
-				// Always record iface keys + needTypeKey for itabtype emission:
-				// RuntimeOps expands OpIfaceCall in dead bodies too, and IR
-				// verify rejects ref.cast to missing $go.itabtype.* (io.RuneReader
-				// via regexp; mono Function[Nil[bool],any] in typeparam/cons).
-				// needTypeKey here is the iface key only (not concrete type:
-				// strings), so ReflectTypeName bloat from dead iface.make does
-				// not apply.
+				// Always record iface keys for itabtype emission (RuntimeOps
+				// expands before DCE: cons Function[Nil[bool],…], fmt Timeout).
+				// Live calls get full descriptors; dead calls only register for
+				// lookupIface — ReflectTypeName/Implements stay lean (fmt size).
 				if in.Global != "" {
 					g.ifaces[in.Global] = true
-					g.needTypeKey(in.Global)
+					if inLive {
+						g.needTypeKey(in.Global)
+					} else {
+						g.needTypeKeyLookup(in.Global)
+					}
 				}
 			case ir.OpCall:
 				if inLive && in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
@@ -414,6 +419,25 @@ func (g *gen) needTypeKey(key string) {
 	if key == "" {
 		return
 	}
+	if tr, ok := g.types[key]; ok {
+		tr.descOK = true
+		return
+	}
+	g.types[key] = &typeRec{
+		key:    key,
+		global: "$go.type." + key,
+		id:     -1,
+		descOK: true,
+	}
+}
+
+// needTypeKeyLookup registers key for lookupIface / itabtype without
+// ReflectTypeName or $go.type.* emission (dead OpIfaceCall).
+func (g *gen) needTypeKeyLookup(key string) {
+	key = strings.TrimPrefix(key, "$go.type.")
+	if key == "" {
+		return
+	}
 	if _, ok := g.types[key]; ok {
 		return
 	}
@@ -421,6 +445,7 @@ func (g *gen) needTypeKey(key string) {
 		key:    key,
 		global: "$go.type." + key,
 		id:     -1,
+		descOK: false,
 	}
 }
 
@@ -991,6 +1016,9 @@ func (g *gen) emitAll() error {
 		before := len(keys)
 		for _, k := range keys {
 			tr := g.types[k]
+			if !tr.descOK {
+				continue
+			}
 			if tr.id < 0 {
 				tr.id = g.nextID
 				g.nextID++
@@ -1010,6 +1038,9 @@ func (g *gen) emitAll() error {
 		// Discover extras' dependent types without emitting globals yet.
 		for _, k := range keys {
 			tr := g.types[k]
+			if !tr.descOK {
+				continue
+			}
 			g.discoverExtraDeps(tr)
 		}
 		if len(g.types) == before {
@@ -1023,6 +1054,9 @@ func (g *gen) emitAll() error {
 	sortStrings(keys)
 	for _, k := range keys {
 		tr := g.types[k]
+		if tr == nil || !tr.descOK {
+			continue
+		}
 		if err := g.emitTypeGlobal(tr); err != nil {
 			return err
 		}
@@ -1053,7 +1087,7 @@ func (g *gen) emitAll() error {
 		for i := 0; i < n; i++ {
 			ms[i] = it.iface.Method(i)
 		}
-		ifaceMethods[it.ifaceKey] = ms
+		ifaceMethods[it.ifaceKey] = g.filterIfaceMethods(ms)
 		it.typeName = "$go.itabtype." + sanitize(it.ifaceKey)
 	}
 	for ifaceKey := range g.ifaces {
@@ -1072,7 +1106,7 @@ func (g *gen) emitAll() error {
 		for i := 0; i < n; i++ {
 			ms[i] = iface.Method(i)
 		}
-		ifaceMethods[ifaceKey] = ms
+		ifaceMethods[ifaceKey] = g.filterIfaceMethods(ms)
 	}
 	for ifaceKey, ms := range ifaceMethods {
 		if err := g.emitItabType(ifaceKey, ms); err != nil {
@@ -1144,7 +1178,7 @@ func (g *gen) emitMissingItabTypes() error {
 		for i := 0; i < n; i++ {
 			ms[i] = iface.Method(i)
 		}
-		return g.emitItabType(ifaceKey, ms)
+		return g.emitItabType(ifaceKey, g.filterIfaceMethods(ms))
 	}
 	for ifaceKey := range needed {
 		iface := g.lookupIface(ifaceKey)
@@ -1878,8 +1912,13 @@ func (g *gen) emitItab(it *itabRec) error {
 	args := []ir.Expr{
 		&ir.Instr{Op: ir.OpGlobalGet, Global: tr.global},
 	}
-	for i := 0; i < it.iface.NumMethods(); i++ {
-		m := it.iface.Method(i)
+	nMeth := it.iface.NumMethods()
+	ms := make([]*types.Func, nMeth)
+	for i := 0; i < nMeth; i++ {
+		ms[i] = it.iface.Method(i)
+	}
+	ms = g.filterIfaceMethods(ms)
+	for i, m := range ms {
 		wrap, err := g.ensureWrapper(it, m, i)
 		if err != nil {
 			return err

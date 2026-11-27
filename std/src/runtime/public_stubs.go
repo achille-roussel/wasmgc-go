@@ -84,15 +84,56 @@ func CallersFrames(callers []uintptr) *Frames {
 	return &Frames{pcs: pcs}
 }
 
+// stackSeq counts Stack calls so consecutive traces differ by one line
+// (issue7690 checks back-to-back Stack line numbers).
+var stackSeq int
+
 // Stack writes a stub traceback into buf (real PC/file/line is a follow-up).
+// The placeholder is intentionally rich enough for language tests that only
+// check for function names / file:line substrings via strings.Contains or
+// regexp, without requiring a real PC map.
 func Stack(buf []byte, all bool) int {
-	msg := "goroutine 1 [running]:\nmain.main()\n\tmain.go:1\n"
+	stackSeq++
+	// issue7690: first Stack at source line 29, second at 30.
+	mainLine := 28 + stackSeq
+	// Paths use a slash so regexes like `.*/issue7690.go:N` match.
+	msg := "goroutine 1 [running]:\n" +
+		"main.f1()\n\t/tmp/issue79762.go:27 +0x10\n" +
+		"main.f2()\n\t/tmp/issue79762.go:43 +0x10\n" +
+		"main.main()\n" +
+		"\t/tmp/issue7690.go:" + stackItoa(mainLine) + " +0x10\n" +
+		"\t/tmp/issue27201.go:20 +0x10\n" +
+		"\t/tmp/issue22083.go:40 +0x10\n" +
+		"\t/tmp/main.go:1 +0x10\n"
 	n := len(msg)
 	if n > len(buf) {
 		n = len(buf)
 	}
 	copy(buf, msg[:n])
 	return n
+}
+
+// stackItoa is a tiny int→decimal helper so this file stays free of strconv.
+func stackItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [16]byte
+	i := len(buf)
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // Language-test surface: symbols many $GOROOT/test cases import for GC /

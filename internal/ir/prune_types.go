@@ -2,20 +2,26 @@ package ir
 
 import "strings"
 
-// PruneUnusedTypes drops unused $go.func.* TypeDefs after DCE. Package lower
-// of dead reflect.Value.Call still InternType's closed-universe call
-// signatures; without this prune those orphans stay in the Wasm type section
-// (fmt hello size). Other TypeDefs (prelude, structs, clos subtypes) are
-// left alone — a full type-graph prune would strip ABI shapes empty_main
-// still dumps as goldens.
+// PruneUnusedTypes drops unused $go.func.* / $go.itabtype.* / $go.ifacefn.*
+// TypeDefs after DCE. Package lower of dead reflect.Value.Call still
+// InternType's closed-universe call signatures; emitMissingItabTypes declares
+// itabtypes for OpIfaceCall in bodies RuntimeOps expands before DCE. Without
+// this prune those orphans stay in the Wasm type section (fmt hello size).
+// Other TypeDefs (prelude, structs, clos subtypes) are left alone — a full
+// type-graph prune would strip ABI shapes empty_main still dumps as goldens.
 func PruneUnusedTypes(m *Module) {
 	if m == nil || len(m.Types) == 0 {
 		return
 	}
 	used := map[string]bool{}
+	isPrunable := func(name string) bool {
+		return strings.HasPrefix(name, "$go.func.") ||
+			strings.HasPrefix(name, "$go.itabtype.") ||
+			strings.HasPrefix(name, "$go.ifacefn.")
+	}
 	markType := func(t Type) {
 		markNamedTypes(t, func(name string) {
-			if strings.HasPrefix(name, "$go.func.") {
+			if isPrunable(name) {
 				used[name] = true
 			}
 		})
@@ -41,22 +47,28 @@ func PruneUnusedTypes(m *Module) {
 		markType(g.Typ)
 		markTypesExpr(g.Init, markType)
 	}
-	// Func-typed TypeDef fields/params may mention other $go.func.* names.
-	for _, td := range m.Types {
-		if td == nil || !strings.HasPrefix(td.Name, "$go.func.") {
-			continue
-		}
-		if !used[td.Name] {
-			continue
-		}
-		for _, f := range td.Fields {
-			markType(f.Type)
-		}
-		for _, p := range td.Params {
-			markType(p)
-		}
-		for _, r := range td.Results {
-			markType(r)
+	// Reachable prunable TypeDefs may mention other prunable names (itabtype
+	// fields → ifacefn; func fields → func). Fixed-point over the type graph.
+	changed := true
+	for changed {
+		changed = false
+		for _, td := range m.Types {
+			if td == nil || !isPrunable(td.Name) || !used[td.Name] {
+				continue
+			}
+			before := len(used)
+			for _, f := range td.Fields {
+				markType(f.Type)
+			}
+			for _, p := range td.Params {
+				markType(p)
+			}
+			for _, r := range td.Results {
+				markType(r)
+			}
+			if len(used) > before {
+				changed = true
+			}
 		}
 	}
 
@@ -65,7 +77,7 @@ func PruneUnusedTypes(m *Module) {
 		if td == nil {
 			continue
 		}
-		if strings.HasPrefix(td.Name, "$go.func.") && !used[td.Name] {
+		if isPrunable(td.Name) && !used[td.Name] {
 			continue
 		}
 		out = append(out, td)
@@ -150,6 +162,7 @@ func markTypesExpr(e Expr, markType func(Type)) {
 	switch e := e.(type) {
 	case *Instr:
 		markType(e.Type)
+		markType(e.Type2)
 		for _, a := range e.Args {
 			markTypesExpr(a, markType)
 		}

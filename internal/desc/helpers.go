@@ -163,6 +163,7 @@ func (g *gen) fillReflectHelpers() error {
 	g.fillReflectFuncIn()
 	g.fillReflectFuncOut()
 	g.fillReflectFuncTypeMethods()
+	g.fillReflectFieldByIndex()
 	g.fillReflectSliceElem()
 	g.fillReflectPtrElem()
 	g.fillReflectMapKey()
@@ -302,7 +303,7 @@ func (g *gen) fillReflectTypeName() {
 	}
 	var entries []idName
 	for _, tr := range g.types {
-		if tr == nil || tr.id < 0 {
+		if tr == nil || !tr.descOK || tr.id < 0 {
 			continue
 		}
 		// Named pkg.Type display names for fmt %#v / reflect.Type.String and
@@ -861,6 +862,35 @@ func (g *gen) fillReflectStructNumField() {
 		&ir.Unreachable{},
 	}}
 	g.replaceBody(name, []*ir.Var{extra}, []ir.Type{ir.TypeI32}, body)
+}
+
+// fillReflectFieldByIndex rewrites the FieldByIndex stub to call
+// fieldByIndexImpl when Type.FieldByIndex is call-reachable (issue48318).
+func (g *gen) fillReflectFieldByIndex() {
+	if !g.needsFieldByIndex() {
+		return
+	}
+	const method = "reflect.(*rtype).FieldByIndex"
+	const impl = "reflect.(*rtype).fieldByIndexImpl"
+	if g.mod.LookupFunc(method) == nil || g.mod.LookupFunc(impl) == nil {
+		return
+	}
+	rtypeTy := &ir.Ref{Null: true, Named: "$go.struct.reflect.rtype"}
+	sliceTy := &ir.Ref{Null: true, Named: "$go.slice.i32"}
+	sfTy := &ir.Ref{Null: true, Named: "$go.struct.reflect.StructField"}
+	t := &ir.Var{Name: "t", Typ: rtypeTy}
+	index := &ir.Var{Name: "index", Typ: sliceTy}
+	body := &ir.Seq{Stmts: []ir.Stmt{
+		&ir.Return{Results: []ir.Expr{&ir.Instr{
+			Op:   ir.OpCall,
+			Func: impl,
+			Args: []ir.Expr{
+				&ir.Name{Raw: "t", Var: t},
+				&ir.Name{Raw: "index", Var: index},
+			},
+		}}},
+	}}
+	g.forceReplaceBody(method, []*ir.Var{t, index}, []ir.Type{sfTy}, body)
 }
 
 // fillReflectFuncTypeMethods rewrites reflect.(*rtype).NumIn/In/NumOut/Out
@@ -1446,7 +1476,7 @@ func (g *gen) fillReflectImplements() {
 	var ifaces []*typeRec
 	var all []*typeRec
 	for _, tr := range g.types {
-		if tr == nil || tr.goType == nil || tr.id < 0 {
+		if tr == nil || !tr.descOK || tr.goType == nil || tr.id < 0 {
 			continue
 		}
 		all = append(all, tr)

@@ -136,6 +136,53 @@ func (g *gen) ensureFuncExtraShapes() {
 	})
 }
 
+// needsFieldByIndex reports whether Type.FieldByIndex is reached by a real
+// call. FieldByIndex is last on reflect.Type so its itab slot can be omitted
+// when unused (fmt hello/float size); issue48318 needs the slot.
+func (g *gen) needsFieldByIndex() bool {
+	live := g.reachableFuncs()
+	for name := range live {
+		if name == "reflect.(*rtype).FieldByIndex" ||
+			strings.HasSuffix(name, ".FieldByIndex") && strings.Contains(name, "rtype") {
+			return true
+		}
+		f := g.mod.LookupFunc(name)
+		if f == nil || f.Body == nil {
+			continue
+		}
+		found := false
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpIfaceCall && in.Func == "FieldByIndex" {
+				found = true
+			}
+			if in.Op == ir.OpCall && in.Func == "reflect.(*rtype).FieldByIndex" {
+				found = true
+			}
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// filterIfaceMethods drops Type.FieldByIndex when unused. FieldByIndex is last
+// on reflect.Type so omitting it does not shift other method indices.
+func (g *gen) filterIfaceMethods(ms []*types.Func) []*types.Func {
+	if len(ms) == 0 || g.needsFieldByIndex() {
+		return ms
+	}
+	last := ms[len(ms)-1]
+	if last == nil || last.Name() != "FieldByIndex" {
+		return ms
+	}
+	return ms[:len(ms)-1]
+}
+
 // needsFuncParamAPI reports whether Type.NumIn/In/NumOut/Out (or the
 // runtime.ReflectFunc* helpers) are reached by a real call — not merely
 // listed on reflect.Type's itab (fmt.Println).

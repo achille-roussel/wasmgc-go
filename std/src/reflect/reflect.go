@@ -68,7 +68,6 @@ type Type interface {
 	Bits() int
 	NumField() int
 	Field(i int) StructField
-	FieldByIndex(index []int) StructField
 	FieldByName(name string) (StructField, bool)
 	NumIn() int
 	NumOut() int
@@ -86,6 +85,9 @@ type Type interface {
 	MethodByName(name string) (Method, bool)
 	IsVariadic() bool
 	ChanDir() ChanDir
+	// Last so desc can omit the itab slot when unused (fmt hello size);
+	// issue48318 calls it and gets the real body via the itab.
+	FieldByIndex(index []int) StructField
 }
 
 // SliceHeader is a deprecated runtime representation of a slice (still used by
@@ -1688,6 +1690,12 @@ func (t *rtype) Field(i int) StructField {
 }
 
 func (t *rtype) FieldByIndex(index []int) StructField {
+	// Stub for fmt size: desc rewrites to fieldByIndexImpl when call-reachable
+	// (encoding/xml). fieldByIndexImpl is DCE'd when unused.
+	return StructField{}
+}
+
+func (t *rtype) fieldByIndexImpl(index []int) StructField {
 	if t == nil || len(index) == 0 {
 		return StructField{}
 	}

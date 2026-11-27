@@ -33,6 +33,11 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.CallExpr:
 		return fl.callAsValue(e, want)
 	case *ast.SelectorExpr:
+		// pkg.GenericFunc as a value (cmp.Compare → SortedFunc) needs mono
+		// clos wrappers; selector()'s topLevelFuncValue path keeps TypeParams.
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
 		return fl.selector(e, want)
 	case *ast.IndexExpr:
 		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {

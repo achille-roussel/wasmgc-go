@@ -1,8 +1,8 @@
 # Recorded names-off Wasm sizes (bytes). Update when a change moves size by
 # more than ±4096 B (TestSizeCorpus slack). Budgets are the hard CI ceilings.
 empty_main	371
-println	1402
-m8_fmt_hello	241268
-m8_fmt_map	285108
-m8_fmt_float	293136
-m8_fmt_quote	256764
+println	1394
+m8_fmt_hello	247698
+m8_fmt_map	291358
+m8_fmt_float	299418
+m8_fmt_quote	262991

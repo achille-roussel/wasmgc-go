@@ -480,7 +480,12 @@ func (fl *funcLower) selector(e *ast.SelectorExpr, want ir.Type) (ir.Expr, []ir.
 				}
 			}
 			// package.Func as a func value (e.g. unicode.IsSpace passed to FieldsFunc).
+			// Generic funcs with reverse-inferred Instances (cmp.Compare) must
+			// use monoInstFuncValue — topLevelFuncValue keeps TypeParams.
 			if fn, ok := obj.(*types.Func); ok {
+				if ex, stmts, ok2, err := fl.genericInstFuncValue(e); ok2 {
+					return ex, stmts, err
+				}
 				return fl.topLevelFuncValue(fn)
 			}
 		}
