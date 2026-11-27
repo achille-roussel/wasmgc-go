@@ -2209,6 +2209,14 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	}
 	rt.ensureFatPtr(kind)
 	pt := &ir.Ref{Named: ptrType}
+	// Recoverable nil *T store before ref.as_non_null (issue40629: *g = 0).
+	pre = append(pre, &ir.If{
+		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
+		Then: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+			&ir.Unreachable{},
+		}},
+	})
 	clT := &ir.Temp{Name: rt.fresh("cl"), Typ: &ir.Ref{Named: "$go.class." + kind}}
 	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}
 	pre = append(pre, &ir.Assign{

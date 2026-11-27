@@ -499,6 +499,16 @@ func (fl *funcLower) binary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []ir.Stmt
 			}
 		}
 	}
+	// Complex↔iface ==/!= must use ifaceCompare (convT2X): routing through
+	// complexBinary treats an iface operand as $go.complex* and fails validate.
+	if e.Op == token.EQL || e.Op == token.NEQ {
+		xt, yt := fl.typeOf(e.X), fl.typeOf(e.Y)
+		if isIface(xt) || isIface(yt) ||
+			(isNilIdent(e.X) && isIface(yt)) ||
+			(isNilIdent(e.Y) && isIface(xt)) {
+			return fl.ifaceCompare(e, e.Op)
+		}
+	}
 	// Complex arithmetic / compare — not shifts (untyped complex counts like
 	// 0i are integers in a shift context).
 	switch e.Op {

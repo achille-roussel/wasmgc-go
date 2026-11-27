@@ -836,25 +836,64 @@ func (fl *funcLower) assignStmt(s *ast.AssignStmt) ([]ir.Stmt, error) {
 
 // parallelDest captures an LHS destination evaluated before parallel writes.
 type parallelDest struct {
-	kind int // 0=assignTo, 1=slice/array index, 2=star store, 3=map
-	lhs  ast.Expr
-	base *ir.Temp
-	idx  *ir.Temp
-	arr  ir.Type
-	keyT *ir.Temp
-	mT   *ir.Temp
-	keyS string
-	elem string
-	box  string
+	kind   int // 0=assignTo, 1=slice/array index, 2=star store, 3=map, 4=field
+	lhs    ast.Expr
+	base   *ir.Temp
+	idx    *ir.Temp
+	arr    ir.Type
+	keyT   *ir.Temp
+	mT     *ir.Temp
+	keyS   string
+	elem   string
+	box    string
+	sel      *types.Selection
+	baseTy   types.Type
+	nilCheck bool // kind 4: panicNil if base is null before struct.set
 }
 
-// prepareParallelDests evaluates IndexExpr/StarExpr addresses before any write
-// so `i, x[i] = 1, 100` and `p, *p = fp()` use the pre-assignment destinations.
+// prepareParallelDests evaluates IndexExpr/StarExpr/SelectorExpr addresses before
+// any write so `i, x[i] = 1, 100`, `p, *p = fp()`, and `p, p.i = new(T), 4`
+// (issue23017) use the pre-assignment destinations.
 func (fl *funcLower) prepareParallelDests(lhs []ast.Expr) ([]parallelDest, []ir.Stmt, error) {
 	preps := make([]parallelDest, len(lhs))
 	var out []ir.Stmt
 	for i, e := range lhs {
 		switch lx := e.(type) {
+		case *ast.SelectorExpr:
+			sel := fl.info.Selections[lx]
+			if sel != nil && sel.Kind() == types.FieldVal {
+				baseTy := fl.typeOf(lx.X)
+				if baseTy != nil && (isStruct(baseTy) || isObjectPointer(baseTy)) {
+					base, bstmts, err := fl.expr(lx.X, nil)
+					if err != nil {
+						return nil, nil, err
+					}
+					out = append(out, bstmts...)
+					// Save the pointer/base now; nil-check at commit so earlier
+					// destinations in the same parallel assign still write
+					// (issue23017: m[2], p.i = … must set m before panicking).
+					ptrBase := isPointer(baseTy) && isObjectPointer(baseTy)
+					saveTy := baseTy
+					if ptrBase {
+						if p, ok := types.Unalias(baseTy).(*types.Pointer); ok {
+							saveTy = p.Elem()
+						}
+					}
+					baseIR, _ := fl.mapType(baseTy) // keep pointer IR for nil check
+					if !ptrBase {
+						baseIR, _ = fl.mapType(saveTy)
+					}
+					if baseIR == nil {
+						baseIR = &ir.Ref{Null: true}
+					}
+					baseT := fl.newTemp(baseIR)
+					out = append(out, fl.assignTemp(baseT, base))
+					preps[i] = parallelDest{
+						kind: 4, lhs: e, base: baseT, sel: sel, baseTy: saveTy, nilCheck: ptrBase,
+					}
+					continue
+				}
+			}
 		case *ast.IndexExpr:
 			xt := fl.typeOf(lx.X)
 			if isSlice(xt) || isArray(xt) || isPtrToArray(xt) {
@@ -957,6 +996,17 @@ func (fl *funcLower) commitParallelDest(p parallelDest, rhs ir.Expr) ([]ir.Stmt,
 		return []ir.Stmt{&ir.ExprStmt{X: &ir.Instr{Op: ir.OpArraySet, Type: p.arr, Args: []ir.Expr{fl.useTemp(p.base), fl.useTemp(p.idx), rhs}}}}, nil
 	case 2:
 		return fl.assignToSavedStar(p.lhs.(*ast.StarExpr), fl.useTemp(p.base), rhs)
+	case 4:
+		var stmts []ir.Stmt
+		base := fl.useTemp(p.base)
+		if p.nilCheck {
+			stmts = append(stmts, fl.panicIfNilRef(base))
+		}
+		setStmts, err := fl.fieldSetChain(base, p.baseTy, p.sel, rhs)
+		if err != nil {
+			return nil, err
+		}
+		return append(stmts, setStmts...), nil
 	case 3:
 		val := rhs
 		if p.elem != "" && p.box != "" {
@@ -1638,6 +1688,20 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 		// Promoted embedded fields: chain gets then set the leaf.
 		baseTy := fl.typeOf(lhs.X)
 		if baseTy != nil && (isStruct(baseTy) || isObjectPointer(baseTy)) {
+			// p.f = x on nil *struct must panic (issue23017), same as field get.
+			if isPointer(baseTy) && isObjectPointer(baseTy) {
+				ptrTy, err := fl.mapType(baseTy)
+				if err != nil {
+					return nil, err
+				}
+				pv := fl.newVar("psf", ptrTy)
+				stmts = append(stmts, fl.assignVar(pv, base))
+				stmts = append(stmts, fl.panicIfNilRef(fl.useVar(pv)))
+				base = fl.useVar(pv)
+				if p, ok := types.Unalias(baseTy).(*types.Pointer); ok {
+					baseTy = p.Elem()
+				}
+			}
 			setStmts, err := fl.fieldSetChain(base, baseTy, sel, rhs)
 			if err != nil {
 				return nil, fl.errorf(lhs, "%v", err)

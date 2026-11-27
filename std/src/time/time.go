@@ -385,6 +385,9 @@ func containsDotDot(s string) bool {
 	return false
 }
 
+// zoneinfo records the ZONEINFO path for tests (ZoneinfoForTesting).
+var zoneinfo *string
+
 // LoadLocation returns a Location with the given name (thin FixedZone stub).
 func LoadLocation(name string) (*Location, error) {
 	if name == "" || name == "UTC" {

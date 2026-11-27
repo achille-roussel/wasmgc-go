@@ -1272,7 +1272,9 @@ func (g *gen) structEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 		&ir.Assign{Lhs: []ir.Dest{{Name: "sa", Var: sa}}, Rhs: &ir.Instr{Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "a", Var: a}}}},
 		&ir.Assign{Lhs: []ir.Dest{{Name: "sb", Var: sb}}, Rhs: &ir.Instr{Op: ir.OpRefCast, Type: sty, Args: []ir.Expr{&ir.Name{Raw: "b", Var: b}}}},
 	}}
-	var cmp ir.Expr = &ir.Const{Op: ir.OpI32Const, I64: 1}
+	// Short-circuit left-to-right (issue8606): if an early field differs, do
+	// not evaluate later fields (which may panic on incomparable concretes
+	// boxed in interface{}).
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
 		// Blank fields are ignored by Go == (blank.go T/U via unsafe).
@@ -1282,9 +1284,14 @@ func (g *gen) structEqualBody(tr *typeRec, a, b *ir.Var) ir.Region {
 		fa := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "sa", Var: sa}}}
 		fb := &ir.Instr{Op: ir.OpStructGet, Type: sty, Field: f.Name(), Args: []ir.Expr{&ir.Name{Raw: "sb", Var: sb}}}
 		fieldEq := g.fieldEqExpr(f.Type(), fa, fb)
-		cmp = &ir.Instr{Op: ir.OpI32And, Args: []ir.Expr{cmp, fieldEq}}
+		seq.Stmts = append(seq.Stmts, &ir.If{
+			Cond: &ir.Instr{Op: ir.OpI32Eqz, Args: []ir.Expr{fieldEq}},
+			Then: &ir.Seq{Stmts: []ir.Stmt{
+				&ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 0}}},
+			}},
+		})
 	}
-	seq.Stmts = append(seq.Stmts, &ir.Return{Results: []ir.Expr{cmp}})
+	seq.Stmts = append(seq.Stmts, &ir.Return{Results: []ir.Expr{&ir.Const{Op: ir.OpI32Const, I64: 1}}})
 	return seq
 }
 
