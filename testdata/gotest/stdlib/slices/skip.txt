@@ -1,4 +1,2 @@
 # slices — wasmgc-go test skips
-TestInference — compile: load: typecheck slices_test:
-TestNilness — compile: load: typecheck slices_test:
 TestGrow — alloc-counting: testing.AllocsPerRun always 0 under host GC (want 1)

@@ -6,7 +6,6 @@ TestBlocking — lower/runtime/reflect gaps in encoding/json tests
 TestByteArrays — lower/runtime/reflect gaps in encoding/json tests
 TestByteKind — lower/runtime/reflect gaps in encoding/json tests
 TestCaseSensitivity — lower/runtime/reflect gaps in encoding/json tests
-TestCompactBig — lower/runtime/reflect gaps in encoding/json tests
 TestDecodeInStream — lower/runtime/reflect gaps in encoding/json tests
 TestDecoder — lower/runtime/reflect gaps in encoding/json tests
 TestDecoderMaxBytesError — lower/runtime/reflect gaps in encoding/json tests
@@ -16,7 +15,6 @@ TestEncoderErrorAndReuseEncodeState — lower/runtime/reflect gaps in encoding/j
 TestEncoderIndent — lower/runtime/reflect gaps in encoding/json tests
 TestEncoderSetEscapeHTML — lower/runtime/reflect gaps in encoding/json tests
 TestHTTPDecoding — lower/runtime/reflect gaps in encoding/json tests
-TestIndentBig — lower/runtime/reflect gaps in encoding/json tests
 TestInvalidUnmarshal — lower/runtime/reflect gaps in encoding/json tests
 TestIssue10281 — lower/runtime/reflect gaps in encoding/json tests
 TestIssue63379 — lower/runtime/reflect gaps in encoding/json tests
@@ -56,9 +54,7 @@ TestUnmarshalNulls — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalPtrPtr — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalRescanLiteralMangledUnquote — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshalUnexported — lower/runtime/reflect gaps in encoding/json tests
-TestUnsupportedValueErrorValue — lower/runtime/reflect gaps in encoding/json tests
 TestUnsupportedValues — lower/runtime/reflect gaps in encoding/json tests
 TestUnmarshal — lower/runtime/reflect gaps in encoding/json tests
-TestNilMarshal — lower/runtime/reflect gaps in encoding/json tests
 TestInterfaceSet — lower/runtime/reflect gaps in encoding/json tests
 TestEncodeBytekind — lower/runtime/reflect gaps in encoding/json tests
