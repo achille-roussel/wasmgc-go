@@ -262,6 +262,23 @@ func compileAndRun(opts Options, c Case, src string, action Action) (stdout, std
 		return "", "", 1, err
 	}
 
+	// // run companion.go — extra sources compiled into the package (cmplxdivide).
+	var progArgs []string
+	caseDir := filepath.Dir(c.Path)
+	for _, a := range action.Args {
+		if strings.HasSuffix(a, ".go") && !strings.Contains(a, "/") && !strings.Contains(a, "\\") {
+			b, err := os.ReadFile(filepath.Join(caseDir, a))
+			if err != nil {
+				return "", "", 1, fmt.Errorf("companion %s: %w", a, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, a), b, 0o644); err != nil {
+				return "", "", 1, err
+			}
+			continue
+		}
+		progArgs = append(progArgs, a)
+	}
+
 	wasmPath := filepath.Join(dir, "prog.wasm")
 	buildArgs := []string{"build", "-o", wasmPath}
 	needsStd := hasImport(src)
@@ -289,9 +306,9 @@ func compileAndRun(opts Options, c Case, src string, action Action) (stdout, std
 	}
 
 	runArgs := []string{glue, wasmPath}
-	if len(action.Args) > 0 {
+	if len(progArgs) > 0 {
 		runArgs = append(runArgs, "--")
-		runArgs = append(runArgs, action.Args...)
+		runArgs = append(runArgs, progArgs...)
 	}
 	cmd := exec.Command(node, runArgs...)
 	cmd.Env = append(os.Environ(), "WASMGC_JS="+glue, "GOSSAINTERP=1")

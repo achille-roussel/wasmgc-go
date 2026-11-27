@@ -20,6 +20,11 @@ func RuntimeOps(mod *ir.Module) error {
 	// Idempotent: may run again after a later Ensure* AppendFiles introduces
 	// new high ops (e.g. panicTypeAssert link after iface asserts expand).
 	rt := &runtimeLower{mod: mod, classes: map[string]string{}, accessors: map[string]bool{}}
+	// Package lower may already emit call $go.panicIfNull (panicIfNilRef);
+	// materialize the helper before rewriting so Verify sees a body.
+	if callsPanicIfNull(mod) {
+		rt.ensurePanicIfNull()
+	}
 	n := 0
 	for _, f := range mod.Funcs {
 		if f.Body == nil {
@@ -33,6 +38,90 @@ func RuntimeOps(mod *ir.Module) error {
 	}
 	mod.Low = true
 	return nil
+}
+
+func callsPanicIfNull(mod *ir.Module) bool {
+	found := false
+	for _, f := range mod.Funcs {
+		if f.Body == nil {
+			continue
+		}
+		walkCallsPanicIfNull(f.Body, &found)
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func walkCallsPanicIfNull(r ir.Region, found *bool) {
+	if r == nil || *found {
+		return
+	}
+	switch r := r.(type) {
+	case *ir.Seq:
+		for _, s := range r.Stmts {
+			walkCallsPanicIfNullStmt(s, found)
+		}
+	case *ir.Block:
+		walkCallsPanicIfNull(r.Body, found)
+	case *ir.Loop:
+		walkCallsPanicIfNull(r.Body, found)
+	case *ir.If:
+		walkCallsPanicIfNullExpr(r.Cond, found)
+		walkCallsPanicIfNull(r.Then, found)
+		walkCallsPanicIfNull(r.Else, found)
+	case *ir.Switch:
+		walkCallsPanicIfNullExpr(r.Tag, found)
+		for _, c := range r.Cases {
+			walkCallsPanicIfNull(c.Body, found)
+		}
+		walkCallsPanicIfNull(r.Default, found)
+	case *ir.Try:
+		walkCallsPanicIfNull(r.Body, found)
+		walkCallsPanicIfNull(r.Handler, found)
+	case *ir.Dispatch:
+		for _, arm := range r.Arms {
+			walkCallsPanicIfNull(arm, found)
+		}
+	}
+}
+
+func walkCallsPanicIfNullStmt(s ir.Stmt, found *bool) {
+	if *found {
+		return
+	}
+	switch s := s.(type) {
+	case *ir.ExprStmt:
+		walkCallsPanicIfNullExpr(s.X, found)
+	case *ir.Assign:
+		walkCallsPanicIfNullExpr(s.Rhs, found)
+	case *ir.Return:
+		for _, e := range s.Results {
+			walkCallsPanicIfNullExpr(e, found)
+		}
+	case *ir.Br:
+		walkCallsPanicIfNullExpr(s.Cond, found)
+	case ir.Region:
+		walkCallsPanicIfNull(s, found)
+	}
+}
+
+func walkCallsPanicIfNullExpr(e ir.Expr, found *bool) {
+	if e == nil || *found {
+		return
+	}
+	in, ok := e.(*ir.Instr)
+	if !ok {
+		return
+	}
+	if in.Op == ir.OpCall && in.Func == "$go.panicIfNull" {
+		*found = true
+		return
+	}
+	for _, a := range in.Args {
+		walkCallsPanicIfNullExpr(a, found)
+	}
 }
 
 type runtimeLower struct {
@@ -2149,13 +2238,9 @@ func (rt *runtimeLower) expandDeref(s *ir.Assign, in *ir.Instr, n *int) ([]ir.St
 	rt.ensureFatPtr(kind)
 	pt := &ir.Ref{Named: ptrType}
 	// Recoverable nil *T before ref.as_non_null (convert4: [0]byte(*nil)).
-	pre = append(pre, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-			&ir.Unreachable{},
-		}},
-	})
+	// Shared out-of-line helper — inlining is_null+panicNil at every load
+	// site bloated fmt hello past the 250 KiB ceiling (#77 / stdlib14).
+	pre = append(pre, rt.panicIfNull(ptr))
 	clT := &ir.Temp{Name: rt.fresh("cl"), Typ: &ir.Ref{Named: "$go.class." + kind}}
 	pre = append(pre, &ir.Assign{
 		Lhs: []ir.Dest{{Temp: clT, Name: clT.Name}},
@@ -2216,13 +2301,8 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 	rt.ensureFatPtr(kind)
 	pt := &ir.Ref{Named: ptrType}
 	// Recoverable nil *T store before ref.as_non_null (issue40629: *g = 0).
-	pre = append(pre, &ir.If{
-		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-			&ir.Unreachable{},
-		}},
-	})
+	// One shared $go.panicIfNull call per site instead of inlined panicNil.
+	pre = append(pre, rt.panicIfNull(ptr))
 	clT := &ir.Temp{Name: rt.fresh("cl"), Typ: &ir.Ref{Named: "$go.class." + kind}}
 	nn := &ir.Instr{Op: ir.OpRefAsNonNull, Args: []ir.Expr{ptr}}
 	pre = append(pre, &ir.Assign{
@@ -2242,6 +2322,42 @@ func (rt *runtimeLower) expandStore(in *ir.Instr, n *int) ([]ir.Stmt, error) {
 		Args: []ir.Expr{base, index, storeVal, setFn},
 	}})
 	return pre, nil
+}
+
+// panicIfNull emits call $go.panicIfNull(ref) — one out-of-line helper for
+// recoverable nil checks (issue40629) instead of inlining is_null+panicNil.
+func (rt *runtimeLower) panicIfNull(ref ir.Expr) ir.Stmt {
+	rt.ensurePanicIfNull()
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	arg := ref
+	// Fat ptrs / object refs are subtypes of any; cast when the expr already
+	// carries a concrete named type so the call validates.
+	if named := exprRefTypeMod(rt.mod, ref); named != "" {
+		arg = &ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{ref}}
+	}
+	return &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "$go.panicIfNull", Args: []ir.Expr{arg}}}
+}
+
+func (rt *runtimeLower) ensurePanicIfNull() {
+	const name = "$go.panicIfNull"
+	if rt.mod.LookupFunc(name) != nil {
+		return
+	}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	p := &ir.Var{Name: "p", Typ: anyT}
+	rt.mod.Funcs = append(rt.mod.Funcs, &ir.Func{
+		Name:   name,
+		Params: []*ir.Var{p},
+		Body: &ir.Seq{Stmts: []ir.Stmt{
+			&ir.If{
+				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{&ir.Name{Raw: "p", Var: p}}},
+				Then: &ir.Seq{Stmts: []ir.Stmt{
+					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
+					&ir.Unreachable{},
+				}},
+			},
+		}},
+	})
 }
 
 func (rt *runtimeLower) ensureFatPtr(kind string) {

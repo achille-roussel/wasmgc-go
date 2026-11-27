@@ -20,6 +20,9 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.BasicLit:
 		return fl.basicLit(e, want)
 	case *ast.Ident:
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
 		return fl.ident(e, want)
 	case *ast.ParenExpr:
 		return fl.expr(e.X, want)
@@ -30,6 +33,11 @@ func (fl *funcLower) expr(e ast.Expr, want ir.Type) (ir.Expr, []ir.Stmt, error) 
 	case *ast.CallExpr:
 		return fl.callAsValue(e, want)
 	case *ast.SelectorExpr:
+		// pkg.GenericFunc as a value (cmp.Compare → SortedFunc) needs mono
+		// clos wrappers; selector()'s topLevelFuncValue path keeps TypeParams.
+		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
+			return ex, stmts, err
+		}
 		return fl.selector(e, want)
 	case *ast.IndexExpr:
 		if ex, stmts, ok, err := fl.genericInstFuncValue(e); ok {
@@ -1668,7 +1676,13 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		if _, ok := obj.(*types.Func); ok {
 			return nil // direct call
 		}
-		if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
+		// Param/var of type Endo (type param ~func(...)): subst before
+		// Underlying so mono instances see a Signature (issue72063).
+		t := obj.Type()
+		if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			t = fl.pkg.subst.Apply(t)
+		}
+		if sig, ok := types.Unalias(t).Underlying().(*types.Signature); ok {
 			return apply(sig)
 		}
 	case *ast.SelectorExpr:
@@ -1725,28 +1739,49 @@ func (fl *funcLower) funcValueSig(fun ast.Expr) *types.Signature {
 		}
 	case *ast.FuncLit, *ast.CallExpr, *ast.ParenExpr, *ast.TypeAssertExpr:
 		// Includes f.(func(T))(x) — Interface().(func(...))(...) and similar.
+		// Also f(h(h))(t) where Fun is a CallExpr of type RecFct (issue72063):
+		// apply mono subst before Underlying so TypeParam ~func(...) becomes Signature.
 		tv := fl.info.Types[fun]
 		if tv.Type == nil {
 			return nil
 		}
-		if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+		t := tv.Type
+		if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+			t = fl.pkg.subst.Apply(t)
+		}
+		if sig, ok := types.Unalias(t).Underlying().(*types.Signature); ok {
 			return apply(sig)
 		}
 	}
 	return nil
 }
 
-// genericInstFuncValue lowers F[T] / F[T,U] used as a function value
-// (e.g. EqualFunc(m, m, equal[int])), not as a call.
+// genericInstFuncValue lowers a specialized generic function used as a value:
+// F[T] / F[T,U] (EqualFunc(m, m, equal[int])), or a bare name with reverse
+// type inference (f1 = g1 where g1 is generic — issue59338).
 func (fl *funcLower) genericInstFuncValue(e ast.Expr) (ir.Expr, []ir.Stmt, bool, error) {
 	origin := fl.indexExprGenericFunc(e)
+	id := identOf(e)
+	if origin == nil && id != nil {
+		// Bare generic func with Instances from reverse type inference.
+		if obj, ok := fl.info.Uses[id].(*types.Func); ok {
+			o := obj.Origin()
+			if o == nil {
+				o = obj
+			}
+			if sig, _ := o.Type().(*types.Signature); sig != nil && sig.TypeParams() != nil && sig.TypeParams().Len() > 0 {
+				if _, has := fl.info.Instances[id]; has {
+					origin = o
+				}
+			}
+		}
+	}
 	if origin == nil {
 		return nil, nil, false, nil
 	}
 	if fl.pkg.mono == nil {
 		return nil, nil, true, fl.errorf(e, "generic func value without mono table")
 	}
-	id := identOf(e)
 	if id == nil {
 		return nil, nil, true, fl.errorf(e, "generic func value: no function ident")
 	}
@@ -2341,9 +2376,9 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 	yre := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "real", Args: []ir.Expr{y}}
 	yim := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "imag", Args: []ir.Expr{y}}
 
-	add, sub, mul, div, eq := ir.OpF64Add, ir.OpF64Sub, ir.OpF64Mul, ir.OpF64Div, ir.OpF64Eq
+	add, sub, mul, eq := ir.OpF64Add, ir.OpF64Sub, ir.OpF64Mul, ir.OpF64Eq
 	if elem == ir.TypeF32 {
-		add, sub, mul, div, eq = ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div, ir.OpF32Eq
+		add, sub, mul, eq = ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Eq
 	}
 
 	switch e.Op {
@@ -2385,25 +2420,58 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 			},
 		}, stmts, nil
 	case token.QUO:
-		// (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
-		ac := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yre}}
-		bd := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yim}}
-		bc := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yre}}
-		ad := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yim}}
-		cc := &ir.Instr{Op: mul, Args: []ir.Expr{yre, yre}}
-		dd := &ir.Instr{Op: mul, Args: []ir.Expr{yim, yim}}
-		den := &ir.Instr{Op: add, Args: []ir.Expr{cc, dd}}
-		reN := &ir.Instr{Op: add, Args: []ir.Expr{ac, bd}}
-		imN := &ir.Instr{Op: sub, Args: []ir.Expr{bc, ad}}
-		return &ir.Instr{
-			Op: ir.OpStructNew, Type: cWant,
-			Args: []ir.Expr{
-				&ir.Instr{Op: div, Args: []ir.Expr{reN, den}},
-				&ir.Instr{Op: div, Args: []ir.Expr{imN, den}},
-			},
-		}, stmts, nil
+		// Robust division via runtime.complex128div (Smith + C99 Inf/NaN).
+		c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+		fl.ensureComplexType("$go.complex128", ir.TypeF64)
+		num, den := x, y
+		if name == "$go.complex64" {
+			num = fl.promoteComplex64(x)
+			den = fl.promoteComplex64(y)
+		}
+		quo := &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.complex128div",
+			Type: c128,
+			Args: []ir.Expr{num, den},
+		}
+		if name == "$go.complex64" {
+			return fl.demoteComplex128(quo), stmts, nil
+		}
+		return quo, stmts, nil
 	default:
 		return nil, nil, fl.errorf(e, "unsupported complex op %v", e.Op)
+	}
+}
+
+func (fl *funcLower) promoteComplex64(x ir.Expr) ir.Expr {
+	c64 := &ir.Ref{Null: true, Named: "$go.complex64"}
+	c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+	fl.ensureComplexType("$go.complex64", ir.TypeF32)
+	fl.ensureComplexType("$go.complex128", ir.TypeF64)
+	re := &ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "imag", Args: []ir.Expr{x}}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: c128,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{re}},
+			&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{im}},
+		},
+	}
+}
+
+func (fl *funcLower) demoteComplex128(x ir.Expr) ir.Expr {
+	c64 := &ir.Ref{Null: true, Named: "$go.complex64"}
+	c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+	fl.ensureComplexType("$go.complex64", ir.TypeF32)
+	fl.ensureComplexType("$go.complex128", ir.TypeF64)
+	re := &ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "imag", Args: []ir.Expr{x}}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: c64,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{re}},
+			&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{im}},
+		},
 	}
 }
 
@@ -3147,6 +3215,19 @@ func (fl *funcLower) lowerArgs(e *ast.CallExpr) ([]ir.Expr, []ir.Stmt, error) {
 					sig = fn.Type().(*types.Signature)
 				}
 			}
+			// Generic method with its own type params: Selection.Obj is the
+			// origin (sig still has T). Prefer Instances / mono subst so
+			// args map to concrete types (issue80976).
+			if inst, ok := fl.info.Instances[sel.Sel]; ok {
+				if s, ok := inst.Type.(*types.Signature); ok {
+					sig = s
+				}
+			}
+			if sig != nil && len(fl.pkg.subst) > 0 {
+				if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+					sig = s
+				}
+			}
 			recvWant, err := fl.mapType(sig.Recv().Type())
 			if err != nil {
 				return nil, nil, fl.errorf(sel.X, "%v", err)
@@ -3409,13 +3490,7 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 		}
 		ptrT := fl.newTemp(ptrIR)
 		stmts = append(stmts, fl.assignTemp(ptrT, ex))
-		stmts = append(stmts, &ir.If{
-			Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{fl.useTemp(ptrT)}},
-			Then: &ir.Seq{Stmts: []ir.Stmt{
-				&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-				&ir.Unreachable{},
-			}},
-		})
+		stmts = append(stmts, fl.panicIfNilRef(fl.useTemp(ptrT)))
 		// *NamedStruct / *[N]T share the object ref with T — no OpDeref.
 		if isObjectPointer(xt) {
 			if want != nil {
@@ -3430,15 +3505,12 @@ func (fl *funcLower) methodRecv(x ast.Expr, recvType types.Type, want ir.Type) (
 	return fl.expr(x, want)
 }
 
-// panicIfNilRef appends `if ref.is_null v { runtime.panicNil(); unreachable }`.
+// panicIfNilRef emits call $go.panicIfNull(v) — shared out-of-line helper
+// (RuntimeOps materializes the body) instead of inlining is_null+panicNil.
 func (fl *funcLower) panicIfNilRef(v ir.Expr) ir.Stmt {
-	return &ir.If{
-		Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{v}},
-		Then: &ir.Seq{Stmts: []ir.Stmt{
-			&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-			&ir.Unreachable{},
-		}},
-	}
+	anyT := &ir.Ref{Null: true, Heap: ir.HeapAny}
+	arg := ir.Expr(&ir.Instr{Op: ir.OpRefCast, Type: anyT, Args: []ir.Expr{v}})
+	return &ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "$go.panicIfNull", Args: []ir.Expr{arg}}}
 }
 
 // methodRecvSel lowers the receiver for a MethodVal selection, following

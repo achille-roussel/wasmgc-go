@@ -837,6 +837,16 @@ func (fl *funcLower) methodValue(e *ast.SelectorExpr, sel *types.Selection, want
 		if err != nil {
 			return nil, nil, err
 		}
+		// Method value on a value receiver copies the receiver at evaluation
+		// (Go spec); sharing the object would alias later mutations (bug512).
+		if needsValueClone(captureTy) && !isFreshValueAlloc(recvVal) {
+			cloned, cstmts, cerr := fl.cloneValue(recvVal, captureTy)
+			if cerr != nil {
+				return nil, nil, cerr
+			}
+			stmts = append(stmts, cstmts...)
+			recvVal = cloned
+		}
 	}
 	recvT := fl.newTemp(captureIR)
 	stmts = append(stmts, fl.assignTemp(recvT, recvVal))

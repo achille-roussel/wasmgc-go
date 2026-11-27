@@ -1079,7 +1079,7 @@ func TestM7SizeBudgets(t *testing.T) {
 		want int
 	}{
 		{"empty_main", 371}, // +panicObj.depth / g.deferDepth fields
-		{"println", 1402},   // float/complex print + fat-ptr scalar types
+		{"println", 1394},   // float/complex print + fat-ptr scalar types
 	} {
 		dir := t.TempDir()
 		srcDir := filepath.Join("testdata", tc.name)

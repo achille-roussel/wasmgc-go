@@ -94,6 +94,10 @@ type typeRec struct {
 	name       string
 	comparable bool
 	ptrElem    string // type key of element for pointers
+	// descOK: emit $go.type.* + ReflectTypeName/Implements. Cleared for keys
+	// registered only from dead OpIfaceCall (lookupIface / itabtype still
+	// need the entry; PruneUnusedTypes drops the itabtype after DCE).
+	descOK bool
 }
 
 type itabRec struct {
@@ -238,7 +242,10 @@ func (g *gen) scanModule() {
 						g.noteLiveAnyConcrete(in.Global)
 					}
 				}
-				if in.Str != "" && strings.HasPrefix(in.Str, "type:") {
+				// Type keys only from Call/RefFunc-reachable bodies: Call's
+				// closed-universe asserts otherwise intern ~10 func types into
+				// ReflectTypeName even when Call is later DCE'd (fmt hello).
+				if inLive && in.Str != "" && strings.HasPrefix(in.Str, "type:") {
 					g.needTypeKey(strings.TrimPrefix(in.Str, "type:"))
 				}
 			case ir.OpGlobalGet:
@@ -249,31 +256,49 @@ func (g *gen) scanModule() {
 						g.noteLiveAnyConcrete(in.Global)
 					}
 				}
-				if strings.HasPrefix(in.Global, "$go.type.") {
+				if inLive && strings.HasPrefix(in.Global, "$go.type.") {
 					g.needTypeKey(strings.TrimPrefix(in.Global, "$go.type."))
 				}
 			case ir.OpIfaceAssert:
+				// Register iface→iface assert targets from every body, not only
+				// Call-reachable ones. Formatter.Format is reached via itab
+				// RefFunc (DCE keeps it); reachableFuncs does not follow itab
+				// global inits, so Format looks "dead" here. Gating asserts on
+				// inLive dropped io.Writer and skipped Writer/@.*fmt.pp
+				// synthesis — State→Writer in Format then panicked
+				// "missing method Writer". needTypeKey stays live-only so
+				// ReflectTypeName stays lean (fmt hello size).
 				if in.Global != "" {
-					g.needTypeKey(in.Global)
 					if strings.HasPrefix(in.Str, "iface") {
 						g.asserts[in.Global] = true
 						g.ifaces[in.Global] = true
 					}
+					if inLive {
+						g.needTypeKey(in.Global)
+					}
 				}
 			case ir.OpChanRecv, ir.OpChanSend:
-				if in.Global != "" {
+				if inLive && in.Global != "" {
 					g.needTypeKey(in.Global)
 				}
 			case ir.OpConv:
 				if in.Str == "iface.eq" {
 				}
 			case ir.OpIfaceCall:
+				// Always record iface keys for itabtype emission (RuntimeOps
+				// expands before DCE: cons Function[Nil[bool],…], fmt Timeout).
+				// Live calls get full descriptors; dead calls only register for
+				// lookupIface — ReflectTypeName/Implements stay lean (fmt size).
 				if in.Global != "" {
 					g.ifaces[in.Global] = true
-					g.needTypeKey(in.Global)
+					if inLive {
+						g.needTypeKey(in.Global)
+					} else {
+						g.needTypeKeyLookup(in.Global)
+					}
 				}
 			case ir.OpCall:
-				if in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
+				if inLive && in.Global != "" && strings.HasPrefix(in.Func, "$go.eq.") {
 					g.needTypeKey(in.Global)
 				}
 			}
@@ -404,6 +429,25 @@ func (g *gen) needTypeKey(key string) {
 	if key == "" {
 		return
 	}
+	if tr, ok := g.types[key]; ok {
+		tr.descOK = true
+		return
+	}
+	g.types[key] = &typeRec{
+		key:    key,
+		global: "$go.type." + key,
+		id:     -1,
+		descOK: true,
+	}
+}
+
+// needTypeKeyLookup registers key for lookupIface / itabtype without
+// ReflectTypeName or $go.type.* emission (dead OpIfaceCall).
+func (g *gen) needTypeKeyLookup(key string) {
+	key = strings.TrimPrefix(key, "$go.type.")
+	if key == "" {
+		return
+	}
 	if _, ok := g.types[key]; ok {
 		return
 	}
@@ -411,6 +455,7 @@ func (g *gen) needTypeKey(key string) {
 		key:    key,
 		global: "$go.type." + key,
 		id:     -1,
+		descOK: false,
 	}
 }
 
@@ -544,12 +589,19 @@ func (g *gen) synthesizeAssertItabs() {
 	seen := map[string]bool{}
 	var concretes []conc
 	restrict := len(g.liveAnyConcretes) > 0
+	liveOrigins := g.liveMonoOrigins()
 	for _, it := range g.itabs {
 		if it.concKey == "" || it.concrete == nil || seen[it.concKey] {
 			continue
 		}
 		if restrict && !g.liveAnyConcretes[it.concKey] {
-			continue
+			// OpIfaceCall method bodies are not Call-reachable, so any-boxes
+			// inside them (typeparam/cons Map → Nil[bool] as any) miss
+			// liveAnyConcretes. Admit empty-iface itab concretes that share a
+			// mono origin with an already-live concrete (Nil[int]→Nil[bool]).
+			if !g.isEmptyIfaceKey(it.ifaceKey) || !liveOrigins[monoOriginKey(it.concKey)] {
+				continue
+			}
 		}
 		seen[it.concKey] = true
 		concretes = append(concretes, conc{key: it.concKey, typ: it.concrete})
@@ -595,6 +647,10 @@ func (g *gen) synthesizeAssertItabs() {
 		if tr := g.types[ifaceKey]; tr != nil && tr.goType != nil {
 			ifaceTy = tr.goType
 		}
+		// Assert itabs pull concrete methods that OpIfaceCall param ifaces
+		// (Function[Cons[bool],any] in List.Match). Those methods may not be
+		// Call-reachable, so scanModule never registered the itabtypes.
+		g.needIfaceSigTypes(iface)
 		for _, c := range concretes {
 			cands := []conc{c}
 			// json TypeAssert on va.Addr() → *T. Emit *T assert itabs for
@@ -643,6 +699,106 @@ func (g *gen) synthesizeAssertItabs() {
 	// IR exists and any-itab was emitted, force error/@ itab; emitItab uses
 	// ensureWrapperFromIR when concrete is nil.
 	g.synthesizeAppendFilesErrorItabs()
+}
+
+// liveMonoOrigins returns TypeKey origins (strip $args) for live concretes.
+func (g *gen) liveMonoOrigins() map[string]bool {
+	out := map[string]bool{}
+	for k := range g.liveAnyConcretes {
+		out[monoOriginKey(k)] = true
+	}
+	for name, it := range g.itabs {
+		if it.concKey == "" {
+			continue
+		}
+		if g.assertItabs[name] || g.liveAnyConcretes[it.concKey] {
+			out[monoOriginKey(it.concKey)] = true
+		}
+	}
+	return out
+}
+
+func monoOriginKey(typeKey string) string {
+	if i := strings.Index(typeKey, "$"); i > 0 {
+		// Keep pointer / slice prefixes: *main.Nil$bool → *main.Nil
+		return typeKey[:i]
+	}
+	return typeKey
+}
+
+func (g *gen) isEmptyIfaceKey(ifaceKey string) bool {
+	if ifaceKey == "any" || ifaceKey == "interface{}" {
+		return true
+	}
+	iface := g.lookupIface(ifaceKey)
+	return iface != nil && iface.Empty()
+}
+
+// needIfaceSigTypes registers interface types appearing in iface method
+// signatures so emitItabType runs for them (itabmethod bodies cast to those
+// itabtypes even when no concrete itab for the param iface was made).
+func (g *gen) needIfaceSigTypes(iface *types.Interface) {
+	if iface == nil {
+		return
+	}
+	var walk func(t types.Type)
+	walk = func(t types.Type) {
+		if t == nil {
+			return
+		}
+		t = types.Unalias(t)
+		if isIfaceType(t) {
+			k := TypeKey(t)
+			if k == "" || k == "any" || k == "interface{}" {
+				return
+			}
+			if !g.ifaces[k] {
+				g.ifaces[k] = true
+				g.needTypeKey(k)
+				if tr := g.types[k]; tr != nil && tr.goType == nil {
+					tr.goType = t
+				}
+				if u, ok := t.Underlying().(*types.Interface); ok {
+					g.needIfaceSigTypes(u)
+				}
+			}
+			return
+		}
+		switch t := t.(type) {
+		case *types.Pointer:
+			walk(t.Elem())
+		case *types.Slice:
+			walk(t.Elem())
+		case *types.Array:
+			walk(t.Elem())
+		case *types.Map:
+			walk(t.Key())
+			walk(t.Elem())
+		case *types.Chan:
+			walk(t.Elem())
+		case *types.Signature:
+			if t.Params() != nil {
+				for i := 0; i < t.Params().Len(); i++ {
+					walk(t.Params().At(i).Type())
+				}
+			}
+			if t.Results() != nil {
+				for i := 0; i < t.Results().Len(); i++ {
+					walk(t.Results().At(i).Type())
+				}
+			}
+		case *types.Named:
+			walk(t.Underlying())
+		}
+	}
+	for i := 0; i < iface.NumMethods(); i++ {
+		walk(iface.Method(i).Type())
+	}
+}
+
+func isIfaceType(t types.Type) bool {
+	_, ok := types.Unalias(t).Underlying().(*types.Interface)
+	return ok
 }
 
 // synthesizeAppendFilesErrorItabs registers $go.itab.error.@.<C> for
@@ -870,6 +1026,9 @@ func (g *gen) emitAll() error {
 		before := len(keys)
 		for _, k := range keys {
 			tr := g.types[k]
+			if !tr.descOK {
+				continue
+			}
 			if tr.id < 0 {
 				tr.id = g.nextID
 				g.nextID++
@@ -889,6 +1048,9 @@ func (g *gen) emitAll() error {
 		// Discover extras' dependent types without emitting globals yet.
 		for _, k := range keys {
 			tr := g.types[k]
+			if !tr.descOK {
+				continue
+			}
 			g.discoverExtraDeps(tr)
 		}
 		if len(g.types) == before {
@@ -902,6 +1064,9 @@ func (g *gen) emitAll() error {
 	sortStrings(keys)
 	for _, k := range keys {
 		tr := g.types[k]
+		if tr == nil || !tr.descOK {
+			continue
+		}
 		if err := g.emitTypeGlobal(tr); err != nil {
 			return err
 		}
@@ -932,7 +1097,7 @@ func (g *gen) emitAll() error {
 		for i := 0; i < n; i++ {
 			ms[i] = it.iface.Method(i)
 		}
-		ifaceMethods[it.ifaceKey] = ms
+		ifaceMethods[it.ifaceKey] = g.filterIfaceMethods(ms)
 		it.typeName = "$go.itabtype." + sanitize(it.ifaceKey)
 	}
 	for ifaceKey := range g.ifaces {
@@ -951,7 +1116,7 @@ func (g *gen) emitAll() error {
 		for i := 0; i < n; i++ {
 			ms[i] = iface.Method(i)
 		}
-		ifaceMethods[ifaceKey] = ms
+		ifaceMethods[ifaceKey] = g.filterIfaceMethods(ms)
 	}
 	for ifaceKey, ms := range ifaceMethods {
 		if err := g.emitItabType(ifaceKey, ms); err != nil {
@@ -962,6 +1127,119 @@ func (g *gen) emitAll() error {
 		it := g.itabs[name]
 		if err := g.emitItab(it); err != nil {
 			return err
+		}
+	}
+	// emitItab may add wrappers that OpIfaceCall through an embedded interface
+	// (e.g. concrete embeds io.ByteWriter). Those itabtypes are not in
+	// ifaceMethods above — emit them now before RuntimeOps expands the casts.
+	if err := g.emitMissingItabTypes(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// emitMissingItabTypes declares any $go.itabtype.* referenced by OpIfaceCall
+// that emitItabType has not yet produced (promoted embedded-iface wrappers).
+// Without this, IR verify fails with "ref.cast to unknown type".
+func (g *gen) emitMissingItabTypes() error {
+	// ifaceKeys from OpIfaceCall.Global (unsanitized TypeKey).
+	needed := map[string]bool{}
+	// Sanitized suffixes from Type2 / casts when Global is absent.
+	neededSan := map[string]bool{}
+	for _, f := range g.mod.Funcs {
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpIfaceCall && in.Global != "" {
+				needed[in.Global] = true
+				return
+			}
+			var named string
+			if in.Op == ir.OpIfaceCall {
+				if r, ok := in.Type2.(*ir.Ref); ok {
+					named = r.Named
+				}
+			}
+			if in.Op == ir.OpRefCast {
+				if r, ok := in.Type.(*ir.Ref); ok {
+					named = r.Named
+				}
+			}
+			const p = "$go.itabtype."
+			if strings.HasPrefix(named, p) {
+				neededSan[strings.TrimPrefix(named, p)] = true
+			}
+		})
+	}
+	emit := func(ifaceKey string, iface *types.Interface) error {
+		if iface == nil || iface.Empty() {
+			return nil
+		}
+		if g.mod.LookupType("$go.itabtype."+sanitize(ifaceKey)) != nil {
+			return nil
+		}
+		n := iface.NumMethods()
+		ms := make([]*types.Func, n)
+		for i := 0; i < n; i++ {
+			ms[i] = iface.Method(i)
+		}
+		return g.emitItabType(ifaceKey, g.filterIfaceMethods(ms))
+	}
+	for ifaceKey := range needed {
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil && ifaceKey == "error" {
+			iface = errorInterface()
+		}
+		if err := emit(ifaceKey, iface); err != nil {
+			return err
+		}
+	}
+	for san := range neededSan {
+		if g.mod.LookupType("$go.itabtype."+san) != nil {
+			continue
+		}
+		ifaceKey := strings.ReplaceAll(san, "_", ".")
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil {
+			iface = g.findIfaceBySanitized(san)
+			if iface != nil {
+				ifaceKey = TypeKey(iface)
+			}
+		}
+		if err := emit(ifaceKey, iface); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// findIfaceBySanitized finds a named interface whose Sanitize(TypeKey) matches.
+func (g *gen) findIfaceBySanitized(san string) *types.Interface {
+	if g.prog == nil {
+		return nil
+	}
+	for _, pkg := range g.prog.Packages {
+		if pkg == nil || pkg.Types == nil {
+			continue
+		}
+		scope := pkg.Types.Scope()
+		for _, name := range scope.Names() {
+			obj := scope.Lookup(name)
+			tn, ok := obj.(*types.TypeName)
+			if !ok || tn.Type() == nil {
+				continue
+			}
+			if sanitize(TypeKey(tn.Type())) != san {
+				continue
+			}
+			if iface, ok := tn.Type().Underlying().(*types.Interface); ok {
+				return iface
+			}
 		}
 	}
 	return nil
@@ -1644,8 +1922,13 @@ func (g *gen) emitItab(it *itabRec) error {
 	args := []ir.Expr{
 		&ir.Instr{Op: ir.OpGlobalGet, Global: tr.global},
 	}
-	for i := 0; i < it.iface.NumMethods(); i++ {
-		m := it.iface.Method(i)
+	nMeth := it.iface.NumMethods()
+	ms := make([]*types.Func, nMeth)
+	for i := 0; i < nMeth; i++ {
+		ms[i] = it.iface.Method(i)
+	}
+	ms = g.filterIfaceMethods(ms)
+	for i, m := range ms {
 		wrap, err := g.ensureWrapper(it, m, i)
 		if err != nil {
 			return err
@@ -1751,7 +2034,9 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 	if _, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
 		ifaceKey := TypeKey(recvGo)
 		methodIdx := 0
-		if iface, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+		var iface *types.Interface
+		if i, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+			iface = i
 			for i := 0; i < iface.NumMethods(); i++ {
 				if iface.Method(i).Name() == m.Name() {
 					methodIdx = i
@@ -1761,6 +2046,15 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 		}
 		fnSig := "$go.ifacefn." + sanitize(ifaceKey) + "." + m.Name()
 		g.ensureIfaceFnType(fnSig, m)
+		// emitItabType may not have run for this embedded iface yet (itab was
+		// for the outer interface). Declare it before RuntimeOps expands.
+		if iface != nil && !iface.Empty() {
+			ms := make([]*types.Func, iface.NumMethods())
+			for i := 0; i < iface.NumMethods(); i++ {
+				ms[i] = iface.Method(i)
+			}
+			_ = g.emitItabType(ifaceKey, ms)
+		}
 		var res ir.Type
 		if len(results) > 0 {
 			res = results[0]
@@ -2031,30 +2325,9 @@ func TypeKey(t types.Type) string {
 		}
 		return t.Name()
 	case *types.Named:
-		pkg := ""
-		if t.Obj().Pkg() != nil {
-			pkg = pkgIRPrefix(t.Obj().Pkg()) + "."
-		}
-		suffix := ""
-		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
-			var b strings.Builder
-			ok := true
-			for i := 0; i < targs.Len(); i++ {
-				a := targs.At(i)
-				if _, isTP := types.Unalias(a).(*types.TypeParam); isTP {
-					ok = false
-					break
-				}
-				if i > 0 {
-					b.WriteByte('$')
-				}
-				b.WriteString(TypeKey(a))
-			}
-			if ok {
-				suffix = "$" + b.String()
-			}
-		}
-		return pkg + t.Obj().Name() + suffix + mono.LocalTypeSuffix(t.Obj())
+		// Function-local types inside a generic instantiation include outer
+		// mono args in the key (typeparam/nested.go: F[int].T ≠ F[Int].T).
+		return namedTypeKey(t)
 	case *types.Pointer:
 		return "*" + TypeKey(t.Elem())
 	case *types.Interface:

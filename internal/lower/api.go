@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/escape"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
@@ -48,6 +49,7 @@ func PackageHighMono(pkgs []*load.Package, main *load.Package, tab *mono.Table) 
 	if main == nil {
 		return nil, fmt.Errorf("lower.Package: no main package")
 	}
+	desc.ClearNestedDisplay()
 	mod := &ir.Module{}
 	md := metaOf(mod)
 
@@ -112,6 +114,7 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package, tab *mono.Tab
 	if pkg.PkgPath == "runtime" && pkg.Standard {
 		return nil
 	}
+	desc.AssignVargen(nil, pkg.Syntax, pkg.Info)
 	l := &pkgLower{
 		fset:  nil, // positions reported by package path
 		files: pkg.Syntax,
@@ -132,6 +135,9 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package, tab *mono.Tab
 //	  return
 //	}
 //
+// When the program already defines func run (IR main.run), the wrapper is
+// named $go.run instead so Export "run" is still emitted (issue18636).
+//
 // It does not set Module.Low; Package calls RuntimeOps after Finish.
 // Inits linked later via AppendFiles (rtlink.EnsureSched, etc.) are wired by
 // LinkPendingInits after those Ensure* calls.
@@ -146,7 +152,7 @@ func Finish(mod *ir.Module) error {
 	if mod.LookupFunc("main.main") == nil {
 		return fmt.Errorf("lower.Finish: no main.main function")
 	}
-	if mod.LookupFunc("main.run") != nil {
+	if mod.LookupExport("run") != nil {
 		md.finished = true
 		return nil
 	}
@@ -160,8 +166,12 @@ func Finish(mod *ir.Module) error {
 		&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "main.main"}},
 		&ir.Return{},
 	)
+	entry := ir.RunEntryName
+	if mod.LookupFunc(entry) != nil {
+		entry = ir.AltRunEntryName
+	}
 	run := &ir.Func{
-		Name:   "main.run",
+		Name:   entry,
 		Export: "run",
 		Body:   body,
 	}
@@ -182,7 +192,7 @@ func LinkPendingInits(mod *ir.Module) {
 	if md == nil || len(md.initOrder) == 0 {
 		return
 	}
-	run := mod.LookupFunc("main.run")
+	run := mod.LookupExport("run")
 	if run == nil || run.Body == nil {
 		return
 	}

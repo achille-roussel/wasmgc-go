@@ -85,6 +85,9 @@ type Type interface {
 	MethodByName(name string) (Method, bool)
 	IsVariadic() bool
 	ChanDir() ChanDir
+	// Last so desc can omit the itab slot when unused (fmt hello size);
+	// issue48318 calls it and gets the real body via the itab.
+	FieldByIndex(index []int) StructField
 }
 
 // SliceHeader is a deprecated runtime representation of a slice (still used by
@@ -1461,11 +1464,23 @@ type rtype struct {
 	str  string
 }
 
+// wrapCache interns *rtype by underlying *runtime.Rtype so Type values
+// compare equal with == (nested.go, TypeOf identity). Slice not map: hello
+// must not pull hmap via reflect.
+var wrapCache []*rtype
+
 func wrap(t *runtime.Rtype) *rtype {
 	if t == nil {
 		return nil
 	}
-	return &rtype{rt: t}
+	for _, r := range wrapCache {
+		if r != nil && r.rt == t {
+			return r
+		}
+	}
+	r := &rtype{rt: t}
+	wrapCache = append(wrapCache, r)
+	return r
 }
 
 func asRtype(t Type) *rtype {
@@ -1499,7 +1514,17 @@ func (t *rtype) Name() string {
 		if i := lastDot(n); i >= 0 {
 			return n[i+1:]
 		}
-		return n
+		if n != "" {
+			return n
+		}
+	}
+	// ReflectTypeName omits predeclared basics (size: no "pkg." display).
+	// gc still reports Name()=="int" for those; match via Kind.
+	switch t.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64,
+		Uint, Uint8, Uint16, Uint32, Uint64, Uintptr,
+		Float32, Float64, Complex64, Complex128, String, UnsafePointer:
+		return t.Kind().String()
 	}
 	return ""
 }
@@ -1660,6 +1685,27 @@ func (t *rtype) Field(i int) StructField {
 			tn = tn[i+1:]
 		}
 		f.Anonymous = tn != "" && f.Name == tn
+	}
+	return f
+}
+
+func (t *rtype) FieldByIndex(index []int) StructField {
+	// Stub for fmt size: desc rewrites to fieldByIndexImpl when call-reachable
+	// (encoding/xml). fieldByIndexImpl is DCE'd when unused.
+	return StructField{}
+}
+
+func (t *rtype) fieldByIndexImpl(index []int) StructField {
+	if t == nil || len(index) == 0 {
+		return StructField{}
+	}
+	f := t.Field(index[0])
+	for _, i := range index[1:] {
+		ft := asRtype(f.Type)
+		if ft == nil {
+			return StructField{}
+		}
+		f = ft.Field(i)
 	}
 	return f
 }

@@ -31,6 +31,9 @@ func TypeArgKey(t types.Type) string {
 		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
 			name += "$" + typeArgsKey(typeListSlice(targs))
 		}
+		// Distinguish function-local named types (F[local Int] ≠ F[pkg Int]
+		// in typeparam/nested.go).
+		name += LocalTypeSuffix(t.Obj())
 		return name
 	case *types.Pointer:
 		return "*" + TypeArgKey(t.Elem())
@@ -70,6 +73,12 @@ func typeArgsKey(args []types.Type) string {
 }
 
 // FuncIRName returns the IR name for a specialized function or method.
+//
+// Type-arg suffixes attach to the generic named receiver (List$int.Len) when
+// the receiver type is generic. For methods that themselves have type
+// parameters on a non-generic receiver ((*TypeMap).Set[T]), the suffix
+// attaches to the method name (main.(*TypeMap).Set$main.res) so a type whose
+// name ends with the method name (HashSet) cannot be misparsed (issue80976).
 func FuncIRName(origin *types.Func, args []types.Type) string {
 	sig := origin.Type().(*types.Signature)
 	pkg := "main"
@@ -88,16 +97,25 @@ func FuncIRName(origin *types.Func, args []types.Type) string {
 			rt = p.Elem()
 		}
 		named, _ := types.Unalias(rt).(*types.Named)
+		recvGeneric := named != nil && named.Origin().TypeParams().Len() > 0
 		tname := "T"
 		if named != nil {
-			tname = named.Obj().Name() + suffix + LocalTypeSuffix(named.Obj())
-		} else {
-			tname = tname + suffix
+			tname = named.Obj().Name()
+			if recvGeneric {
+				tname += suffix
+			}
+			tname += LocalTypeSuffix(named.Obj())
+		} else if recvGeneric {
+			tname += suffix
+		}
+		methodSuffix := ""
+		if !recvGeneric {
+			methodSuffix = suffix
 		}
 		if ptr {
-			return pkg + ".(*" + tname + ")." + origin.Name()
+			return pkg + ".(*" + tname + ")." + origin.Name() + methodSuffix
 		}
-		return pkg + "." + tname + "." + origin.Name()
+		return pkg + "." + tname + "." + origin.Name() + methodSuffix
 	}
 	return pkg + "." + origin.Name() + suffix
 }
@@ -136,9 +154,109 @@ func LocalTypeSuffix(obj *types.TypeName) string {
 
 // NamedTypeKey returns a descriptor/Wasm type key distinguishing instantiations.
 func NamedTypeKey(t *types.Named) string {
+	return NamedTypeKeyOuter(t, nil)
+}
+
+// NamedTypeKeyOuter is NamedTypeKey plus optional outer (enclosing generic
+// function) type arguments. Nested locals inside F[A] are implicitly
+// parameterized by A (typeparam/nested.go): F[int].T[int] ≠ F[Int].T[int].
+// outer is ignored when t is not function-local.
+func NamedTypeKeyOuter(t *types.Named, outer []types.Type) string {
 	pkg := ""
 	if t.Obj().Pkg() != nil {
 		pkg = t.Obj().Pkg().Name() + "."
 	}
-	return pkg + t.Obj().Name() + NamedIRSuffix(t) + LocalTypeSuffix(t.Obj())
+	name := pkg + t.Obj().Name()
+	if len(outer) > 0 && LocalTypeSuffix(t.Obj()) != "" && !argsContainTypeParam(outer) {
+		// $xN$ marks N outer args so keys stay parseable for display.
+		name += fmt.Sprintf("$x%d$", len(outer)) + typeArgsKey(outer)
+	}
+	return name + NamedIRSuffix(t) + LocalTypeSuffix(t.Obj())
+}
+
+// NestedDisplayName formats a nested generic local like gc reflect.Type.String:
+// main.T[int;int] with outer args before ';' and ·N on locals used as args.
+// asArg includes the ·N vargen suffix on this type's own name.
+//
+// Local types declared in the same generic function share outer. When a local
+// named appears as a type argument, sameBody (via NestedDisplayArg) decides
+// whether that arg inherits outer.
+func NestedDisplayName(t *types.Named, outer []types.Type, asArg bool, vargen func(*types.TypeName) int) string {
+	return nestedDisplayName(t, outer, asArg, true, vargen)
+}
+
+func nestedDisplayName(t *types.Named, outer []types.Type, asArg, argsSameBody bool, vargen func(*types.TypeName) int) string {
+	if t == nil {
+		return ""
+	}
+	pkg := "main"
+	if t.Obj().Pkg() != nil && t.Obj().Pkg().Name() != "" {
+		pkg = t.Obj().Pkg().Name()
+	}
+	var b strings.Builder
+	b.WriteString(pkg)
+	b.WriteByte('.')
+	b.WriteString(t.Obj().Name())
+
+	useOuter := len(outer) > 0 && LocalTypeSuffix(t.Obj()) != "" && !argsContainTypeParam(outer)
+	targs := typeListSlice(t.TypeArgs())
+	useInner := len(targs) > 0 && !argsContainTypeParam(targs)
+	if useOuter || useInner {
+		b.WriteByte('[')
+		args := make([]types.Type, 0, len(outer)+len(targs))
+		if useOuter {
+			args = append(args, outer...)
+		}
+		if useInner {
+			args = append(args, targs...)
+		}
+		for i, a := range args {
+			if i > 0 {
+				b.WriteByte(';')
+			}
+			b.WriteString(NestedDisplayArg(a, outer, argsSameBody, vargen))
+		}
+		b.WriteByte(']')
+	}
+	if asArg && vargen != nil {
+		if g := vargen(t.Obj()); g > 0 {
+			fmt.Fprintf(&b, "·%d", g)
+		}
+	}
+	return b.String()
+}
+
+// NestedDisplayArg formats a type argument. sameBody reports whether a
+// function-local named type was declared in the same generic body as the
+// parent (shares outer implicits). Locals from other functions only get ·N.
+func NestedDisplayArg(a types.Type, outer []types.Type, sameBody bool, vargen func(*types.TypeName) int) string {
+	a = types.Unalias(a)
+	switch a := a.(type) {
+	case *types.Named:
+		asArg := LocalTypeSuffix(a.Obj()) != ""
+		argOuter := []types.Type(nil)
+		if asArg && sameBody {
+			argOuter = outer
+		}
+		return NestedDisplayName(a, argOuter, asArg, vargen)
+	case *types.Basic:
+		switch a.Kind() {
+		case types.Byte:
+			return "uint8"
+		case types.Rune:
+			return "int32"
+		}
+		return a.Name()
+	default:
+		s := a.String()
+		if strings.HasPrefix(s, "gotestcase.") {
+			return "main." + strings.TrimPrefix(s, "gotestcase.")
+		}
+		return s
+	}
+}
+
+// IsFunctionLocal reports whether obj is declared outside package scope.
+func IsFunctionLocal(obj *types.TypeName) bool {
+	return LocalTypeSuffix(obj) != ""
 }

@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"strconv"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
@@ -103,6 +104,16 @@ func (l *pkgLower) lowerInstance(inst *mono.Instance) (*ir.Func, error) {
 		l.subst = oldSubst
 		l.info = oldInfo
 	}()
+
+	// Nested locals inside this generic body are implicitly parameterized by
+	// inst.Args (typeparam/nested.go). Scope TypeKey to the FuncDecl body.
+	outer := desc.MonoOuter{Args: inst.Args}
+	if fd.Body != nil {
+		outer.BodyPos = fd.Body.Pos()
+		outer.BodyEnd = fd.Body.End()
+	}
+	restoreOuter := desc.SetMonoOuter(outer)
+	defer restoreOuter()
 
 	fl, err := l.newFuncLowerInst(fd, inst)
 	if err != nil {
@@ -398,6 +409,31 @@ func (fl *funcLower) resolveGenericMethod(fun *ast.SelectorExpr) (name string, r
 	if origin == nil {
 		return "", nil, false, nil
 	}
+	if !methodNeedsMono(origin) {
+		return "", nil, false, nil
+	}
+	origSig := origin.Type().(*types.Signature)
+	// Method with its own type parameters (e.g. (*TypeMap).Set[T]): specialize
+	// via Instances on the selector, not receiver type args (issue80976).
+	if tps := origSig.TypeParams(); tps != nil && tps.Len() > 0 {
+		instRec, has := fl.info.Instances[fun.Sel]
+		if !has {
+			return "", nil, false, fl.errorf(fun.Sel, "generic method %s missing Instance", fun.Sel.Name)
+		}
+		args := fl.concreteArgs(instRec.TypeArgs)
+		if args == nil {
+			return "", nil, false, fl.errorf(fun.Sel, "generic method %s has unsubstituted type args", fun.Sel.Name)
+		}
+		inst, err := fl.pkg.mono.EnsureFunc(origin, args)
+		if err != nil {
+			return "", nil, false, fl.errorf(fun.Sel, "%v", err)
+		}
+		results, err = fl.resultTypesOf(inst.Sig)
+		if err != nil {
+			return "", nil, false, err
+		}
+		return inst.IRName, results, true, nil
+	}
 	recv := fn.Type().(*types.Signature).Recv().Type()
 	if len(fl.pkg.subst) > 0 {
 		recv = fl.pkg.subst.Apply(recv)
@@ -417,9 +453,6 @@ func (fl *funcLower) resolveGenericMethod(fun *ast.SelectorExpr) (name string, r
 		}
 	}
 	if len(args) == 0 {
-		return "", nil, false, nil
-	}
-	if !methodNeedsMono(origin) {
 		return "", nil, false, nil
 	}
 	inst, err := fl.pkg.mono.EnsureMethod(origin, recv)

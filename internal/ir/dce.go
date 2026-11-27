@@ -211,7 +211,7 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 			// Unused $go.extra.func / inType helpers are omitted at emit time
 			// (needsFuncParamAPI) rather than skipped here — live type inits
 			// that do embed ref.func $go.func.inType.* must keep them.
-			if !isReflectCallAPI(e.Func) {
+			if !IsReflectCallAPI(e.Func) {
 				markFn(e.Func)
 			}
 		case OpGlobalGet, OpGlobalSet:
@@ -225,9 +225,11 @@ func collectRefsExpr(e Expr, markFn, markGl func(string)) {
 	}
 }
 
-// isReflectCallAPI reports reflect.Value.Call / CallSlice and itab wrappers
-// for those methods ($go.wrap.…reflect_Value….Call).
-func isReflectCallAPI(name string) bool {
+// IsReflectCallAPI reports reflect.Value.Call / CallSlice and itab wrappers
+// for those methods ($go.wrap.…reflect_Value….Call). RefFunc into these must
+// not keep Call live: its closed-universe type-switch interns $go.func.*
+// signatures even when fmt never calls Call (stdlib14 size recovery).
+func IsReflectCallAPI(name string) bool {
 	switch name {
 	case "reflect.Value.Call", "reflect.Value.CallSlice":
 		return true

@@ -1612,13 +1612,7 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 			pv := fl.newVar("pstar", pt)
 			stmts = append(stmts, fl.assignVar(pv, ptr))
 			ptr = fl.useVar(pv)
-			stmts = append(stmts, &ir.If{
-				Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{ptr}},
-				Then: &ir.Seq{Stmts: []ir.Stmt{
-					&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-					&ir.Unreachable{},
-				}},
-			})
+			stmts = append(stmts, fl.panicIfNilRef(ptr))
 			elem := types.Unalias(xt).Underlying().(*types.Pointer).Elem()
 			// *[N]T: element-wise array.copy into the existing array ref.
 			if arr, ok := types.Unalias(elem).Underlying().(*types.Array); ok {
@@ -1780,13 +1774,7 @@ func (fl *funcLower) assignToCloned(lhs ast.Expr, rhs ir.Expr) ([]ir.Stmt, error
 				pv := fl.newVar("parr", pt)
 				stmts = append(stmts, fl.assignVar(pv, base))
 				base = fl.useVar(pv)
-				stmts = append(stmts, &ir.If{
-					Cond: &ir.Instr{Op: ir.OpRefIsNull, Args: []ir.Expr{base}},
-					Then: &ir.Seq{Stmts: []ir.Stmt{
-						&ir.ExprStmt{X: &ir.Instr{Op: ir.OpCall, Func: "runtime.panicNil"}},
-						&ir.Unreachable{},
-					}},
-				})
+				stmts = append(stmts, fl.panicIfNilRef(base))
 			}
 			arrName := ""
 			if irt, err := fl.mapType(elemT); err == nil {

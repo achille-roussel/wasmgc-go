@@ -9,13 +9,11 @@ empty_main	512
 println	2048
 # #75 time Format/Parse port: export aliases stay in overlay export_test
 # so hello stays ~234 KiB (under 250 KiB ceiling).
-# stdlib13: recoverable nil *T stores (issue40629 panicNil at every fat-ptr
-# store) + issue19113 Call closed-universe type-asserts intern ~10 $go.func.*
-# signatures into the type section even when Call is DCE'd from fmt. Hello
-# ~252 KiB / float ~305 KiB; ceilings raised 250→255 KiB and 300→310 KiB.
-# $go.extra.func / NumIn are gated on needsFuncParamAPI so they do not add
-# further fmt bloat.
-m8_fmt_hello	255000
+# stdlib14: gate Call type-assert needTypeKey on call-reachability (not itab
+# RefFunc) + PruneUnusedTypes for orphan $go.func.* sigs; out-of-line
+# $go.panicIfNull for recoverable nil *T stores (issue40629). Retighten
+# hello 255→250 KiB and float 310→300 KiB after #77's temporary raise.
+m8_fmt_hello	250000
 m8_fmt_map	300000
-m8_fmt_float	310000
+m8_fmt_float	300000
 m8_fmt_quote	270000
