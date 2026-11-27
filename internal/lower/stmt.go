@@ -3326,6 +3326,21 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 			arm.conds = cc.List
 		} else {
 			for _, c := range cc.List {
+				caseTy := fl.typeOf(c)
+				// Concrete tag vs interface case uses Go's x == iface
+				// semantics: box the tag and iface.eq (typeparam/issue51522b).
+				// coerceExpr(iface→concrete) would leave the iface ref and
+				// emit a mistyped i32.eq.
+				if !isIface(tagType) && caseTy != nil && isIface(caseTy) {
+					ex, stmts, err := fl.expr(c, typeIface)
+					if err != nil {
+						return nil, err
+					}
+					arm.pre = append(arm.pre, stmts...)
+					arm.values = append(arm.values, ex)
+					arm.ifaceCmp = append(arm.ifaceCmp, true)
+					continue
+				}
 				want, _ := fl.mapType(tagType)
 				// Box concrete case values into the tag's interface type
 				// (e.g. strconv.toError switches on error vs internal/strconv.Error ints).
@@ -3335,6 +3350,7 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 				}
 				arm.pre = append(arm.pre, stmts...)
 				arm.values = append(arm.values, ex)
+				arm.ifaceCmp = append(arm.ifaceCmp, false)
 			}
 		}
 		arms = append(arms, arm)
@@ -3368,11 +3384,12 @@ func (fl *funcLower) switchStmt(s *ast.SwitchStmt, goLabel string) ([]ir.Stmt, e
 }
 
 type caseArm struct {
-	values []ir.Expr  // for tagged switch
-	pre    []ir.Stmt  // stmts from evaluating case values
-	conds  []ast.Expr // for switch without tag
-	body   *ast.BlockStmt
-	def    bool
+	values   []ir.Expr  // for tagged switch
+	ifaceCmp []bool     // parallel to values: compare via iface.eq(box(tag), v)
+	pre      []ir.Stmt  // stmts from evaluating case values
+	conds    []ast.Expr // for switch without tag
+	body     *ast.BlockStmt
+	def      bool
 }
 
 func caseHasFallthrough(body *ast.BlockStmt) bool {
@@ -3638,7 +3655,12 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 			want, _ := fl.mapType(tagType)
 			// Interface / string / ref tags cannot use i32.eq (strconv.toError
 			// switches on error values; string switches need runtime.stringeq).
-			eq := func(v ir.Expr) ir.Expr {
+			eq := func(v ir.Expr, viaIface bool) ir.Expr {
+				if viaIface {
+					emptyIface := types.NewInterfaceType(nil, nil)
+					boxed := fl.boxIRToIface(tag, tagType, emptyIface)
+					return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{boxed, v}}
+				}
 				switch {
 				case isIface(tagType):
 					return &ir.Instr{Op: ir.OpConv, Type: ir.TypeI32, Str: "iface.eq", Args: []ir.Expr{tag, v}}
@@ -3663,9 +3685,11 @@ func (fl *funcLower) emitSwitchIfChain(tag ir.Expr, untag bool, tagType types.Ty
 					return &ir.Instr{Op: ir.OpI32Eq, Args: []ir.Expr{tag, v}}
 				}
 			}
-			cond = eq(a.values[0])
-			for _, v := range a.values[1:] {
-				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, eq(v)}}
+			via0 := len(a.ifaceCmp) > 0 && a.ifaceCmp[0]
+			cond = eq(a.values[0], via0)
+			for vi, v := range a.values[1:] {
+				via := len(a.ifaceCmp) > vi+1 && a.ifaceCmp[vi+1]
+				cond = &ir.Instr{Op: ir.OpI32Or, Args: []ir.Expr{cond, eq(v, via)}}
 			}
 		}
 		seq := append(pre, &ir.If{Cond: cond, Then: body, Else: elseR})
