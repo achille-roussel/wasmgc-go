@@ -517,6 +517,9 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 			ifaceType = r.Type()
 		}
 	}
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 && ifaceType != nil {
+		ifaceType = fl.pkg.subst.Apply(ifaceType)
+	}
 	if !isIface(ifaceType) {
 		return nil, nil, fl.errorf(fun, "internal: ifaceCall on non-interface")
 	}
@@ -525,17 +528,27 @@ func (fl *funcLower) ifaceCall(e *ast.CallExpr, fun *ast.SelectorExpr, sel *type
 		return nil, nil, err
 	}
 	sig := fn.Type().(*types.Signature)
+	// After mono, origin methods on B[T] still mention type params whose
+	// Underlying is the constraint iface — Apply so Work(T) becomes
+	// Work(string) and we do not box the arg as any (typeparam/issue48047).
+	if fl.pkg != nil && len(fl.pkg.subst) > 0 {
+		if s, ok := fl.pkg.subst.Apply(sig).(*types.Signature); ok {
+			sig = s
+		}
+	}
 	var args []ir.Expr
 	args = append(args, recv)
 	for i, a := range e.Args {
 		var want ir.Type
+		var paramTy types.Type
 		if i < sig.Params().Len() {
-			want, _ = fl.mapType(sig.Params().At(i).Type())
+			paramTy = sig.Params().At(i).Type()
+			want, _ = fl.mapType(paramTy)
 		}
 		// Interface param: convert.
 		at := fl.typeOf(a)
-		if want != nil && isIface(sig.Params().At(i).Type()) && at != nil && !isIface(at) {
-			ex, st, err := fl.convertToIface(a, at, sig.Params().At(i).Type(), typeIface)
+		if want != nil && paramTy != nil && isIface(paramTy) && at != nil && !isIface(at) {
+			ex, st, err := fl.convertToIface(a, at, paramTy, typeIface)
 			if err != nil {
 				return nil, nil, err
 			}
