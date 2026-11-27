@@ -23,6 +23,9 @@ func typeDisplayName(tr *typeRec) string {
 	if tr == nil {
 		return ""
 	}
+	if d := lookupNestedDisplay(tr.key); d != "" {
+		return d
+	}
 	if tr.goType != nil {
 		if n, ok := types.Unalias(tr.goType).(*types.Named); ok {
 			obj := n.Obj()

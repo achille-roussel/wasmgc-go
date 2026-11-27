@@ -68,6 +68,7 @@ type Type interface {
 	Bits() int
 	NumField() int
 	Field(i int) StructField
+	FieldByIndex(index []int) StructField
 	FieldByName(name string) (StructField, bool)
 	NumIn() int
 	NumOut() int
@@ -1682,6 +1683,21 @@ func (t *rtype) Field(i int) StructField {
 			tn = tn[i+1:]
 		}
 		f.Anonymous = tn != "" && f.Name == tn
+	}
+	return f
+}
+
+func (t *rtype) FieldByIndex(index []int) StructField {
+	if t == nil || len(index) == 0 {
+		return StructField{}
+	}
+	f := t.Field(index[0])
+	for _, i := range index[1:] {
+		ft := asRtype(f.Type)
+		if ft == nil {
+			return StructField{}
+		}
+		f = ft.Field(i)
 	}
 	return f
 }

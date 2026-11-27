@@ -219,6 +219,9 @@ func lowerProgram(b Backends, prog *load.Program, opts Options) (*ir.Module, err
 	if err := rtlink.EnsurePublic(mod, rewriteDir); err != nil {
 		return nil, err
 	}
+	if err := rtlink.EnsureComplexDiv(mod, rewriteDir); err != nil {
+		return nil, err
+	}
 	// Reflect helpers (runtime.Reflect*) before desc fills their body-less IR.
 	if err := rtlink.EnsureReflect(mod, rewriteDir); err != nil {
 		return nil, err

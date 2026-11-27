@@ -2371,9 +2371,9 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 	yre := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "real", Args: []ir.Expr{y}}
 	yim := &ir.Instr{Op: ir.OpStructGet, Type: cWant, Field: "imag", Args: []ir.Expr{y}}
 
-	add, sub, mul, div, eq := ir.OpF64Add, ir.OpF64Sub, ir.OpF64Mul, ir.OpF64Div, ir.OpF64Eq
+	add, sub, mul, eq := ir.OpF64Add, ir.OpF64Sub, ir.OpF64Mul, ir.OpF64Eq
 	if elem == ir.TypeF32 {
-		add, sub, mul, div, eq = ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div, ir.OpF32Eq
+		add, sub, mul, eq = ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Eq
 	}
 
 	switch e.Op {
@@ -2415,25 +2415,58 @@ func (fl *funcLower) complexBinary(e *ast.BinaryExpr, want ir.Type) (ir.Expr, []
 			},
 		}, stmts, nil
 	case token.QUO:
-		// (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
-		ac := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yre}}
-		bd := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yim}}
-		bc := &ir.Instr{Op: mul, Args: []ir.Expr{xim, yre}}
-		ad := &ir.Instr{Op: mul, Args: []ir.Expr{xre, yim}}
-		cc := &ir.Instr{Op: mul, Args: []ir.Expr{yre, yre}}
-		dd := &ir.Instr{Op: mul, Args: []ir.Expr{yim, yim}}
-		den := &ir.Instr{Op: add, Args: []ir.Expr{cc, dd}}
-		reN := &ir.Instr{Op: add, Args: []ir.Expr{ac, bd}}
-		imN := &ir.Instr{Op: sub, Args: []ir.Expr{bc, ad}}
-		return &ir.Instr{
-			Op: ir.OpStructNew, Type: cWant,
-			Args: []ir.Expr{
-				&ir.Instr{Op: div, Args: []ir.Expr{reN, den}},
-				&ir.Instr{Op: div, Args: []ir.Expr{imN, den}},
-			},
-		}, stmts, nil
+		// Robust division via runtime.complex128div (Smith + C99 Inf/NaN).
+		c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+		fl.ensureComplexType("$go.complex128", ir.TypeF64)
+		num, den := x, y
+		if name == "$go.complex64" {
+			num = fl.promoteComplex64(x)
+			den = fl.promoteComplex64(y)
+		}
+		quo := &ir.Instr{
+			Op:   ir.OpCall,
+			Func: "runtime.complex128div",
+			Type: c128,
+			Args: []ir.Expr{num, den},
+		}
+		if name == "$go.complex64" {
+			return fl.demoteComplex128(quo), stmts, nil
+		}
+		return quo, stmts, nil
 	default:
 		return nil, nil, fl.errorf(e, "unsupported complex op %v", e.Op)
+	}
+}
+
+func (fl *funcLower) promoteComplex64(x ir.Expr) ir.Expr {
+	c64 := &ir.Ref{Null: true, Named: "$go.complex64"}
+	c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+	fl.ensureComplexType("$go.complex64", ir.TypeF32)
+	fl.ensureComplexType("$go.complex128", ir.TypeF64)
+	re := &ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: c64, Field: "imag", Args: []ir.Expr{x}}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: c128,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{re}},
+			&ir.Instr{Op: ir.OpF64PromoteF32, Args: []ir.Expr{im}},
+		},
+	}
+}
+
+func (fl *funcLower) demoteComplex128(x ir.Expr) ir.Expr {
+	c64 := &ir.Ref{Null: true, Named: "$go.complex64"}
+	c128 := &ir.Ref{Null: true, Named: "$go.complex128"}
+	fl.ensureComplexType("$go.complex64", ir.TypeF32)
+	fl.ensureComplexType("$go.complex128", ir.TypeF64)
+	re := &ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "real", Args: []ir.Expr{x}}
+	im := &ir.Instr{Op: ir.OpStructGet, Type: c128, Field: "imag", Args: []ir.Expr{x}}
+	return &ir.Instr{
+		Op: ir.OpStructNew, Type: c64,
+		Args: []ir.Expr{
+			&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{re}},
+			&ir.Instr{Op: ir.OpF32DemoteF64, Args: []ir.Expr{im}},
+		},
 	}
 }
 

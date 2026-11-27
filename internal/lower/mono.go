@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"strconv"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/mono"
 )
@@ -103,6 +104,16 @@ func (l *pkgLower) lowerInstance(inst *mono.Instance) (*ir.Func, error) {
 		l.subst = oldSubst
 		l.info = oldInfo
 	}()
+
+	// Nested locals inside this generic body are implicitly parameterized by
+	// inst.Args (typeparam/nested.go). Scope TypeKey to the FuncDecl body.
+	outer := desc.MonoOuter{Args: inst.Args}
+	if fd.Body != nil {
+		outer.BodyPos = fd.Body.Pos()
+		outer.BodyEnd = fd.Body.End()
+	}
+	restoreOuter := desc.SetMonoOuter(outer)
+	defer restoreOuter()
 
 	fl, err := l.newFuncLowerInst(fd, inst)
 	if err != nil {

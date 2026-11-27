@@ -271,7 +271,14 @@ func (g *gen) scanModule() {
 				if in.Str == "iface.eq" {
 				}
 			case ir.OpIfaceCall:
-				if inLive && in.Global != "" {
+				// Always record iface keys + needTypeKey for itabtype emission:
+				// RuntimeOps expands OpIfaceCall in dead bodies too, and IR
+				// verify rejects ref.cast to missing $go.itabtype.* (io.RuneReader
+				// via regexp; mono Function[Nil[bool],any] in typeparam/cons).
+				// needTypeKey here is the iface key only (not concrete type:
+				// strings), so ReflectTypeName bloat from dead iface.make does
+				// not apply.
+				if in.Global != "" {
 					g.ifaces[in.Global] = true
 					g.needTypeKey(in.Global)
 				}
@@ -1078,6 +1085,119 @@ func (g *gen) emitAll() error {
 			return err
 		}
 	}
+	// emitItab may add wrappers that OpIfaceCall through an embedded interface
+	// (e.g. concrete embeds io.ByteWriter). Those itabtypes are not in
+	// ifaceMethods above — emit them now before RuntimeOps expands the casts.
+	if err := g.emitMissingItabTypes(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// emitMissingItabTypes declares any $go.itabtype.* referenced by OpIfaceCall
+// that emitItabType has not yet produced (promoted embedded-iface wrappers).
+// Without this, IR verify fails with "ref.cast to unknown type".
+func (g *gen) emitMissingItabTypes() error {
+	// ifaceKeys from OpIfaceCall.Global (unsanitized TypeKey).
+	needed := map[string]bool{}
+	// Sanitized suffixes from Type2 / casts when Global is absent.
+	neededSan := map[string]bool{}
+	for _, f := range g.mod.Funcs {
+		if f == nil || f.Body == nil {
+			continue
+		}
+		walkRegion(f.Body, func(e ir.Expr) {
+			in, ok := e.(*ir.Instr)
+			if !ok {
+				return
+			}
+			if in.Op == ir.OpIfaceCall && in.Global != "" {
+				needed[in.Global] = true
+				return
+			}
+			var named string
+			if in.Op == ir.OpIfaceCall {
+				if r, ok := in.Type2.(*ir.Ref); ok {
+					named = r.Named
+				}
+			}
+			if in.Op == ir.OpRefCast {
+				if r, ok := in.Type.(*ir.Ref); ok {
+					named = r.Named
+				}
+			}
+			const p = "$go.itabtype."
+			if strings.HasPrefix(named, p) {
+				neededSan[strings.TrimPrefix(named, p)] = true
+			}
+		})
+	}
+	emit := func(ifaceKey string, iface *types.Interface) error {
+		if iface == nil || iface.Empty() {
+			return nil
+		}
+		if g.mod.LookupType("$go.itabtype."+sanitize(ifaceKey)) != nil {
+			return nil
+		}
+		n := iface.NumMethods()
+		ms := make([]*types.Func, n)
+		for i := 0; i < n; i++ {
+			ms[i] = iface.Method(i)
+		}
+		return g.emitItabType(ifaceKey, ms)
+	}
+	for ifaceKey := range needed {
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil && ifaceKey == "error" {
+			iface = errorInterface()
+		}
+		if err := emit(ifaceKey, iface); err != nil {
+			return err
+		}
+	}
+	for san := range neededSan {
+		if g.mod.LookupType("$go.itabtype."+san) != nil {
+			continue
+		}
+		ifaceKey := strings.ReplaceAll(san, "_", ".")
+		iface := g.lookupIface(ifaceKey)
+		if iface == nil {
+			iface = g.findIfaceBySanitized(san)
+			if iface != nil {
+				ifaceKey = TypeKey(iface)
+			}
+		}
+		if err := emit(ifaceKey, iface); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// findIfaceBySanitized finds a named interface whose Sanitize(TypeKey) matches.
+func (g *gen) findIfaceBySanitized(san string) *types.Interface {
+	if g.prog == nil {
+		return nil
+	}
+	for _, pkg := range g.prog.Packages {
+		if pkg == nil || pkg.Types == nil {
+			continue
+		}
+		scope := pkg.Types.Scope()
+		for _, name := range scope.Names() {
+			obj := scope.Lookup(name)
+			tn, ok := obj.(*types.TypeName)
+			if !ok || tn.Type() == nil {
+				continue
+			}
+			if sanitize(TypeKey(tn.Type())) != san {
+				continue
+			}
+			if iface, ok := tn.Type().Underlying().(*types.Interface); ok {
+				return iface
+			}
+		}
+	}
 	return nil
 }
 
@@ -1865,7 +1985,9 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 	if _, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
 		ifaceKey := TypeKey(recvGo)
 		methodIdx := 0
-		if iface, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+		var iface *types.Interface
+		if i, ok := types.Unalias(recvGo).Underlying().(*types.Interface); ok {
+			iface = i
 			for i := 0; i < iface.NumMethods(); i++ {
 				if iface.Method(i).Name() == m.Name() {
 					methodIdx = i
@@ -1875,6 +1997,15 @@ func (g *gen) ensureWrapper(it *itabRec, m *types.Func, idx int) (string, error)
 		}
 		fnSig := "$go.ifacefn." + sanitize(ifaceKey) + "." + m.Name()
 		g.ensureIfaceFnType(fnSig, m)
+		// emitItabType may not have run for this embedded iface yet (itab was
+		// for the outer interface). Declare it before RuntimeOps expands.
+		if iface != nil && !iface.Empty() {
+			ms := make([]*types.Func, iface.NumMethods())
+			for i := 0; i < iface.NumMethods(); i++ {
+				ms[i] = iface.Method(i)
+			}
+			_ = g.emitItabType(ifaceKey, ms)
+		}
 		var res ir.Type
 		if len(results) > 0 {
 			res = results[0]
@@ -2145,30 +2276,9 @@ func TypeKey(t types.Type) string {
 		}
 		return t.Name()
 	case *types.Named:
-		pkg := ""
-		if t.Obj().Pkg() != nil {
-			pkg = pkgIRPrefix(t.Obj().Pkg()) + "."
-		}
-		suffix := ""
-		if targs := t.TypeArgs(); targs != nil && targs.Len() > 0 {
-			var b strings.Builder
-			ok := true
-			for i := 0; i < targs.Len(); i++ {
-				a := targs.At(i)
-				if _, isTP := types.Unalias(a).(*types.TypeParam); isTP {
-					ok = false
-					break
-				}
-				if i > 0 {
-					b.WriteByte('$')
-				}
-				b.WriteString(TypeKey(a))
-			}
-			if ok {
-				suffix = "$" + b.String()
-			}
-		}
-		return pkg + t.Obj().Name() + suffix + mono.LocalTypeSuffix(t.Obj())
+		// Function-local types inside a generic instantiation include outer
+		// mono args in the key (typeparam/nested.go: F[int].T ≠ F[Int].T).
+		return namedTypeKey(t)
 	case *types.Pointer:
 		return "*" + TypeKey(t.Elem())
 	case *types.Interface:

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"github.com/achille-roussel/wasmgc-go/internal/desc"
 	"github.com/achille-roussel/wasmgc-go/internal/escape"
 	"github.com/achille-roussel/wasmgc-go/internal/ir"
 	"github.com/achille-roussel/wasmgc-go/internal/load"
@@ -48,6 +49,7 @@ func PackageHighMono(pkgs []*load.Package, main *load.Package, tab *mono.Table) 
 	if main == nil {
 		return nil, fmt.Errorf("lower.Package: no main package")
 	}
+	desc.ClearNestedDisplay()
 	mod := &ir.Module{}
 	md := metaOf(mod)
 
@@ -112,6 +114,7 @@ func lowerLoadPackage(mod *ir.Module, md *meta, pkg *load.Package, tab *mono.Tab
 	if pkg.PkgPath == "runtime" && pkg.Standard {
 		return nil
 	}
+	desc.AssignVargen(nil, pkg.Syntax, pkg.Info)
 	l := &pkgLower{
 		fset:  nil, // positions reported by package path
 		files: pkg.Syntax,
